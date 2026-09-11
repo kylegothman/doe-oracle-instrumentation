@@ -1,0 +1,16 @@
+.env
+.venv/
+*.pyc
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+instance/ciobrain.sqlite
+instance/knowledge/vector_store/
+instance/vector_store/
+*.log
+venv/
+.DS_Store
