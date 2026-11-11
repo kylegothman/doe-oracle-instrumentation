@@ -1,4 +1,4 @@
-import type { Locator, Page } from 'playwright'
+import type { Locator, Page, Request, Response } from 'playwright'
 import { openSubjectPage } from '../browser/navigation'
 import type { OracleSettings } from '../config/settings'
 
@@ -38,9 +38,19 @@ export interface OracleAdapterOptions {
    * TODO(#27): the 60-second rule and its failure handling belong to the TrialController in E2.
    */
   answerTimeoutMs?: number
+  /** How long the page may take to send the search request after Enter. */
+  submitTimeoutMs?: number
 }
 
 const DEFAULT_ANSWER_TIMEOUT_MS = 90_000
+const DEFAULT_SUBMIT_TIMEOUT_MS = 10_000
+
+/** Promises for the two network-timed events of one submission, plus cleanup. */
+interface SearchRequestWatch {
+  begin: Promise<number>
+  firstResponse: Promise<number>
+  dispose: () => void
+}
 
 /** Shape of the values the in-page watchers return. */
 type PageWatchResult = { at: number } | { error: string }
@@ -49,15 +59,22 @@ type PageWatchResult = { at: number } | { error: string }
  * Drives the DOE Oracle's chat page: types the question, submits it, waits for
  * the answer, and reads it back. One adapter serves one trial.
  *
- * Timing in this version comes from the page's own clock when the answer
- * bubble appears and when its text is in place. The timing story (#23)
- * moves begin and first response to the browser's network events.
+ * Timing comes from the browser's own events, not from the Oracle's code:
+ * - begin: the POST to the search endpoint leaves the page (Playwright's
+ *   `request` event, stamped in the main process);
+ * - first response: that request's response arrives (`response` event,
+ *   stamped in the main process);
+ * - end: the answer text is on the page (stamped with the page's own clock
+ *   inside `waitForFunction`).
+ * The CORS preflight is not a POST, so it never counts as begin.
  */
 export class OracleAdapter {
   private readonly answerTimeoutMs: number
+  private readonly submitTimeoutMs: number
   private bubblesBefore = 0
   private systemMessagesBefore = 0
   private submitted = false
+  private watch: SearchRequestWatch | null = null
 
   constructor(
     private readonly page: Page,
@@ -65,6 +82,7 @@ export class OracleAdapter {
     options: OracleAdapterOptions = {},
   ) {
     this.answerTimeoutMs = options.answerTimeoutMs ?? DEFAULT_ANSWER_TIMEOUT_MS
+    this.submitTimeoutMs = options.submitTimeoutMs ?? DEFAULT_SUBMIT_TIMEOUT_MS
   }
 
   /** The chat page URL built from the settings. */
@@ -78,7 +96,10 @@ export class OracleAdapter {
     await this.input().waitFor({ state: 'visible', timeout: 15_000 })
   }
 
-  /** Types the exact question and submits it. Resolves with the begin timestamp (epoch ms). */
+  /**
+   * Types the exact question and submits it. Resolves with the begin
+   * timestamp: when the POST to the search endpoint left the page.
+   */
   async start(question: string): Promise<number> {
     const input = this.input()
     await input.waitFor({ state: 'visible', timeout: 15_000 })
@@ -91,21 +112,27 @@ export class OracleAdapter {
       throw new OracleAnswerError(`The Oracle input holds "${typed}" instead of the question`)
     }
 
-    const beginMs = Date.now()
-    await input.press('Enter')
-    this.submitted = true
-    return beginMs
+    this.watch?.dispose()
+    const watch = this.watchSearchRequest()
+    this.watch = watch
+    try {
+      await input.press('Enter')
+      this.submitted = true
+      return await watch.begin
+    } catch (error) {
+      watch.dispose()
+      this.watch = null
+      throw error
+    }
   }
 
-  /** Resolves when a new answer bubble is on the page, with the page's timestamp. */
+  /** Resolves when the search request's response arrives, with the main-process timestamp. */
   async waitForFirstResponse(): Promise<number> {
     this.assertSubmitted()
-    return this.watchPage((args) => {
-      const errorText = window.__harnessNewSystemError?.(args)
-      if (errorText) return { error: errorText }
-      const bubbles = document.querySelectorAll(args.answerBubble)
-      return bubbles.length > args.bubblesBefore ? { at: Date.now() } : false
-    })
+    if (!this.watch) {
+      throw new OracleAnswerError('start(question) must be called before waiting for the answer')
+    }
+    return this.watch.firstResponse
   }
 
   /** Resolves when the new bubble has its answer text, with the page's timestamp. */
@@ -175,7 +202,7 @@ export class OracleAdapter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/Timeout \d+ms exceeded/i.test(message)) {
-        throw new OracleAnswerError(`No answer appeared within ${Math.round(this.answerTimeoutMs / 1000)} s`)
+        throw new OracleAnswerError(`No answer appeared within ${seconds(this.answerTimeoutMs)}`)
       }
       throw error
     }
@@ -185,6 +212,73 @@ export class OracleAdapter {
       throw new OracleAnswerError(`The Oracle reported an error: ${result.error}`)
     }
     return result.at
+  }
+
+  /**
+   * Listens for the one POST to the search endpoint that Enter triggers and
+   * stamps, in the main process, when it leaves and when its response
+   * arrives. A request that fails before any response (for example the
+   * backend is down) rejects first response with a clear message.
+   */
+  private watchSearchRequest(): SearchRequestWatch {
+    const page = this.page
+    const endpointPath = this.settings.searchEndpointPath
+    const isSearchRequest = (request: Request): boolean =>
+      request.method() === 'POST' && pathnameOf(request.url()) === endpointPath
+
+    let matched: Request | null = null
+    let resolveBegin: (ms: number) => void = () => {}
+    let rejectBegin: (error: Error) => void = () => {}
+    let resolveFirst: (ms: number) => void = () => {}
+    let rejectFirst: (error: Error) => void = () => {}
+    const begin = new Promise<number>((resolve, reject) => {
+      resolveBegin = resolve
+      rejectBegin = reject
+    })
+    const firstResponse = new Promise<number>((resolve, reject) => {
+      resolveFirst = resolve
+      rejectFirst = reject
+    })
+    // The caller may never await one of these; keep a rejection from being "unhandled".
+    begin.catch(() => {})
+    firstResponse.catch(() => {})
+
+    const onRequest = (request: Request): void => {
+      if (matched || !isSearchRequest(request)) return
+      matched = request
+      resolveBegin(Date.now())
+    }
+    const onResponse = (response: Response): void => {
+      if (matched && response.request() === matched) resolveFirst(Date.now())
+    }
+    const onRequestFailed = (request: Request): void => {
+      if (request !== matched) return
+      const reason = request.failure()?.errorText ?? 'unknown reason'
+      rejectFirst(new OracleAnswerError(`The request to ${endpointPath} failed before a response arrived (${reason})`))
+    }
+    page.on('request', onRequest)
+    page.on('response', onResponse)
+    page.on('requestfailed', onRequestFailed)
+
+    const submitTimer = setTimeout(() => {
+      rejectBegin(
+        new OracleAnswerError(`The Oracle page did not send a request to ${endpointPath} within ${seconds(this.submitTimeoutMs)}`),
+      )
+    }, this.submitTimeoutMs)
+    const answerTimer = setTimeout(() => {
+      rejectFirst(new OracleAnswerError(`No response from ${endpointPath} within ${seconds(this.answerTimeoutMs)}`))
+    }, this.answerTimeoutMs)
+
+    const dispose = (): void => {
+      clearTimeout(submitTimer)
+      clearTimeout(answerTimer)
+      page.off('request', onRequest)
+      page.off('response', onResponse)
+      page.off('requestfailed', onRequestFailed)
+    }
+    void begin.then(() => clearTimeout(submitTimer)).catch(dispose)
+    void firstResponse.then(dispose).catch(dispose)
+    return { begin, firstResponse, dispose }
   }
 
   /** Defines, once per page, the helper that spots a new system error message. */
@@ -199,6 +293,18 @@ export class OracleAdapter {
       }
     })
   }
+}
+
+function pathnameOf(url: string): string {
+  try {
+    return new URL(url).pathname
+  } catch {
+    return ''
+  }
+}
+
+function seconds(ms: number): string {
+  return `${Math.round(ms / 100) / 10} s`
 }
 
 interface PageWatchArgs {

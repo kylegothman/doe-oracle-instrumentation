@@ -76,7 +76,7 @@ harness/
   src/
     main/                   Electron main process (Node)
       index.ts              app lifecycle and window creation
-      execution/            test run orchestration and IPC routing
+      execution/            IPC routing, TimingService, and (next) trial orchestration
       adapters/             one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
       browser/              BrowserManager: launches and owns the Playwright Chromium window
       config/               settings (Oracle URL) and config defaults
@@ -118,6 +118,16 @@ Playwright's Chromium lives in the user's cache, not in the app, so the MSI does
 ## Driving the Oracle
 
 `OracleAdapter` (`src/main/adapters/oracle-adapter.ts`) opens the Oracle chat page, types the question into the input (found by its placeholder), checks the typed text matches exactly, and submits with Enter, which runs the same handler as the icon-only Send button. It then waits for a new answer bubble, found through the per-answer "Copy" button, and reads the answer text without citation lines and buttons, plus the citation lines. The selectors live in `ORACLE_SELECTORS` with a note on why each one was chosen; the Oracle's own code is never changed.
+
+Trials are timed from the browser's own events, not from the Oracle's code:
+
+| Event | When | Clock |
+| --- | --- | --- |
+| begin | the POST to `/api/search` leaves the page (Playwright `request` event; the CORS preflight is not a POST) | main process |
+| first response | that request's response arrives (`response` event) | main process |
+| end | the answer text is on the page | the page's own `Date.now()` |
+
+`TimingService` (`src/main/execution/timing-service.ts`) records these marks per trial and converts them for storage: `toIso()` gives ISO 8601 UTC with milliseconds and `durationMs()` whole milliseconds. Both clocks are the same system clock on the same machine, so the marks are directly comparable.
 
 The adapter test serves a small copy of the chat page from `src/main/adapters/__fixtures__/oracle-chat.html` and fakes `/api/search` with a delay through `page.route`, so it needs no Oracle and no Ollama, only Playwright's Chromium.
 

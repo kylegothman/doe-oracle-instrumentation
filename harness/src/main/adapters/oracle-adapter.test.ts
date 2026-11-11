@@ -18,9 +18,9 @@ const BROWSER_TEST_TIMEOUT_MS = 30_000
 /** Serves the fixture page and fakes the search endpoint with a delay, recording what the page sent. */
 function serveFakeOracle(
   page: Page,
-  options: { delayMs?: number; status?: number; body?: unknown } = {},
-): { requests: Array<{ method: string; query: unknown }> } {
-  const requests: Array<{ method: string; query: unknown }> = []
+  options: { delayMs?: number; status?: number; body?: unknown; abort?: boolean } = {},
+): { requests: Array<{ method: string; query: unknown; receivedAt: number }> } {
+  const requests: Array<{ method: string; query: unknown; receivedAt: number }> = []
   const delayMs = options.delayMs ?? 250
   void page.route('http://oracle.test/**', async (route: Route) => {
     const request = route.request()
@@ -30,7 +30,11 @@ function serveFakeOracle(
       return
     }
     if (path === '/api/search') {
-      requests.push({ method: request.method(), query: request.postDataJSON()?.query })
+      requests.push({ method: request.method(), query: request.postDataJSON()?.query, receivedAt: Date.now() })
+      if (options.abort) {
+        await route.abort('connectionrefused')
+        return
+      }
       await new Promise((resolve) => setTimeout(resolve, delayMs))
       await route.fulfill({
         status: options.status ?? 200,
@@ -71,15 +75,21 @@ describe('OracleAdapter against the chat fixture', () => {
       const adapter = new OracleAdapter(page, SETTINGS)
       await adapter.open()
 
+      const beforeStart = Date.now()
       const beginMs = await adapter.start(QUESTION)
       const firstResponseMs = await adapter.waitForFirstResponse()
       const endMs = await adapter.waitForCompletion()
       const answer = await adapter.captureAnswer()
 
-      expect(fake.requests).toEqual([{ method: 'POST', query: QUESTION }])
+      expect(fake.requests).toHaveLength(1)
+      expect(fake.requests[0]).toMatchObject({ method: 'POST', query: QUESTION })
+      // begin is when the POST left the page: after start() was called, and no later than the fake server saw it.
+      expect(beginMs).toBeGreaterThanOrEqual(beforeStart)
+      expect(beginMs).toBeLessThanOrEqual(fake.requests[0]!.receivedAt)
+      // first response is when the response arrived: at least the fake delay after begin, and before the page showed it.
       expect(beginMs).toBeLessThan(firstResponseMs)
-      expect(firstResponseMs).toBeLessThan(endMs)
       expect(firstResponseMs - beginMs).toBeGreaterThanOrEqual(250)
+      expect(firstResponseMs).toBeLessThan(endMs)
       expect(answer.text).toBe(ANSWER)
       expect(answer.citations).toEqual([
         'Applying_Combinatorial_Testing_in_Industrial_Settings.pdf · p.3',
@@ -123,7 +133,7 @@ describe('OracleAdapter against the chat fixture', () => {
   )
 
   it(
-    'gives up with a clear error when no answer appears in time',
+    'gives up with a clear error when no response arrives in time',
     async () => {
       serveFakeOracle(page, { delayMs: 3_000 })
       const adapter = new OracleAdapter(page, SETTINGS, { answerTimeoutMs: 500 })
@@ -131,7 +141,44 @@ describe('OracleAdapter against the chat fixture', () => {
 
       await adapter.start(QUESTION)
 
-      await expect(adapter.waitForFirstResponse()).rejects.toThrow(/No answer appeared within 1 s/)
+      await expect(adapter.waitForFirstResponse()).rejects.toThrow(/No response from \/api\/search within 0\.5 s/)
+      await expect(adapter.waitForCompletion()).rejects.toThrow(/No answer appeared within 0\.5 s/)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports a request that fails before any response, as when the backend is down',
+    async () => {
+      serveFakeOracle(page, { abort: true })
+      const adapter = new OracleAdapter(page, SETTINGS, { answerTimeoutMs: 5_000 })
+      await adapter.open()
+
+      const beginMs = await adapter.start(QUESTION)
+
+      expect(beginMs).toBeGreaterThan(0)
+      await expect(adapter.waitForFirstResponse()).rejects.toThrow(
+        /The request to \/api\/search failed before a response arrived \(net::ERR_CONNECTION_REFUSED\)/,
+      )
+      await expect(adapter.waitForCompletion()).rejects.toThrow(/The Oracle reported an error: Error searching for/)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'fails start() with a clear error if the page never sends the search request',
+    async () => {
+      serveFakeOracle(page)
+      const adapter = new OracleAdapter(page, SETTINGS, { submitTimeoutMs: 300 })
+      await adapter.open()
+      // Disable the page's Enter handler so nothing is sent.
+      await page.evaluate(() => {
+        document.querySelector('input')?.addEventListener('keydown', (e) => e.stopImmediatePropagation(), true)
+      })
+
+      await expect(adapter.start(QUESTION)).rejects.toThrow(
+        /did not send a request to \/api\/search within 0\.3 s/,
+      )
     },
     BROWSER_TEST_TIMEOUT_MS,
   )
