@@ -16,13 +16,13 @@ const SETTINGS: OracleSettings = { baseUrl: 'http://oracle.test', chatPath: '/ch
 const BROWSER_TEST_TIMEOUT_MS = 30_000
 
 /** Serves the fixture page and fakes the search endpoint with a delay, recording what the page sent. */
-function serveFakeOracle(
+async function serveFakeOracle(
   page: Page,
   options: { delayMs?: number; status?: number; body?: unknown } = {},
-): { requests: Array<{ method: string; query: unknown }> } {
+): Promise<{ requests: Array<{ method: string; query: unknown }> }> {
   const requests: Array<{ method: string; query: unknown }> = []
   const delayMs = options.delayMs ?? 250
-  void page.route('http://oracle.test/**', async (route: Route) => {
+  await page.route('http://oracle.test/**', async (route: Route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
     if (path === '/chat') {
@@ -67,7 +67,7 @@ describe('OracleAdapter against the chat fixture', () => {
   it(
     'types the exact question, submits with Enter, times the answer in order, and captures it',
     async () => {
-      const fake = serveFakeOracle(page, { delayMs: 250 })
+      const fake = await serveFakeOracle(page, { delayMs: 250 })
       const adapter = new OracleAdapter(page, SETTINGS)
       await adapter.open()
 
@@ -93,7 +93,7 @@ describe('OracleAdapter against the chat fixture', () => {
   it(
     'ignores the greeting bubble that is already on the page',
     async () => {
-      serveFakeOracle(page, { delayMs: 50 })
+      await serveFakeOracle(page, { delayMs: 50 })
       const adapter = new OracleAdapter(page, SETTINGS)
       await adapter.open()
       expect(await page.locator('button[title="Copy"]').count()).toBe(1)
@@ -110,7 +110,7 @@ describe('OracleAdapter against the chat fixture', () => {
   it(
     'reports the Oracle error message instead of waiting for an answer that never comes',
     async () => {
-      serveFakeOracle(page, { delayMs: 50, status: 500, body: { error: 'Internal server error' } })
+      await serveFakeOracle(page, { delayMs: 50, status: 500, body: { error: 'Internal server error' } })
       const adapter = new OracleAdapter(page, SETTINGS, { answerTimeoutMs: 5_000 })
       await adapter.open()
 
@@ -125,7 +125,7 @@ describe('OracleAdapter against the chat fixture', () => {
   it(
     'gives up with a clear error when no answer appears in time',
     async () => {
-      serveFakeOracle(page, { delayMs: 3_000 })
+      await serveFakeOracle(page, { delayMs: 3_000 })
       const adapter = new OracleAdapter(page, SETTINGS, { answerTimeoutMs: 500 })
       await adapter.open()
 
@@ -137,7 +137,7 @@ describe('OracleAdapter against the chat fixture', () => {
   )
 
   it('refuses to wait before a question was submitted', async () => {
-    serveFakeOracle(page)
+    await serveFakeOracle(page)
     const adapter = new OracleAdapter(page, SETTINGS)
 
     await expect(adapter.waitForCompletion()).rejects.toThrow(/start\(question\) must be called/)
