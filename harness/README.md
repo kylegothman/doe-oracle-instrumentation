@@ -56,12 +56,12 @@ Run these from the `harness` folder.
 | `npm run preview` | Launches Electron against the last `out/` build, without watch mode. |
 | `npm run lint` | Runs ESLint over the harness. Fails on any error. |
 | `npm run typecheck` | Runs the TypeScript compiler over the Node-side code (main, preload, shared) and the browser-side code (renderer, shared) without emitting files. |
-| `npm test` | Runs the Vitest unit tests once. |
+| `npm test` | Runs the Vitest unit tests once. The adapter tests drive a real headless Chromium, so run `npm run setup:browser` first. |
 | `npm run setup:browser` | Downloads Playwright's Chromium (headed and headless builds) for this machine. |
 | `npm run dist:win` | Builds and packages the Windows MSI installer into `release/`. Windows only. |
 | `npm run dist:dir` | Builds and packages an unpacked app for the current OS into `release/`, for a quick local check of the packaged app without an installer. |
 
-Run `lint`, `typecheck`, `test`, and `build` before opening a pull request. Continuous integration runs the same four on Ubuntu and Windows.
+Run `lint`, `typecheck`, `test`, and `build` before opening a pull request. Continuous integration runs the same four on Ubuntu and Windows, installing Playwright's Chromium headless shell (cached per Playwright version) before the tests.
 
 ## Project layout
 
@@ -77,7 +77,7 @@ harness/
     main/                   Electron main process (Node)
       index.ts              app lifecycle and window creation
       execution/            test run orchestration and IPC routing
-      adapters/             one adapter per system under test
+      adapters/             one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
       browser/              BrowserManager: launches and owns the Playwright Chromium window
       config/               settings (Oracle URL) and config defaults
       data/                 SQLite storage and exports
@@ -114,6 +114,12 @@ The Oracle's address is a setting. The default, `http://localhost:5173`, is in `
 Until the trial button exists, `HARNESS_DEV_OPEN_BROWSER=1 npm run dev` launches Chromium and opens the Oracle chat page at startup, which is the quickest way to see the browser story on its own.
 
 Playwright's Chromium lives in the user's cache, not in the app, so the MSI does not include it yet (tracked in #44).
+
+## Driving the Oracle
+
+`OracleAdapter` (`src/main/adapters/oracle-adapter.ts`) opens the Oracle chat page, types the question into the input (found by its placeholder), checks the typed text matches exactly, and submits with Enter, which runs the same handler as the icon-only Send button. It then waits for a new answer bubble, found through the per-answer "Copy" button, and reads the answer text without citation lines and buttons, plus the citation lines. The selectors live in `ORACLE_SELECTORS` with a note on why each one was chosen; the Oracle's own code is never changed.
+
+The adapter test serves a small copy of the chat page from `src/main/adapters/__fixtures__/oracle-chat.html` and fakes `/api/search` with a delay through `page.route`, so it needs no Oracle and no Ollama, only Playwright's Chromium.
 
 ## Storage check at startup
 
