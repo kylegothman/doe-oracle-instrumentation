@@ -12,6 +12,8 @@ Stack: Electron, React + TypeScript built by Vite through electron-vite, SQLite 
 
 No C++ build tools are needed. Native modules used by the harness ship prebuilt binaries.
 
+The harness drives the systems under test through Playwright's Chromium, which is downloaded separately from npm (see Setup).
+
 ### Windows 11
 
 1. Install Node 26 LTS with one of:
@@ -33,8 +35,11 @@ No C++ build tools are needed. Native modules used by the harness ship prebuilt 
 ```bash
 cd harness
 npm install
+npm run setup:browser
 npm run dev
 ```
+
+`npm run setup:browser` downloads the Chromium build that matches the pinned Playwright version (about 250 MB) into Playwright's browser cache: `~/Library/Caches/ms-playwright` on macOS, `%LOCALAPPDATA%\ms-playwright` on Windows. Run it once per Playwright upgrade. Without it, launching a trial fails with a message that names this script.
 
 `npm run dev` opens the harness window. It reloads the UI as you edit renderer files and restarts the main process when main or preload files change.
 
@@ -52,6 +57,7 @@ Run these from the `harness` folder.
 | `npm run lint` | Runs ESLint over the harness. Fails on any error. |
 | `npm run typecheck` | Runs the TypeScript compiler over the Node-side code (main, preload, shared) and the browser-side code (renderer, shared) without emitting files. |
 | `npm test` | Runs the Vitest unit tests once. |
+| `npm run setup:browser` | Downloads Playwright's Chromium (headed and headless builds) for this machine. |
 | `npm run dist:win` | Builds and packages the Windows MSI installer into `release/`. Windows only. |
 | `npm run dist:dir` | Builds and packages an unpacked app for the current OS into `release/`, for a quick local check of the packaged app without an installer. |
 
@@ -72,7 +78,8 @@ harness/
       index.ts              app lifecycle and window creation
       execution/            test run orchestration and IPC routing
       adapters/             one adapter per system under test
-      browser/              browser automation
+      browser/              BrowserManager: launches and owns the Playwright Chromium window
+      config/               settings (Oracle URL) and config defaults
       data/                 SQLite storage and exports
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
@@ -97,6 +104,16 @@ The contract lives in `src/shared/ipc.ts` and is imported by all three sides, so
 4. Forward it in `src/preload/index.ts` by adding the method to `harnessApi`.
 
 Only plain data that survives `structuredClone` may cross the bridge.
+
+## Browser automation
+
+`BrowserManager` (`src/main/browser`) launches one headed Chromium window through Playwright from the Electron main process, gives each system under test its own browser context and page, and closes the browser when the harness quits. The window is headed on purpose: the Tester watches the trial happen.
+
+The Oracle's address is a setting. The default, `http://localhost:5173`, is in `src/shared/harness-config.json`; set `HARNESS_ORACLE_URL` to point somewhere else, for example `HARNESS_ORACLE_URL=http://127.0.0.1:4173 npm run dev`. The chat page is `/chat` under that URL. If the Oracle is not running, the harness reports "Could not reach the DOE Oracle at ..." instead of failing silently.
+
+Until the trial button exists, `HARNESS_DEV_OPEN_BROWSER=1 npm run dev` launches Chromium and opens the Oracle chat page at startup, which is the quickest way to see the browser story on its own.
+
+Playwright's Chromium lives in the user's cache, not in the app, so the MSI does not include it yet (tracked in #44).
 
 ## Storage check at startup
 

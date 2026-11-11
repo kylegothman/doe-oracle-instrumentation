@@ -18,7 +18,8 @@
     "dist:dir": "electron-vite build && electron-builder --dir --publish never",
     "lint": "eslint .",
     "typecheck": "tsc -b tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "setup:browser": "playwright install chromium"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -42,6 +43,7 @@
     "vitest": "5.1.0"
   },
   "dependencies": {
-    "better-sqlite3": "13.0.3"
+    "better-sqlite3": "13.0.3",
+    "playwright": "1.65.0"
   }
 }

@@ -1,0 +1,7 @@
+{
+  "oracle": {
+    "baseUrl": "http://localhost:5173",
+    "chatPath": "/chat",
+    "searchEndpointPath": "/api/search"
+  }
+}

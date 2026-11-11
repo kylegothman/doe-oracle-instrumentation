@@ -1,10 +1,32 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { IpcChannels } from '../shared/ipc'
+import { BrowserManager } from './browser/browser-manager'
+import { openSubjectPage } from './browser/navigation'
+import { loadSettings, oracleChatUrl } from './config/settings'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { IpcRouter } from './execution/ipc-router'
+
+/** The one Chromium instance the harness drives. Launched on first use, closed on quit. */
+const browserManager = new BrowserManager()
+
+/**
+ * Developer switch until the trial button exists: `HARNESS_DEV_OPEN_BROWSER=1
+ * npm run dev` launches headed Chromium from the main process and opens the
+ * Oracle chat page, so the browser story can be seen on its own.
+ */
+async function openOracleForDevelopment(): Promise<void> {
+  const url = oracleChatUrl(loadSettings())
+  try {
+    const page = await browserManager.getPage('oracle')
+    await openSubjectPage(page, 'oracle', url)
+    console.log(`[browser] Opened the DOE Oracle at ${url} in Chromium`)
+  } catch (error) {
+    console.error(`[browser] ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
 
 function registerIpcHandlers(): IpcRouter {
   // Probe once at startup. The handler reports this same result to the
@@ -58,12 +80,27 @@ void app.whenReady().then(() => {
   registerIpcHandlers()
   createMainWindow()
 
+  if (process.env.HARNESS_DEV_OPEN_BROWSER === '1') {
+    void openOracleForDevelopment()
+  }
+
   app.on('activate', () => {
     // macOS re-creates the window when the dock icon is clicked with no windows open.
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow()
     }
   })
+})
+
+let browserClosing = false
+app.on('before-quit', (event) => {
+  // Close Chromium before Electron exits so no browser window outlives the app.
+  if (browserClosing || !browserManager.isRunning) {
+    return
+  }
+  event.preventDefault()
+  browserClosing = true
+  void browserManager.close().finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {
