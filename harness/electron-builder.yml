@@ -1,0 +1,48 @@
+# electron-builder configuration for the harness installer.
+# Run `npm run dist:win` on Windows to produce the MSI in release/.
+# Icons and other installer resources go in build-resources/ (not build/,
+# which the repository's root .gitignore ignores).
+
+appId: edu.utdallas.se4485.team3.doe-oracle-test-harness
+productName: DOE Oracle Test Harness
+copyright: Copyright © 2026 SE 4485 Team 3
+
+directories:
+  buildResources: build-resources
+  output: release
+
+# package.json and production dependencies from node_modules are always
+# included; this limits the rest to the electron-vite output.
+files:
+  - out/**
+  - '!**/*.map'
+  # better-sqlite3 ships its C sources for platforms without a prebuilt
+  # binary. The packaged app only needs lib/ and prebuilds/.
+  - '!**/node_modules/better-sqlite3/{deps,src}/**'
+  - '!**/node_modules/better-sqlite3/{binding.gyp,README.md}'
+
+# Native modules cannot be loaded from inside the asar archive.
+asarUnpack:
+  - '**/*.node'
+
+# better-sqlite3 13 ships Node-API prebuilt binaries that work with any
+# Electron version, so there is nothing to rebuild for Electron's ABI and
+# no C++ toolchain is needed to package.
+npmRebuild: false
+
+win:
+  target:
+    - target: msi
+      arch:
+        - x64
+
+msi:
+  # A short wizard instead of a silent install, so a teammate can see where
+  # it goes. Per-user install needs no administrator rights.
+  oneClick: false
+  perMachine: false
+  runAfterFinish: true
+  createDesktopShortcut: true
+  shortcutName: DOE Oracle Test Harness
+
+artifactName: ${productName}-${version}-${arch}.${ext}

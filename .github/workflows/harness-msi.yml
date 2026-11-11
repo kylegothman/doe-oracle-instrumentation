@@ -1,0 +1,64 @@
+# Builds the Windows MSI installer for the harness and uploads it as a
+# workflow artifact. Runs on pushes to main that touch the harness, on
+# manual dispatch, and on pull requests that change the packaging setup
+# (so a packaging change is proven before it merges).
+name: harness-msi
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'harness/**'
+      - '.github/workflows/harness-msi.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/harness-msi.yml'
+      - 'harness/electron-builder.yml'
+      - 'harness/package.json'
+      - 'harness/package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-msi-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: harness
+
+jobs:
+  msi:
+    name: harness-msi (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: harness/.nvmrc
+          cache: npm
+          cache-dependency-path: harness/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build and package the MSI
+        run: npm run dist:win
+        env:
+          # No signing certificate is configured; do not look for one.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: List release output
+        run: Get-ChildItem -Recurse release | Select-Object FullName, Length
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: doe-oracle-test-harness-msi
+          path: harness/release/*.msi
+          if-no-files-found: error
+          retention-days: 30

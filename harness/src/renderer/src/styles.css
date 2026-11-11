@@ -20,3 +20,48 @@ h1 {
   font-size: 1.75rem;
   margin: 0 0 0.5rem;
 }
+
+h2 {
+  font-size: 1.125rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+
+.facts dt {
+  font-weight: 600;
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.error {
+  color: #b42318;
+}
+
+.ok {
+  color: #067647;
+}
+
+.error-box {
+  border: 1px solid #b42318;
+  border-left-width: 4px;
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  color: #b42318;
+}
+
+.error-box p {
+  margin: 0.25rem 0;
+}
+
+.error-box code {
+  color: inherit;
+  word-break: break-word;
+}

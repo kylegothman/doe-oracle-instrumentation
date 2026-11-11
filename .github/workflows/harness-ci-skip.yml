@@ -1,0 +1,28 @@
+# Companion to harness-ci.yml.
+#
+# harness-ci.yml only runs when a pull request touches harness/, but branch
+# protection requires its checks on every pull request. This workflow runs
+# on exactly the pull requests harness-ci.yml skips and reports the same
+# check names as passing, so a docs-only PR is not blocked forever waiting
+# for checks that will never start. Keep the paths list and the job name
+# identical to harness-ci.yml.
+name: harness-ci (skip)
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'harness/**'
+      - '.github/workflows/harness-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: harness-ci (${{ matrix.os }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - run: echo "This pull request does not change harness/. Nothing to check."
