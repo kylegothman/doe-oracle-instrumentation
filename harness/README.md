@@ -108,6 +108,8 @@ better-sqlite3 13 uses Node-API and ships prebuilt binaries inside the npm packa
 
 `npm run dist:win` on Windows builds the app and produces `release/DOE Oracle Test Harness-<version>-x64.msi` with electron-builder. The first run downloads the WiX toolset into electron-builder's cache. The installer is per-user (no administrator rights needed) and shows a short wizard.
 
+The app icon lives in `build-resources/`: `icon.png` (512 px) is the source and `icon.ico` (16 to 256 px frames) is what Windows uses. The MSI cannot be built without an icon, because electron-builder's installer template always references one for the shortcuts. To rebrand, replace both files.
+
 Continuous integration does the same on `windows-latest` in the `harness-msi` workflow: on every push to `main` that touches the harness, on pull requests that change the packaging setup, and on manual dispatch from the Actions tab. The MSI is attached to the run as the artifact `doe-oracle-test-harness-msi`.
 
 To try a CI build on Windows 11:
