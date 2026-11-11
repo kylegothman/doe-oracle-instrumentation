@@ -26,21 +26,42 @@ h2 {
   margin: 1.5rem 0 0.5rem;
 }
 
-.app-info {
+.facts {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 0.25rem 1rem;
   margin: 0;
 }
 
-.app-info dt {
+.facts dt {
   font-weight: 600;
 }
 
-.app-info dd {
+.facts dd {
   margin: 0;
 }
 
 .error {
   color: #b42318;
+}
+
+.ok {
+  color: #067647;
+}
+
+.error-box {
+  border: 1px solid #b42318;
+  border-left-width: 4px;
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  color: #b42318;
+}
+
+.error-box p {
+  margin: 0.25rem 0;
+}
+
+.error-box code {
+  color: inherit;
+  word-break: break-word;
 }

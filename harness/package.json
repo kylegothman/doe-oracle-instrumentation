@@ -14,17 +14,21 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "dist:win": "electron-vite build && electron-builder --win msi --x64 --publish never",
+    "dist:dir": "electron-vite build && electron-builder --dir --publish never",
     "lint": "eslint .",
     "typecheck": "tsc -b tsconfig.json",
     "test": "vitest run"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "26.6.6",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.3.0",
     "electron": "45.3.0",
+    "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
     "eslint": "10.14.0",
     "eslint-plugin-react-hooks": "7.1.1",
@@ -36,5 +40,8 @@
     "typescript-eslint": "8.72.2",
     "vite": "8.3.7",
     "vitest": "5.1.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3"
   }
 }

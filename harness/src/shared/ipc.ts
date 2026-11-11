@@ -19,11 +19,21 @@ export interface AppInfo {
 }
 
 /**
+ * Result of the SQLite startup probe. The main process opens an in-memory
+ * database through better-sqlite3 once at startup; this tells the renderer
+ * whether the native module loaded, so a broken install is visible on screen.
+ */
+export type SqliteStatus =
+  | { ok: true; version: string }
+  | { ok: false; error: string }
+
+/**
  * Request and response shape for every IPC channel. Add a new channel here
  * first; the compiler then points at the handler and the bridge to update.
  */
 export interface IpcContracts {
   'app:get-info': { args: []; result: AppInfo }
+  'diagnostics:get-sqlite-status': { args: []; result: SqliteStatus }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -33,6 +43,7 @@ export type IpcResult<C extends IpcChannel> = IpcContracts[C]['result']
 /** Named channel constants so call sites never repeat the string. */
 export const IpcChannels = {
   getAppInfo: 'app:get-info',
+  getSqliteStatus: 'diagnostics:get-sqlite-status',
 } as const satisfies Record<string, IpcChannel>
 
 /** The property name the preload script exposes on `window`. */
@@ -42,4 +53,6 @@ export const HARNESS_API_KEY = 'harness' as const
 export interface HarnessApi {
   /** Returns the app name and version from the main process. */
   getAppInfo(): Promise<AppInfo>
+  /** Returns the result of the SQLite startup probe. */
+  getSqliteStatus(): Promise<SqliteStatus>
 }

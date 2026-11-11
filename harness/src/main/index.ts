@@ -1,12 +1,20 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { IpcChannels } from '../shared/ipc'
+import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
+import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { IpcRouter } from './execution/ipc-router'
 
 function registerIpcHandlers(): IpcRouter {
+  // Probe once at startup. The handler reports this same result to the
+  // renderer, so a broken native module shows up in the window.
+  const sqliteStatus = probeSqlite()
+  void sqliteStatus.then(logSqliteStatus)
+
   const router = new IpcRouter(ipcMain)
   router.register(IpcChannels.getAppInfo, createGetAppInfoHandler(app))
+  router.register(IpcChannels.getSqliteStatus, createGetSqliteStatusHandler(sqliteStatus))
   return router
 }
 
