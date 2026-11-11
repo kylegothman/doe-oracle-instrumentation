@@ -93,7 +93,17 @@ export class OracleAdapter {
   /** Opens the chat page and waits until the question input is usable. */
   async open(): Promise<void> {
     await openSubjectPage(this.page, 'oracle', this.chatUrl)
-    await this.input().waitFor({ state: 'visible', timeout: 15_000 })
+    try {
+      await this.input().waitFor({ state: 'visible', timeout: 15_000 })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (/Timeout \d+ms exceeded/i.test(message)) {
+        throw new OracleAnswerError(
+          `The page at ${this.chatUrl} loaded but does not look like the DOE Oracle chat: its question input did not appear within 15 s. Check that the Oracle frontend is what runs at that address.`,
+        )
+      }
+      throw error
+    }
   }
 
   /**

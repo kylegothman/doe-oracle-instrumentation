@@ -22,6 +22,9 @@ function invoke<C extends IpcChannel>(channel: C, ...args: IpcArgs<C>): Promise<
 const harnessApi: HarnessApi = {
   getAppInfo: () => invoke(IpcChannels.getAppInfo),
   getSqliteStatus: () => invoke(IpcChannels.getSqliteStatus),
+  startTrial: (subject, questionNumber) => invoke(IpcChannels.startTrial, subject, questionNumber),
+  listTrials: (sessionId) =>
+    sessionId === undefined ? invoke(IpcChannels.listTrials) : invoke(IpcChannels.listTrials, sessionId),
 }
 
 contextBridge.exposeInMainWorld(HARNESS_API_KEY, harnessApi)

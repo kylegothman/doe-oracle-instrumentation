@@ -76,11 +76,11 @@ harness/
   src/
     main/                   Electron main process (Node)
       index.ts              app lifecycle and window creation
-      execution/            IPC routing, TimingService, and (next) trial orchestration
+      execution/            IpcRouter, TimingService, SessionManager, TrialController, IPC handlers
       adapters/             one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
       browser/              BrowserManager: launches and owns the Playwright Chromium window
-      config/               settings (Oracle URL) and config defaults
-      data/                 SQLite storage and exports
+      config/               settings (Oracle URL) and the question config
+      data/                 MetricsRepository (SQLite, versioned migrations) and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
     shared/                 types shared by main, preload, and renderer
@@ -111,9 +111,24 @@ Only plain data that survives `structuredClone` may cross the bridge.
 
 The Oracle's address is a setting. The default, `http://localhost:5173`, is in `src/shared/harness-config.json`; set `HARNESS_ORACLE_URL` to point somewhere else, for example `HARNESS_ORACLE_URL=http://127.0.0.1:4173 npm run dev`. The chat page is `/chat` under that URL. If the Oracle is not running, the harness reports "Could not reach the DOE Oracle at ..." instead of failing silently.
 
-Until the trial button exists, `HARNESS_DEV_OPEN_BROWSER=1 npm run dev` launches Chromium and opens the Oracle chat page at startup, which is the quickest way to see the browser story on its own.
-
 Playwright's Chromium lives in the user's cache, not in the app, so the MSI does not include it yet (tracked in #44).
+
+## Running a trial (walking skeleton)
+
+1. Start the Oracle: its Flask backend and its Vite frontend (see the repository README). The harness only needs the frontend URL, `http://localhost:5173` by default.
+2. From `harness/`, run `npm run dev` and click **Run Oracle trial (Q1)**.
+3. A Chromium window opens on the Oracle chat page. The harness types "What is combinatorial testing?", presses Enter, and waits for the answer.
+4. The result panel shows begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. The saved-trials table below it reads back from the database, so a trial from an earlier launch is still listed.
+
+If the Oracle is not running, the panel shows "Could not reach the DOE Oracle at http://localhost:5173/chat. Make sure it is running, then try again." If the Oracle's backend is down, the page's own error ("Error searching for ...") is reported instead.
+
+### What happens underneath
+
+`TrialController` (`src/main/execution/trial-controller.ts`) runs one trial at a time: it takes the subject's page from `BrowserManager`, hands it to `OracleAdapter`, records the three timing marks with `TimingService`, captures the answer, and saves the trial through `MetricsRepository`. `SessionManager` gives each launch one session UUID and builds the data set name as subject code plus local date, for example `DOE_ORACLE-2026-11-11`. The question text comes from `src/shared/harness-config.json`.
+
+The database is `harness.db` in Electron's per-user app data folder (`app.getPath('userData')`): `~/Library/Application Support/DOE Oracle Test Harness/` on macOS and `%APPDATA%\DOE Oracle Test Harness\` on Windows. The main log prints the exact path at startup. The schema is versioned in `MetricsRepository`; version 1 creates the `trials` table with `trial_id`, `test_number`, `session_id`, `data_set_name`, `subject`, `question_number`, `status`, `begin_ts`, `first_response_ts`, `end_ts`, `response_ms`, `first_response_ms`, `answer_text`, and `citations` (a JSON array). Delete the file to start over.
+
+The 60-second timeout, failure classification, and the other subjects are later epics; the code marks each with a TODO naming its issue.
 
 ## Driving the Oracle
 

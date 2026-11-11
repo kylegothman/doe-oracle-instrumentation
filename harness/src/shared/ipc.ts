@@ -1,3 +1,5 @@
+import type { SubjectId } from './subjects'
+
 /**
  * The contract between the renderer and the main process.
  *
@@ -27,6 +29,35 @@ export type SqliteStatus =
   | { ok: true; version: string }
   | { ok: false; error: string }
 
+/** Outcome of a trial. TODO(#28): the Failure Detector adds the failure statuses in E2. */
+export type TrialStatus = 'completed'
+
+/**
+ * One saved trial. Field names are camelCase here and snake_case in the
+ * trials table (trial_id, test_number, ...). Timestamps are ISO 8601 UTC
+ * with milliseconds; durations are whole milliseconds.
+ */
+export interface TrialRecord {
+  trialId: string
+  /** Sequential number across the whole database, assigned when saved. */
+  testNumber: number
+  sessionId: string
+  /** Subject code plus date, for example DOE_ORACLE-2026-11-11. */
+  dataSetName: string
+  subject: SubjectId
+  questionNumber: number
+  status: TrialStatus
+  beginTs: string | null
+  firstResponseTs: string | null
+  endTs: string | null
+  /** begin to end. */
+  responseMs: number | null
+  /** begin to first response. */
+  firstResponseMs: number | null
+  answerText: string | null
+  citations: string[]
+}
+
 /**
  * Request and response shape for every IPC channel. Add a new channel here
  * first; the compiler then points at the handler and the bridge to update.
@@ -34,6 +65,8 @@ export type SqliteStatus =
 export interface IpcContracts {
   'app:get-info': { args: []; result: AppInfo }
   'diagnostics:get-sqlite-status': { args: []; result: SqliteStatus }
+  'trial:start': { args: [subject: SubjectId, questionNumber: number]; result: TrialRecord }
+  'trials:list': { args: [sessionId?: string]; result: TrialRecord[] }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -44,6 +77,8 @@ export type IpcResult<C extends IpcChannel> = IpcContracts[C]['result']
 export const IpcChannels = {
   getAppInfo: 'app:get-info',
   getSqliteStatus: 'diagnostics:get-sqlite-status',
+  startTrial: 'trial:start',
+  listTrials: 'trials:list',
 } as const satisfies Record<string, IpcChannel>
 
 /** The property name the preload script exposes on `window`. */
@@ -55,4 +90,8 @@ export interface HarnessApi {
   getAppInfo(): Promise<AppInfo>
   /** Returns the result of the SQLite startup probe. */
   getSqliteStatus(): Promise<SqliteStatus>
+  /** Runs one trial of a question against a subject and resolves with the saved record. */
+  startTrial(subject: SubjectId, questionNumber: number): Promise<TrialRecord>
+  /** Lists saved trials, newest first, for one session or for all sessions. */
+  listTrials(sessionId?: string): Promise<TrialRecord[]>
 }

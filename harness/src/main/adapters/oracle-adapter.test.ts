@@ -183,6 +183,21 @@ describe('OracleAdapter against the chat fixture', () => {
     BROWSER_TEST_TIMEOUT_MS,
   )
 
+  it(
+    'explains when the page at the Oracle URL is not the Oracle chat',
+    async () => {
+      await page.route('http://oracle.test/**', (route) =>
+        route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Something else</title><p>Not the Oracle</p>' }),
+      )
+      const adapter = new OracleAdapter(page, SETTINGS)
+
+      await expect(adapter.open()).rejects.toThrow(
+        /The page at http:\/\/oracle\.test\/chat loaded but does not look like the DOE Oracle chat/,
+      )
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
   it('refuses to wait before a question was submitted', async () => {
     serveFakeOracle(page)
     const adapter = new OracleAdapter(page, SETTINGS)
