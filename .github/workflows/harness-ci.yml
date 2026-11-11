@@ -33,6 +33,7 @@ jobs:
   check:
     name: harness-ci (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -91,7 +92,10 @@ jobs:
         run: npm ci
 
       # The adapter tests drive real Chromium. Only the headless shell is
-      # needed here, and it is cached per Playwright version.
+      # needed here, and it is cached per Playwright version. The shared
+      # libraries it needs are already on ubuntu-latest (`playwright
+      # install-deps` only tried to add fonts there), so no apt step: one
+      # less thing that can hang when a runner loses its network.
       - name: Read the Playwright version
         if: steps.scope.outputs.run == 'true'
         id: playwright
@@ -109,10 +113,6 @@ jobs:
       - name: Install Chromium headless shell
         if: steps.scope.outputs.run == 'true' && steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --only-shell chromium
-
-      - name: Install Chromium system dependencies
-        if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
-        run: npx playwright install-deps chromium
 
       - name: Lint
         if: steps.scope.outputs.run == 'true'
