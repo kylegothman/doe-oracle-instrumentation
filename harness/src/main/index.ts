@@ -1,5 +1,14 @@
 import { join } from 'node:path'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
+import { IpcChannels } from '../shared/ipc'
+import { createGetAppInfoHandler } from './execution/handlers/app-info'
+import { IpcRouter } from './execution/ipc-router'
+
+function registerIpcHandlers(): IpcRouter {
+  const router = new IpcRouter(ipcMain)
+  router.register(IpcChannels.getAppInfo, createGetAppInfoHandler(app))
+  return router
+}
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -38,6 +47,7 @@ function createMainWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
+  registerIpcHandlers()
   createMainWindow()
 
   app.on('activate', () => {

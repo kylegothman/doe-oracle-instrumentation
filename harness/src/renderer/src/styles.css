@@ -20,3 +20,27 @@ h1 {
   font-size: 1.75rem;
   margin: 0 0 0.5rem;
 }
+
+h2 {
+  font-size: 1.125rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.app-info {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+
+.app-info dt {
+  font-weight: 600;
+}
+
+.app-info dd {
+  margin: 0;
+}
+
+.error {
+  color: #b42318;
+}
