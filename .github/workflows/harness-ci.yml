@@ -1,0 +1,68 @@
+# Lint, typecheck, unit tests, and a production bundle for the harness,
+# on Ubuntu and Windows, for every pull request that touches harness/
+# and for every push to main.
+#
+# Required status checks for branch protection (job names):
+#   harness-ci (ubuntu-latest)
+#   harness-ci (windows-latest)
+# harness-ci-skip.yml reports the same names on pull requests this
+# workflow does not run for, so those PRs are not blocked.
+name: harness-ci
+
+on:
+  pull_request:
+    paths:
+      - 'harness/**'
+      - '.github/workflows/harness-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'harness/**'
+      - '.github/workflows/harness-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: harness
+
+jobs:
+  check:
+    name: harness-ci (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      # None of these steps launch Electron, so skip the 100 MB runtime
+      # download that `npm ci` would otherwise trigger.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: harness/.nvmrc
+          cache: npm
+          cache-dependency-path: harness/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
