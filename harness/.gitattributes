@@ -1,0 +1,9 @@
+# Keep LF line endings in the repo so lint and diffs behave the same on Windows and macOS.
+* text=auto eol=lf
+
+# Binary assets
+*.ico binary
+*.icns binary
+*.png binary
+*.jpg binary
+*.db binary
