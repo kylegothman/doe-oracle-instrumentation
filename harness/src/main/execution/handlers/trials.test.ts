@@ -7,21 +7,21 @@ const record = { trialId: 't', testNumber: 1 } as Trial
 
 describe('trial:start handler', () => {
   it('runs the trial through the controller once it is ready', async () => {
-    const runTrial = vi.fn(async () => record)
-    const handler = createStartTrialHandler(async () => ({ runTrial }))
+    const startTrial = vi.fn(async () => record)
+    const handler = createStartTrialHandler(async () => ({ startTrial }))
 
     await expect(handler(Subject.DOE_ORACLE, 1)).resolves.toBe(record)
-    expect(runTrial).toHaveBeenCalledWith(Subject.DOE_ORACLE, 1)
+    expect(startTrial).toHaveBeenCalledWith(Subject.DOE_ORACLE, 1)
   })
 
   it('rejects an unknown subject or a bad question number before touching the controller', async () => {
-    const runTrial = vi.fn(async () => record)
-    const handler = createStartTrialHandler(async () => ({ runTrial }))
+    const startTrial = vi.fn(async () => record)
+    const handler = createStartTrialHandler(async () => ({ startTrial }))
 
     await expect(handler('bing' as Subject, 1)).rejects.toThrow(/Unknown subject "bing"/)
     await expect(handler(Subject.DOE_ORACLE, 0)).rejects.toThrow(/positive integer/)
     await expect(handler(Subject.DOE_ORACLE, 1.5)).rejects.toThrow(/positive integer/)
-    expect(runTrial).not.toHaveBeenCalled()
+    expect(startTrial).not.toHaveBeenCalled()
   })
 
   it('passes a failed database open through as the error', async () => {

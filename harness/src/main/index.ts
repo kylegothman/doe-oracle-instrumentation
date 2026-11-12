@@ -13,12 +13,22 @@ import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { createListTrialsHandler, createStartTrialHandler } from './execution/handlers/trials'
 import { IpcRouter } from './execution/ipc-router'
+import { QuestionBank } from './execution/question-bank'
 import { SessionManager } from './execution/session-manager'
 import { TimingService } from './execution/timing-service'
 import { TrialController } from './execution/trial-controller'
 
 /** The one Chromium instance the harness drives. Launched on first use, closed on quit. */
 const browserManager = new BrowserManager()
+
+/**
+ * The 12 standard questions ship in config/questions.json: next to
+ * package.json during development, under resources/ in the packaged app
+ * (see extraResources in electron-builder.yml).
+ */
+function questionsConfigPath(): string {
+  return join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'config', 'questions.json')
+}
 
 /** Opens harness.db under the per-user app data folder and applies migrations. */
 async function openRepository(): Promise<MetricsRepository> {
@@ -48,11 +58,27 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRo
     console.log(`[session] ${started.sessionId} started ${started.startedAt} (harness ${started.appVersion})`)
     return session
   })
-  const controllerReady = Promise.all([repositoryReady, sessionReady]).then(
-    ([repository, session]) => new TrialController({ adapters, timing: new TimingService(), repository, session }),
-  )
+  // Read once at startup; a bad file makes every trial:start report the problem.
+  const questionsReady = Promise.resolve().then(() => QuestionBank.load(questionsConfigPath()))
+  questionsReady.catch((error: unknown) => {
+    console.error(`[questions] ${error instanceof Error ? error.message : String(error)}`)
+  })
 
-  const router = new IpcRouter(ipcMain)
+  const router = new IpcRouter(ipcMain, {
+    eventTargets: () => BrowserWindow.getAllWindows().map((window) => window.webContents),
+  })
+  const controllerReady = Promise.all([repositoryReady, sessionReady, questionsReady]).then(
+    ([repository, session, questions]) =>
+      new TrialController({
+        adapters,
+        questions,
+        timing: new TimingService(),
+        repository,
+        session,
+        timeouts: settings.trialTimeouts,
+        events: router,
+      }),
+  )
   router.register(IpcChannels.getAppInfo, createGetAppInfoHandler(app))
   router.register(IpcChannels.getSqliteStatus, createGetSqliteStatusHandler(sqliteStatus))
   router.register(IpcChannels.getSession, createGetSessionHandler(() => sessionReady))

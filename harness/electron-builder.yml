@@ -21,6 +21,15 @@ files:
   - '!**/node_modules/better-sqlite3/{deps,src}/**'
   - '!**/node_modules/better-sqlite3/{binding.gyp,README.md}'
 
+# The questions config is read from disk at startup (QuestionBank.load), so
+# it ships next to the app's resources instead of inside the bundle:
+# resources/config/questions.json in the installed app.
+extraResources:
+  - from: config
+    to: config
+    filter:
+      - questions.json
+
 # Native modules cannot be loaded from inside the asar archive.
 asarUnpack:
   - '**/*.node'

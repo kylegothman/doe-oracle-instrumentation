@@ -1,6 +1,6 @@
 import type { Session } from './session'
 import type { Subject } from './subjects'
-import type { Trial } from './trials'
+import type { Trial, TrialEvent } from './trials'
 
 /**
  * The contract between the renderer and the main process.
@@ -56,6 +56,24 @@ export const IpcChannels = {
   listTrials: 'trials:list',
 } as const satisfies Record<string, IpcChannel>
 
+/**
+ * Events the main process pushes to the renderer without being asked.
+ * The payload type is what the renderer's listener receives.
+ */
+export interface IpcEvents {
+  'trial:event': TrialEvent
+}
+
+export type IpcEventChannel = keyof IpcEvents
+export type IpcEventPayload<C extends IpcEventChannel> = IpcEvents[C]
+
+export const IpcEventChannels = {
+  trialEvent: 'trial:event',
+} as const satisfies Record<string, IpcEventChannel>
+
+/** Returned by every subscription; call it to stop listening. */
+export type Unsubscribe = () => void
+
 /** The property name the preload script exposes on `window`. */
 export const HARNESS_API_KEY = 'harness' as const
 
@@ -71,4 +89,6 @@ export interface HarnessApi {
   startTrial(subject: Subject, questionNumber: number): Promise<Trial>
   /** Lists saved trials, newest first, for one session or for all sessions. */
   listTrials(sessionId?: string): Promise<Trial[]>
+  /** Receives the running trial's status events. Returns the function that unsubscribes. */
+  onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }

@@ -1,0 +1,16 @@
+{
+  "questions": [
+    { "number": 1, "text": "What is combinatorial testing?" },
+    { "number": 2, "text": "What makes combinatorial testing cost effective?" },
+    { "number": 3, "text": "Explain what interaction failures means." },
+    { "number": 4, "text": "What is the difference between exhaustive testing and combinatorial testing?" },
+    { "number": 5, "text": "Define the IPOG algorithm." },
+    { "number": 6, "text": "How does combinatorial testing find multi-factor faults?" },
+    { "number": 7, "text": "How can combinatorial testing detect more faults than functional testing and random testing?" },
+    { "number": 8, "text": "How does combinatorial testing relate to MC/DC coverage?" },
+    { "number": 9, "text": "If a system has 4 parameters with 3 values each, how many tests does exhaustive testing need, compared to pairwise testing?" },
+    { "number": 10, "text": "Why does combinatorial testing guarantee that all faults are found?" },
+    { "number": 11, "text": "What is mutation testing?" },
+    { "number": 12, "text": "What is the global broadband speed test?" }
+  ]
+}

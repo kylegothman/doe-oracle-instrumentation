@@ -4,7 +4,10 @@
     "chatPath": "/chat",
     "searchEndpointPath": "/api/search"
   },
-  "questions": [
-    { "number": 1, "text": "What is combinatorial testing?" }
-  ]
+  "trialTimeoutMs": 60000,
+  "subjects": {
+    "DOE_ORACLE": { "timerStartsAt": "trial_start" },
+    "COPILOT": { "timerStartsAt": "submit" },
+    "GOOGLE": { "timerStartsAt": "submit" }
+  }
 }

@@ -117,3 +117,23 @@ button:disabled {
   padding: 0.25rem 0.5rem;
   border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
 }
+
+.events {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+}
+
+.event-status {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.events li[data-status='failed'],
+.events li[data-status='aborted'] {
+  color: #b42318;
+}
+
+.events li[data-status='completed'] {
+  color: #067647;
+}

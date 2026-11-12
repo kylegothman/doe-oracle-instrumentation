@@ -11,7 +11,7 @@ const LIST_LIMIT = 20
  * promise because the database it saves to is opened after startup.
  */
 export function createStartTrialHandler(
-  controller: () => Promise<Pick<TrialController, 'runTrial'>>,
+  controller: () => Promise<Pick<TrialController, 'startTrial'>>,
 ): (subject: Subject, questionNumber: number) => Promise<Trial> {
   return async (subject, questionNumber) => {
     if (!isSubject(subject)) {
@@ -20,7 +20,7 @@ export function createStartTrialHandler(
     if (!Number.isInteger(questionNumber) || questionNumber < 1) {
       throw new Error(`Question number must be a positive integer, got ${String(questionNumber)}`)
     }
-    return (await controller()).runTrial(subject, questionNumber)
+    return (await controller()).startTrial(subject, questionNumber)
   }
 }
 
