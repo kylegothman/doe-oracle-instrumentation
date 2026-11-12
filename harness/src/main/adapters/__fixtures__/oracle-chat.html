@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>DOE Oracle chat (test fixture)</title>
+    <!--
+      Mimics doe-frontend/src/pages/Chat.tsx closely enough for the adapter:
+      a greeting bubble, the question input, an icon-only Send button that is
+      disabled while empty or loading, Enter to submit, a POST to /api/search,
+      and an answer bubble with citation lines and a Copy/Helpful/Not helpful
+      button row. Like a UI that renders progressively, the bubble is attached
+      first and its text is filled on the next animation frame.
+    -->
+  </head>
+  <body>
+    <div id="messages">
+      <div class="flex items-start space-x-2">
+        <div class="bg-gray-800/70 border rounded-2xl">
+          <p class="text-gray-100 text-sm leading-relaxed">Hello! I'm the DOE Oracle. Ask me anything about software testing.</p>
+          <div class="mt-2 flex items-center space-x-2">
+            <button title="Copy">c</button>
+            <button title="Helpful">+</button>
+            <button title="Not helpful">-</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="input-bar">
+      <input type="text" placeholder="Ask DOE anything..." />
+      <button id="send" disabled><svg width="10" height="10"><path d="M0 0L10 5L0 10Z" /></svg></button>
+    </div>
+    <script>
+      const input = document.querySelector('input')
+      const send = document.getElementById('send')
+      const messages = document.getElementById('messages')
+      let loading = false
+
+      function el(tag, className) {
+        const node = document.createElement(tag)
+        if (className) node.className = className
+        return node
+      }
+
+      function render() {
+        send.disabled = loading || !input.value.trim()
+        input.disabled = loading
+      }
+
+      function addUser(text) {
+        const wrap = el('div', 'flex justify-end')
+        const bubble = el('div', 'bg-purple-700/60 rounded-2xl')
+        const p = el('p', 'text-white text-sm leading-relaxed')
+        p.textContent = text
+        bubble.append(p)
+        wrap.append(bubble)
+        messages.append(wrap)
+      }
+
+      function addSystem(text) {
+        const node = el('div', 'text-center text-xs text-gray-500 italic py-1')
+        node.textContent = text
+        messages.append(node)
+      }
+
+      function addBot(summary, results) {
+        const wrap = el('div', 'flex items-start space-x-2')
+        const bubble = el('div', 'bg-gray-800/70 border rounded-2xl')
+        const p = el('p', 'text-gray-100 text-sm leading-relaxed')
+        bubble.append(p)
+        if (results && results.length > 0) {
+          const cites = el('div', 'mt-2 pt-2 border-t space-y-0.5')
+          for (const r of results) {
+            const line = el('p', 'text-xs text-blue-400')
+            line.textContent = '📄 ' + r.source + ' · p.' + r.page
+            cites.append(line)
+          }
+          bubble.append(cites)
+        }
+        const row = el('div', 'mt-2 flex items-center space-x-2')
+        for (const title of ['Copy', 'Helpful', 'Not helpful']) {
+          const b = el('button')
+          b.title = title
+          b.textContent = title[0]
+          row.append(b)
+        }
+        bubble.append(row)
+        wrap.append(bubble)
+        messages.append(wrap)
+        requestAnimationFrame(() => {
+          p.textContent = summary
+        })
+      }
+
+      async function search(query) {
+        if (!query.trim() || loading) return
+        addUser(query)
+        input.value = ''
+        loading = true
+        render()
+        try {
+          const response = await fetch('/api/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query }),
+          })
+          const data = await response.json()
+          if (!response.ok || data.error) throw new Error(data.error || 'Server error: ' + response.status)
+          addBot(data.summary, data.results)
+        } catch (err) {
+          addSystem('Error searching for "' + query + '": ' + err.message)
+        } finally {
+          loading = false
+          render()
+        }
+      }
+
+      input.addEventListener('input', render)
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          search(input.value)
+        }
+      })
+      send.addEventListener('click', () => search(input.value))
+      render()
+    </script>
+  </body>
+</html>

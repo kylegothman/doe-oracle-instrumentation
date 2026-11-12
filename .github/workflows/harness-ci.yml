@@ -33,10 +33,16 @@ jobs:
   check:
     name: harness-ci (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            playwright-browsers: ~/.cache/ms-playwright
+          - os: windows-latest
+            playwright-browsers: ~\AppData\Local\ms-playwright
     env:
       # None of these steps launch Electron, so skip the 100 MB runtime
       # download that `npm ci` would otherwise trigger.
@@ -84,6 +90,29 @@ jobs:
       - name: Install
         if: steps.scope.outputs.run == 'true'
         run: npm ci
+
+      # The adapter tests drive real Chromium. Only the headless shell is
+      # needed here, and it is cached per Playwright version. The shared
+      # libraries it needs are already on ubuntu-latest (`playwright
+      # install-deps` only tried to add fonts there), so no apt step: one
+      # less thing that can hang when a runner loses its network.
+      - name: Read the Playwright version
+        if: steps.scope.outputs.run == 'true'
+        id: playwright
+        shell: bash
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        if: steps.scope.outputs.run == 'true'
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ matrix.playwright-browsers }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium headless shell
+        if: steps.scope.outputs.run == 'true' && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --only-shell chromium
 
       - name: Lint
         if: steps.scope.outputs.run == 'true'

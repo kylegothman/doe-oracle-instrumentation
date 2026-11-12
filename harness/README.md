@@ -12,6 +12,8 @@ Stack: Electron, React + TypeScript built by Vite through electron-vite, SQLite 
 
 No C++ build tools are needed. Native modules used by the harness ship prebuilt binaries.
 
+The harness drives the systems under test through Playwright's Chromium, which is downloaded separately from npm (see Setup).
+
 ### Windows 11
 
 1. Install Node 26 LTS with one of:
@@ -33,8 +35,11 @@ No C++ build tools are needed. Native modules used by the harness ship prebuilt 
 ```bash
 cd harness
 npm install
+npm run setup:browser
 npm run dev
 ```
+
+`npm run setup:browser` downloads the Chromium build that matches the pinned Playwright version (about 250 MB) into Playwright's browser cache: `~/Library/Caches/ms-playwright` on macOS, `%LOCALAPPDATA%\ms-playwright` on Windows. Run it once per Playwright upgrade. Without it, launching a trial fails with a message that names this script.
 
 `npm run dev` opens the harness window. It reloads the UI as you edit renderer files and restarts the main process when main or preload files change.
 
@@ -51,11 +56,12 @@ Run these from the `harness` folder.
 | `npm run preview` | Launches Electron against the last `out/` build, without watch mode. |
 | `npm run lint` | Runs ESLint over the harness. Fails on any error. |
 | `npm run typecheck` | Runs the TypeScript compiler over the Node-side code (main, preload, shared) and the browser-side code (renderer, shared) without emitting files. |
-| `npm test` | Runs the Vitest unit tests once. |
+| `npm test` | Runs the Vitest unit tests once. The adapter tests drive a real headless Chromium, so run `npm run setup:browser` first. |
+| `npm run setup:browser` | Downloads Playwright's Chromium (headed and headless builds) for this machine. |
 | `npm run dist:win` | Builds and packages the Windows MSI installer into `release/`. Windows only. |
 | `npm run dist:dir` | Builds and packages an unpacked app for the current OS into `release/`, for a quick local check of the packaged app without an installer. |
 
-Run `lint`, `typecheck`, `test`, and `build` before opening a pull request. Continuous integration runs the same four on Ubuntu and Windows.
+Run `lint`, `typecheck`, `test`, and `build` before opening a pull request. Continuous integration runs the same four on Ubuntu and Windows, installing Playwright's Chromium headless shell (cached per Playwright version) before the tests.
 
 ## Project layout
 
@@ -70,10 +76,11 @@ harness/
   src/
     main/                   Electron main process (Node)
       index.ts              app lifecycle and window creation
-      execution/            test run orchestration and IPC routing
-      adapters/             one adapter per system under test
-      browser/              browser automation
-      data/                 SQLite storage and exports
+      execution/            IpcRouter, TimingService, SessionManager, TrialController, IPC handlers
+      adapters/             one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
+      browser/              BrowserManager: launches and owns the Playwright Chromium window
+      config/               settings (Oracle URL) and the question config
+      data/                 MetricsRepository (SQLite, versioned migrations) and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
     shared/                 types shared by main, preload, and renderer
@@ -97,6 +104,47 @@ The contract lives in `src/shared/ipc.ts` and is imported by all three sides, so
 4. Forward it in `src/preload/index.ts` by adding the method to `harnessApi`.
 
 Only plain data that survives `structuredClone` may cross the bridge.
+
+## Browser automation
+
+`BrowserManager` (`src/main/browser`) launches one headed Chromium window through Playwright from the Electron main process, gives each system under test its own browser context and page, and closes the browser when the harness quits. The window is headed on purpose: the Tester watches the trial happen.
+
+The Oracle's address is a setting. The default, `http://localhost:5173`, is in `src/shared/harness-config.json`; set `HARNESS_ORACLE_URL` to point somewhere else, for example `HARNESS_ORACLE_URL=http://127.0.0.1:4173 npm run dev`. The chat page is `/chat` under that URL. If the Oracle is not running, the harness reports "Could not reach the DOE Oracle at ..." instead of failing silently.
+
+Playwright's Chromium lives in the user's cache, not in the app, so the MSI does not include it yet (tracked in #44).
+
+## Running a trial (walking skeleton)
+
+1. Start the Oracle: its Flask backend and its Vite frontend (see the repository README). The harness only needs the frontend URL, `http://localhost:5173` by default.
+2. From `harness/`, run `npm run dev` and click **Run Oracle trial (Q1)**.
+3. A Chromium window opens on the Oracle chat page. The harness types "What is combinatorial testing?", presses Enter, and waits for the answer.
+4. The result panel shows begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. The saved-trials table below it reads back from the database, so a trial from an earlier launch is still listed.
+
+If the Oracle is not running, the panel shows "Could not reach the DOE Oracle at http://localhost:5173/chat. Make sure it is running, then try again." If the Oracle's backend is down, the page's own error ("Error searching for ...") is reported instead.
+
+### What happens underneath
+
+`TrialController` (`src/main/execution/trial-controller.ts`) runs one trial at a time: it takes the subject's page from `BrowserManager`, hands it to `OracleAdapter`, records the three timing marks with `TimingService`, captures the answer, and saves the trial through `MetricsRepository`. `SessionManager` gives each launch one session UUID and builds the data set name as subject code plus local date, for example `DOE_ORACLE-2026-11-11`. The question text comes from `src/shared/harness-config.json`.
+
+The database is `harness.db` in Electron's per-user app data folder (`app.getPath('userData')`): `~/Library/Application Support/DOE Oracle Test Harness/` on macOS and `%APPDATA%\DOE Oracle Test Harness\` on Windows. The main log prints the exact path at startup. The schema is versioned in `MetricsRepository`; version 1 creates the `trials` table with `trial_id`, `test_number`, `session_id`, `data_set_name`, `subject`, `question_number`, `status`, `begin_ts`, `first_response_ts`, `end_ts`, `response_ms`, `first_response_ms`, `answer_text`, and `citations` (a JSON array). Delete the file to start over.
+
+The 60-second timeout, failure classification, and the other subjects are later epics; the code marks each with a TODO naming its issue.
+
+## Driving the Oracle
+
+`OracleAdapter` (`src/main/adapters/oracle-adapter.ts`) opens the Oracle chat page, types the question into the input (found by its placeholder), checks the typed text matches exactly, and submits with Enter, which runs the same handler as the icon-only Send button. It then waits for a new answer bubble, found through the per-answer "Copy" button, and reads the answer text without citation lines and buttons, plus the citation lines. The selectors live in `ORACLE_SELECTORS` with a note on why each one was chosen; the Oracle's own code is never changed.
+
+Trials are timed from the browser's own events, not from the Oracle's code:
+
+| Event | When | Clock |
+| --- | --- | --- |
+| begin | the POST to `/api/search` leaves the page (Playwright `request` event; the CORS preflight is not a POST) | main process |
+| first response | that request's response arrives (`response` event) | main process |
+| end | the answer text is on the page | the page's own `Date.now()` |
+
+`TimingService` (`src/main/execution/timing-service.ts`) records these marks per trial and converts them for storage: `toIso()` gives ISO 8601 UTC with milliseconds and `durationMs()` whole milliseconds. Both clocks are the same system clock on the same machine, so the marks are directly comparable.
+
+The adapter test serves a small copy of the chat page from `src/main/adapters/__fixtures__/oracle-chat.html` and fakes `/api/search` with a delay through `page.route`, so it needs no Oracle and no Ollama, only Playwright's Chromium.
 
 ## Storage check at startup
 

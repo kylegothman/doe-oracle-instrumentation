@@ -1,10 +1,16 @@
 import { useEffect, useState } from 'react'
-import type { AppInfo, SqliteStatus } from '../../shared/ipc'
+import type { AppInfo, SqliteStatus, TrialRecord } from '../../shared/ipc'
 
 type Loadable<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string }
 
+/** Electron prefixes errors that cross the bridge; show only the handler's own message. */
+function describeError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  return raw.replace(/^Error invoking remote method '[^']+': /, '').replace(/^\w*Error: /, '')
+}
+
 /** Calls one bridge method on mount and tracks loading, value, and failure. */
-function useBridgeCall<T>(call: () => Promise<T>): Loadable<T> {
+function useBridgeCall<T>(call: () => Promise<T>, refreshKey = 0): Loadable<T> {
   const [state, setState] = useState<Loadable<T>>({ status: 'loading' })
 
   useEffect(() => {
@@ -17,15 +23,14 @@ function useBridgeCall<T>(call: () => Promise<T>): Loadable<T> {
         if (!cancelled) setState({ status: 'ready', value })
       })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error)
-        if (!cancelled) setState({ status: 'error', message })
+        if (!cancelled) setState({ status: 'error', message: describeError(error) })
       })
     return () => {
       cancelled = true
     }
-    // The bridge methods are stable; each hook call binds one of them for the component's life.
+    // The bridge methods are stable; the call is re-run only when refreshKey changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [refreshKey])
 
   return state
 }
@@ -82,13 +87,140 @@ function SqlitePanel({ sqlite }: { sqlite: Loadable<SqliteStatus> }) {
   )
 }
 
+type TrialRunState =
+  | { status: 'idle' }
+  | { status: 'running' }
+  | { status: 'done'; trial: TrialRecord }
+  | { status: 'error'; message: string }
+
+const ANSWER_PREVIEW_CHARS = 400
+
+function TrialResult({ trial }: { trial: TrialRecord }) {
+  const preview =
+    trial.answerText && trial.answerText.length > ANSWER_PREVIEW_CHARS
+      ? `${trial.answerText.slice(0, ANSWER_PREVIEW_CHARS)}…`
+      : (trial.answerText ?? '(no answer text)')
+  return (
+    <div className="result" data-testid="trial-result">
+      <dl className="facts">
+        <dt>Test number</dt>
+        <dd data-testid="trial-test-number">{trial.testNumber}</dd>
+        <dt>Data set</dt>
+        <dd>{trial.dataSetName}</dd>
+        <dt>Begin</dt>
+        <dd data-testid="trial-begin">{trial.beginTs}</dd>
+        <dt>First response</dt>
+        <dd data-testid="trial-first-response">{trial.firstResponseTs}</dd>
+        <dt>End</dt>
+        <dd data-testid="trial-end">{trial.endTs}</dd>
+        <dt>Response time</dt>
+        <dd data-testid="trial-response-ms">{trial.responseMs} ms</dd>
+        <dt>Time to first response</dt>
+        <dd data-testid="trial-first-response-ms">{trial.firstResponseMs} ms</dd>
+        <dt>Citations</dt>
+        <dd>{trial.citations.length > 0 ? trial.citations.join('; ') : 'none'}</dd>
+      </dl>
+      <p className="answer-preview" data-testid="trial-answer">
+        {preview}
+      </p>
+    </div>
+  )
+}
+
+function TrialPanel({ onSaved }: { onSaved: () => void }) {
+  const [run, setRun] = useState<TrialRunState>({ status: 'idle' })
+
+  const startTrial = () => {
+    setRun({ status: 'running' })
+    window.harness
+      .startTrial('oracle', 1)
+      .then((trial) => {
+        setRun({ status: 'done', trial })
+        onSaved()
+      })
+      .catch((error: unknown) => setRun({ status: 'error', message: describeError(error) }))
+  }
+
+  return (
+    <section aria-labelledby="trial-heading">
+      <h2 id="trial-heading">Oracle trial</h2>
+      <p>
+        Asks question 1, "What is combinatorial testing?", in a Chromium window the harness controls, times it
+        from browser events, and saves the trial.
+      </p>
+      <button type="button" onClick={startTrial} disabled={run.status === 'running'} data-testid="run-oracle-trial">
+        {run.status === 'running' ? 'Running Oracle trial…' : 'Run Oracle trial (Q1)'}
+      </button>
+      {run.status === 'running' && (
+        <p data-testid="trial-running">Watch the Chromium window. The question is typed and submitted for you.</p>
+      )}
+      {run.status === 'error' && (
+        <p role="alert" className="error" data-testid="trial-error">
+          {run.message}
+        </p>
+      )}
+      {run.status === 'done' && <TrialResult trial={run.trial} />}
+    </section>
+  )
+}
+
+function SavedTrials({ refreshKey }: { refreshKey: number }) {
+  const trials = useBridgeCall(() => window.harness.listTrials(), refreshKey)
+
+  return (
+    <section aria-labelledby="saved-heading">
+      <h2 id="saved-heading">Saved trials</h2>
+      {trials.status === 'loading' && <p>Loading saved trials…</p>}
+      {trials.status === 'error' && (
+        <p role="alert" className="error" data-testid="saved-trials-error">
+          Could not list saved trials: {trials.message}
+        </p>
+      )}
+      {trials.status === 'ready' && trials.value.length === 0 && (
+        <p data-testid="saved-trials-empty">No trials saved yet.</p>
+      )}
+      {trials.status === 'ready' && trials.value.length > 0 && (
+        <table className="trials" data-testid="saved-trials">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Subject</th>
+              <th>Q</th>
+              <th>Status</th>
+              <th>Response</th>
+              <th>Begin</th>
+              <th>Session</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trials.value.map((trial) => (
+              <tr key={trial.trialId}>
+                <td>{trial.testNumber}</td>
+                <td>{trial.subject}</td>
+                <td>{trial.questionNumber}</td>
+                <td>{trial.status}</td>
+                <td>{trial.responseMs ?? '–'} ms</td>
+                <td>{trial.beginTs}</td>
+                <td title={trial.sessionId}>{trial.sessionId.slice(0, 8)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  )
+}
+
 export function App() {
   const appInfo = useBridgeCall(() => window.harness.getAppInfo())
   const sqlite = useBridgeCall(() => window.harness.getSqliteStatus())
+  const [savedVersion, setSavedVersion] = useState(0)
 
   return (
     <main className="app">
       <h1>DOE Oracle Test Harness</h1>
+      <TrialPanel onSaved={() => setSavedVersion((v) => v + 1)} />
+      <SavedTrials refreshKey={savedVersion} />
       <AppInfoPanel appInfo={appInfo} />
       <SqlitePanel sqlite={sqlite} />
     </main>
