@@ -143,7 +143,7 @@ function TrialResult({ trial }: { trial: Trial }) {
   const preview =
     trial.answerText && trial.answerText.length > ANSWER_PREVIEW_CHARS
       ? `${trial.answerText.slice(0, ANSWER_PREVIEW_CHARS)}…`
-      : (trial.answerText ?? '(no answer text)')
+      : trial.answerText || '(no answer text)'
   return (
     <div className="result" data-testid="trial-result">
       <dl className="facts">
@@ -158,7 +158,24 @@ function TrialResult({ trial }: { trial: Trial }) {
         <dt>End</dt>
         <dd data-testid="trial-end">{trial.endTs}</dd>
         <dt>Status</dt>
-        <dd data-testid="trial-status">{trial.status}</dd>
+        <dd data-testid="trial-status">
+          {trial.status}
+          {trial.failure && (
+            <>
+              {' '}
+              · <strong data-testid="trial-failure-type">{trial.failure.type}</strong> after{' '}
+              {formatSeconds(trial.failure.elapsedMs)}
+            </>
+          )}
+        </dd>
+        {trial.failure && (
+          <>
+            <dt>Failure</dt>
+            <dd className="error" data-testid="trial-failure-message">
+              {trial.failure.message}
+            </dd>
+          </>
+        )}
         <dt>Response time</dt>
         <dd data-testid="trial-response-ms">{trial.responseMs === null ? '–' : `${trial.responseMs} ms`}</dd>
         <dt>Time to first response</dt>
@@ -252,7 +269,10 @@ function SavedTrials({ refreshKey }: { refreshKey: number }) {
                 <td>{trial.testNumber}</td>
                 <td>{trial.subject}</td>
                 <td>{trial.questionNumber}</td>
-                <td>{trial.status}</td>
+                <td title={trial.failure?.message}>
+                  {trial.status}
+                  {trial.failure && ` · ${trial.failure.type}`}
+                </td>
                 <td>{trial.responseMs === null ? '–' : `${trial.responseMs} ms`}</td>
                 <td>{trial.beginTs}</td>
                 <td title={trial.sessionId}>{trial.sessionId.slice(0, 8)}</td>

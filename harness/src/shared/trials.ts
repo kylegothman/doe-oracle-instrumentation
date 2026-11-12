@@ -10,6 +10,15 @@ export enum TrialStatus {
   NO_ANSWER_FOUND = 'NO_ANSWER_FOUND',
 }
 
+/** Why a trial failed: the failed_requests row that goes with a FAILED trial. */
+export interface TrialFailure {
+  type: FailureType
+  /** What was observed, for the report: an HTTP status, a network error, the time limit. */
+  message: string
+  /** Milliseconds from the trial's start to the failure. */
+  elapsedMs: number
+}
+
 /**
  * One saved trial. Field names are camelCase here and snake_case in the
  * trials table (trial_id, test_number, ...). Timestamps are ISO 8601 UTC
@@ -35,6 +44,8 @@ export interface Trial {
   firstResponseMs: number | null
   answerText: string | null
   citations: string[]
+  /** Present when status is FAILED. */
+  failure?: TrialFailure
 }
 
 /**

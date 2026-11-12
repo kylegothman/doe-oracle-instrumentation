@@ -2,11 +2,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type Page, type Route } from 'playwright'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import type { FailureSignal } from '../../shared/failures'
+import { FailureType, type FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import { Subject } from '../../shared/subjects'
 import { SubjectUnreachableError } from '../browser/navigation'
 import type { OracleSettings } from '../config/settings'
+import { FailureDetector } from '../execution/failure-detector'
 import { AdapterDisposedError, OracleAdapter, OracleAnswerError, type OracleAdapterOptions } from './oracle-adapter'
 
 const FIXTURE_HTML = readFileSync(fileURLToPath(new URL('./__fixtures__/oracle-chat.html', import.meta.url)), 'utf8')
@@ -17,6 +18,7 @@ const RESULTS = [
   { quote: 'q2', source: 'How does combinatorial testing perform in the real world.pdf', page: '12', supports: 'yes' },
 ]
 const SETTINGS: OracleSettings = { baseUrl: 'http://oracle.test', chatPath: '/chat', searchEndpointPath: '/api/search' }
+const detector = new FailureDetector()
 const BROWSER_TEST_TIMEOUT_MS = 30_000
 
 /** Serves the fixture page and fakes the search endpoint with a delay, recording what the page sent. */
@@ -155,15 +157,54 @@ describe('OracleAdapter against the chat fixture', () => {
   )
 
   it(
-    'reports the Oracle error message instead of waiting for an answer that never comes',
+    'reports a 500 from the search endpoint as an error response, with first response still stamped',
     async () => {
       await serveFakeOracle(page, { delayMs: 50, status: 500, body: { error: 'Internal server error' } })
       const adapter = adapterWith({ answerTimeoutMs: 5_000 })
 
-      await adapter.start(QUESTION)
+      const beginMs = await adapter.start(QUESTION)
+      const firstResponseMs = await adapter.waitForFirstResponse()
 
+      expect(firstResponseMs).toBeGreaterThanOrEqual(beginMs)
+      expect(signals).toEqual([{ httpStatus: 500, timedOut: false }])
+      expect(detector.classify(signals[0]!)).toBe(FailureType.ERROR_RESPONSE)
+      // The page shows its own error line and no answer ever comes.
       await expect(adapter.waitForCompletion()).rejects.toThrow(OracleAnswerError)
       await expect(adapter.waitForCompletion()).rejects.toThrow(/Error searching for .*Internal server error/)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports an answer bubble that stays empty as an empty answer, with end stamped when it appeared',
+    async () => {
+      await serveFakeOracle(page, { delayMs: 50, body: { summary: '', results: [] } })
+      const adapter = adapterWith()
+
+      await adapter.start(QUESTION)
+      const firstResponseMs = await adapter.waitForFirstResponse()
+      const endMs = await adapter.waitForCompletion()
+      const answer = await adapter.captureAnswer()
+
+      expect(endMs).toBeGreaterThanOrEqual(firstResponseMs)
+      expect(answer).toEqual({ text: '', citations: [], sourceUrl: 'http://oracle.test/chat' })
+      expect(signals).toEqual([{ answerText: '', timedOut: false }])
+      expect(detector.classify(signals[0]!)).toBe(FailureType.EMPTY_ANSWER)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'treats a refusal as an answer and reports no failure',
+    async () => {
+      await serveFakeOracle(page, { delayMs: 50, body: { summary: "I can't answer that question.", results: [] } })
+      const adapter = adapterWith()
+
+      await adapter.start(QUESTION)
+      await adapter.waitForCompletion()
+
+      expect((await adapter.captureAnswer()).text).toBe("I can't answer that question.")
+      expect(signals).toEqual([])
     },
     BROWSER_TEST_TIMEOUT_MS,
   )
@@ -200,6 +241,7 @@ describe('OracleAdapter against the chat fixture', () => {
           timedOut: false,
         },
       ])
+      expect(detector.classify(signals[0]!)).toBe(FailureType.UNREACHABLE)
     },
     BROWSER_TEST_TIMEOUT_MS,
   )
@@ -216,6 +258,28 @@ describe('OracleAdapter against the chat fixture', () => {
       expect(signals[0]?.networkError).toMatch(
         /Could not reach the DOE Oracle at http:\/\/oracle\.test\/chat.*\(net::ERR_CONNECTION_REFUSED\)/,
       )
+      expect(detector.classify(signals[0]!)).toBe(FailureType.UNREACHABLE)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports the page showing an error before any request left as a network failure',
+    async () => {
+      await serveFakeOracle(page)
+      const adapter = adapterWith({ submitTimeoutMs: 5_000 })
+      // Make the page fail before fetch: its search handler throws, so it shows the error line and sends nothing.
+      await page.route('http://oracle.test/chat', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'text/html',
+          body: FIXTURE_HTML.replace("const response = await fetch(", "throw new TypeError('Failed to fetch'); const response = await fetch("),
+        }),
+      )
+
+      await expect(adapter.start(QUESTION)).rejects.toThrow(/could not send the search request: Error searching for .*Failed to fetch/)
+      expect(signals).toHaveLength(1)
+      expect(detector.classify(signals[0]!)).toBe(FailureType.UNREACHABLE)
     },
     BROWSER_TEST_TIMEOUT_MS,
   )

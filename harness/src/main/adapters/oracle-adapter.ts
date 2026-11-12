@@ -53,6 +53,10 @@ const DEFAULT_ANSWER_TIMEOUT_MS = 0
 const DEFAULT_SUBMIT_TIMEOUT_MS = 10_000
 const PAGE_OPEN_TIMEOUT_MS = 15_000
 const CANCEL_WATCH_TIMEOUT_MS = 1_000
+/** How often, while waiting for the search request to leave, the page is asked whether it showed an error instead. */
+const SUBMIT_POLL_MS = 100
+/** How long an empty answer bubble may stay empty, once the page is idle, before it counts as an empty answer. */
+const EMPTY_ANSWER_GRACE_MS = 250
 
 /** Promises for the two network-timed events of one submission, plus cleanup. */
 interface SearchRequestWatch {
@@ -62,7 +66,7 @@ interface SearchRequestWatch {
 }
 
 /** Shape of the values the in-page watchers return. */
-type PageWatchResult = { at: number } | { error: string } | { cancelled: true }
+type PageWatchResult = { at: number; empty?: true } | { error: string } | { cancelled: true }
 
 /** Everything one trial holds. dispose() releases it. */
 interface ActiveTrial {
@@ -90,8 +94,14 @@ interface ActiveTrial {
  *   inside `waitForFunction`).
  * The CORS preflight is not a POST, so it never counts as begin.
  *
- * Failures the adapter observes are reported through onFailure() and also
- * reject the pending promise; see SubjectAdapter.
+ * Failures the adapter observes are reported through onFailure() as
+ * FailureSignals and, where a promise is pending, also reject it:
+ * - the chat page cannot be loaded, or is not the Oracle: networkError;
+ * - the search request fails before any response (backend down): networkError;
+ * - the page shows its own error line before the request could even be
+ *   sent (a refused CORS preflight never reaches the request event): networkError;
+ * - the response has an HTTP status of 400 or higher: httpStatus;
+ * - the answer bubble stays empty once the page is idle: answerText ''.
  */
 export class OracleAdapter implements SubjectAdapter {
   readonly subject = Subject.DOE_ORACLE
@@ -138,12 +148,13 @@ export class OracleAdapter implements SubjectAdapter {
       throw new OracleAnswerError(`The Oracle input holds "${typed}" instead of the question`)
     }
 
+    await installPageHelpers(page)
     const watch = this.watchSearchRequest(page)
     trial.watch = watch
     try {
       await input.press('Enter')
       trial.submitted = true
-      return await this.untilDisposed(trial, watch.begin)
+      return await this.untilDisposed(trial, this.beginOrPageError(trial, page, watch.begin))
     } catch (error) {
       watch.dispose()
       trial.watch = null
@@ -169,8 +180,19 @@ export class OracleAdapter implements SubjectAdapter {
         const bubbles = document.querySelectorAll(args.answerBubble)
         if (bubbles.length <= args.bubblesBefore) return false
         const bubble = bubbles[bubbles.length - 1]
-        const text = (bubble?.textContent ?? '').trim()
-        return text.length > 0 ? { at: Date.now() } : false
+        const text = bubble ? (window.__harnessAnswerText?.(bubble, args) ?? '') : ''
+        if (text.length > 0) return { at: Date.now() }
+        // The bubble is there but has no text. Once the page is idle again
+        // (its input re-enabled) and the text stays empty past the grace
+        // period, the Oracle answered with nothing.
+        const input = document.querySelector(args.input)
+        if (!(input instanceof HTMLInputElement) || input.disabled) return false
+        if (window.__harnessEmptySince === undefined) {
+          window.__harnessEmptySince = Date.now()
+          return false
+        }
+        if (Date.now() - window.__harnessEmptySince < args.emptyGraceMs) return false
+        return { at: window.__harnessEmptySince, empty: true }
       }),
     )
   }
@@ -277,12 +299,7 @@ export class OracleAdapter implements SubjectAdapter {
     watcher: (args: PageWatchArgs) => PageWatchResult | false,
   ): Promise<number> {
     await installPageHelpers(page)
-    const args: PageWatchArgs = {
-      answerBubble: ORACLE_SELECTORS.answerBubble,
-      systemMessage: ORACLE_SELECTORS.systemMessage,
-      bubblesBefore: trial.bubblesBefore,
-      systemMessagesBefore: trial.systemMessagesBefore,
-    }
+    const args = this.watchArgs(trial)
     let handle
     try {
       handle = await page.waitForFunction(watcher, args, { polling: 'raf', timeout: this.answerTimeoutMs })
@@ -299,7 +316,66 @@ export class OracleAdapter implements SubjectAdapter {
     if ('error' in result) {
       throw new OracleAnswerError(`The Oracle reported an error: ${result.error}`)
     }
+    if (result.empty) {
+      this.report({ answerText: '', timedOut: false })
+    }
     return result.at
+  }
+
+  private watchArgs(trial: ActiveTrial): PageWatchArgs {
+    return {
+      input: ORACLE_SELECTORS.input,
+      answerBubble: ORACLE_SELECTORS.answerBubble,
+      bubbleButtonRow: ORACLE_SELECTORS.bubbleButtonRow,
+      citationLine: ORACLE_SELECTORS.citationLine,
+      systemMessage: ORACLE_SELECTORS.systemMessage,
+      bubblesBefore: trial.bubblesBefore,
+      systemMessagesBefore: trial.systemMessagesBefore,
+      emptyGraceMs: EMPTY_ANSWER_GRACE_MS,
+    }
+  }
+
+  /**
+   * Resolves with begin when the search request leaves the page. While it
+   * has not, asks the page every SUBMIT_POLL_MS whether it showed its own
+   * error line instead; it does when the request could not be sent at all
+   * (for example the CORS preflight to a backend that is down), in which
+   * case Playwright never reports a request. That is a network failure.
+   */
+  private beginOrPageError(trial: ActiveTrial, page: Page, begin: Promise<number>): Promise<number> {
+    const args = this.watchArgs(trial)
+    return new Promise<number>((resolve, reject) => {
+      let settled = false
+      const stop = (): void => {
+        settled = true
+        clearInterval(poll)
+      }
+      const poll = setInterval(() => {
+        if (settled) return
+        page
+          .evaluate((a) => window.__harnessNewSystemError?.(a) ?? null, args)
+          .then((text) => {
+            if (settled || !text) return
+            stop()
+            const message = `The Oracle page could not send the search request: ${text}`
+            this.report({ networkError: message, timedOut: false })
+            reject(new OracleAnswerError(message))
+          })
+          .catch(() => undefined)
+      }, SUBMIT_POLL_MS)
+      begin.then(
+        (ms) => {
+          if (settled) return
+          stop()
+          resolve(ms)
+        },
+        (error: unknown) => {
+          if (settled) return
+          stop()
+          reject(error instanceof Error ? error : new Error(String(error)))
+        },
+      )
+    })
   }
 
   /**
@@ -336,7 +412,13 @@ export class OracleAdapter implements SubjectAdapter {
       resolveBegin(Date.now())
     }
     const onResponse = (response: Response): void => {
-      if (matched && response.request() === matched) resolveFirst(Date.now())
+      if (!matched || response.request() !== matched) return
+      // The response arrived, so first response is stamped even when it is an error.
+      resolveFirst(Date.now())
+      const status = response.status()
+      if (status >= 400) {
+        this.report({ httpStatus: status, timedOut: false })
+      }
     }
     const onRequestFailed = (request: Request): void => {
       if (request !== matched) return
@@ -383,11 +465,18 @@ function newActiveTrial(): ActiveTrial {
   return { page: null, bubblesBefore: 0, systemMessagesBefore: 0, submitted: false, watch: null, disposed, markDisposed }
 }
 
-/** Defines, once per page load, the helpers the in-page watchers use, and clears the cancel flag. */
+/** Defines, once per page load, the helpers the in-page watchers use, and resets the per-wait flags. */
 async function installPageHelpers(page: Page): Promise<void> {
   await page.evaluate(() => {
     window.__harnessCancelled = false
+    window.__harnessEmptySince = undefined
     if (window.__harnessNewSystemError) return
+    // The answer text of a bubble: everything but its button row and citation lines, as captureAnswer reads it.
+    window.__harnessAnswerText = (bubble, args) => {
+      const clone = bubble.cloneNode(true) as Element
+      clone.querySelectorAll(`${args.bubbleButtonRow}, ${args.citationLine}`).forEach((node) => node.remove())
+      return (clone.textContent ?? '').trim()
+    }
     window.__harnessNewSystemError = (args) => {
       const messages = document.querySelectorAll(args.systemMessage)
       if (messages.length <= args.systemMessagesBefore) return null
@@ -433,17 +522,25 @@ function seconds(ms: number): string {
 }
 
 interface PageWatchArgs {
+  input: string
   answerBubble: string
+  bubbleButtonRow: string
+  citationLine: string
   systemMessage: string
   bubblesBefore: number
   systemMessagesBefore: number
+  emptyGraceMs: number
 }
 
 declare global {
   interface Window {
     /** Installed by the adapter inside the Oracle page; see installPageHelpers. */
     __harnessNewSystemError?: (args: PageWatchArgs) => string | null
+    /** Installed by the adapter inside the Oracle page; the answer text of a bubble without its chrome. */
+    __harnessAnswerText?: (bubble: Element, args: PageWatchArgs) => string
     /** Set by dispose() so the in-page watcher stops polling. */
     __harnessCancelled?: boolean
+    /** When the completion watcher first saw an empty answer bubble on an idle page. */
+    __harnessEmptySince?: number
   }
 }

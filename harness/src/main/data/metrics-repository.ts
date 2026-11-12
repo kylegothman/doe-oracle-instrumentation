@@ -1,10 +1,11 @@
 import type BetterSqlite3 from 'better-sqlite3'
 import type { Session } from '../../shared/session'
 import type { Subject } from '../../shared/subjects'
-import type { Trial, TrialStatus } from '../../shared/trials'
+import type { FailureType } from '../../shared/failures'
+import { TrialStatus, type Trial, type TrialFailure } from '../../shared/trials'
 
-/** A trial to save. The repository assigns the test number. */
-export type NewTrial = Omit<Trial, 'testNumber'>
+/** A trial to save. The repository assigns the test number; the failure is passed separately. */
+export type NewTrial = Omit<Trial, 'testNumber' | 'failure'>
 
 export interface TrialListFilter {
   sessionId?: string
@@ -75,6 +76,21 @@ const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+
+  {
+    version: 4,
+    name: 'create failed_requests',
+    up(db) {
+      db.exec(`
+        CREATE TABLE failed_requests (
+          trial_id TEXT PRIMARY KEY REFERENCES trials (trial_id),
+          failure_type TEXT,
+          error_message TEXT,
+          elapsed_ms INTEGER
+        );
+      `)
+    },
+  },
 ]
 
 interface SessionRow {
@@ -98,6 +114,10 @@ interface TrialRow {
   first_response_ms: number | null
   answer_text: string | null
   citations: string | null
+  /** From the LEFT JOIN on failed_requests; null for a trial that did not fail. */
+  failure_type: string | null
+  error_message: string | null
+  elapsed_ms: number | null
 }
 
 /**
@@ -120,6 +140,8 @@ export class MetricsRepository {
     const db = new Database(filePath)
     db.pragma('journal_mode = WAL')
     db.pragma('busy_timeout = 5000')
+    // Off by default in SQLite; failed_requests.trial_id must point at a trial.
+    db.pragma('foreign_keys = ON')
     db.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -155,16 +177,30 @@ export class MetricsRepository {
     return applied
   }
 
-  /** Saves a trial with the next test number and returns the stored record. */
-  saveTrial(trial: NewTrial): Trial {
+  /**
+   * Saves a trial with the next test number and returns the stored record.
+   * A FAILED trial is saved together with its failure (a failed_requests
+   * row) in one transaction; any other status takes no failure.
+   */
+  saveTrial(trial: NewTrial, failure?: TrialFailure): Trial {
+    if ((trial.status === TrialStatus.FAILED) !== (failure !== undefined)) {
+      throw new Error(
+        failure
+          ? `A failure was given for trial ${trial.trialId} but its status is ${trial.status}, not FAILED`
+          : `Trial ${trial.trialId} is FAILED but no failure was given`,
+      )
+    }
     const insert = this.db.prepare(`
       INSERT INTO trials (
         trial_id, test_number, session_id, data_set_name, subject, question_number, status,
         begin_ts, first_response_ts, end_ts, response_ms, first_response_ms, answer_text, citations
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
+    const insertFailure = this.db.prepare(`
+      INSERT INTO failed_requests (trial_id, failure_type, error_message, elapsed_ms) VALUES (?, ?, ?, ?)
+    `)
     const nextNumber = this.db.prepare('SELECT COALESCE(MAX(test_number), 0) + 1 AS next FROM trials')
-    const save = this.db.transaction((input: NewTrial): Trial => {
+    const save = this.db.transaction((input: NewTrial, failed?: TrialFailure): Trial => {
       const { next } = nextNumber.get() as { next: number }
       insert.run(
         input.trialId,
@@ -182,9 +218,13 @@ export class MetricsRepository {
         input.answerText,
         JSON.stringify(input.citations),
       )
-      return { ...input, testNumber: next, citations: [...input.citations] }
+      if (failed) {
+        insertFailure.run(input.trialId, failed.type, failed.message, failed.elapsedMs)
+      }
+      const saved: Trial = { ...input, testNumber: next, citations: [...input.citations] }
+      return failed ? { ...saved, failure: { ...failed } } : saved
     })
-    return save(trial)
+    return save(trial, failure)
   }
 
   /** Lists saved trials, newest first. */
@@ -192,16 +232,20 @@ export class MetricsRepository {
     const conditions: string[] = []
     const params: Array<string | number> = []
     if (filter.sessionId !== undefined) {
-      conditions.push('session_id = ?')
+      conditions.push('t.session_id = ?')
       params.push(filter.sessionId)
     }
     if (filter.subject !== undefined) {
-      conditions.push('subject = ?')
+      conditions.push('t.subject = ?')
       params.push(filter.subject)
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
     const rows = this.db
-      .prepare(`SELECT * FROM trials ${where} ORDER BY test_number DESC LIMIT ?`)
+      .prepare(
+        `SELECT t.*, f.failure_type, f.error_message, f.elapsed_ms
+         FROM trials t LEFT JOIN failed_requests f ON f.trial_id = t.trial_id
+         ${where} ORDER BY t.test_number DESC LIMIT ?`,
+      )
       .all(...params, filter.limit ?? 50) as TrialRow[]
     return rows.map(toTrial)
   }
@@ -225,7 +269,7 @@ export class MetricsRepository {
 }
 
 function toTrial(row: TrialRow): Trial {
-  return {
+  const trial: Trial = {
     trialId: row.trial_id,
     testNumber: row.test_number,
     sessionId: row.session_id,
@@ -241,6 +285,14 @@ function toTrial(row: TrialRow): Trial {
     answerText: row.answer_text,
     citations: parseCitations(row.citations),
   }
+  if (row.failure_type !== null) {
+    trial.failure = {
+      type: row.failure_type as FailureType,
+      message: row.error_message ?? '',
+      elapsedMs: row.elapsed_ms ?? 0,
+    }
+  }
+  return trial
 }
 
 function parseCitations(value: string | null): string[] {

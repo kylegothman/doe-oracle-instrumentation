@@ -30,6 +30,8 @@ interface Script {
   delays?: Partial<Record<Step, number | 'never'>>
   /** Steps that reject with this message instead of resolving. */
   errors?: Partial<Record<Step, string>>
+  /** Signals reported through onFailure right after a step settles, as the real adapter does. */
+  signals?: Partial<Record<Step, FailureSignal>>
 }
 
 /** An adapter that follows a script, records its calls, and keeps the failure handler it was given. */
@@ -74,8 +76,12 @@ class FakeAdapter implements SubjectAdapter {
   private run<T>(step: Step, value: () => T): Promise<T> {
     const delay = this.script.delays?.[step]
     const error = this.script.errors?.[step]
-    const settle = (resolve: (v: T) => void, reject: (e: Error) => void): void =>
-      error ? reject(new Error(error)) : resolve(value())
+    const signal = this.script.signals?.[step]
+    const settle = (resolve: (v: T) => void, reject: (e: Error) => void): void => {
+      if (error) reject(new Error(error))
+      else resolve(value())
+      if (signal) this.handler?.(signal)
+    }
     if (delay === 'never') return new Promise(() => {})
     if (!delay) return new Promise(settle)
     return new Promise((resolve, reject) => setTimeout(() => settle(resolve, reject), delay))
@@ -209,6 +215,100 @@ describe('TrialController', () => {
     })
     expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'dispose'])
     expect(controller.isReady()).toBe(true)
+  })
+
+  it('saves the timeout as a TIMEOUT failure record that reads back with the trial', async () => {
+    const adapter = new FakeAdapter(Subject.DOE_ORACLE, { delays: { completion: 'never' } })
+    const controller = controllerWith([adapter], { timeouts: policies({ [Subject.DOE_ORACLE]: { timeoutMs: 2_000 } }) })
+
+    const pending = controller.startTrial(Subject.DOE_ORACLE, 1)
+    await vi.advanceTimersByTimeAsync(2_000)
+    const saved = await pending
+
+    expect(saved.failure).toEqual({ type: FailureType.TIMEOUT, message: 'No answer from DOE Oracle within 2 s', elapsedMs: 2_000 })
+    expect(repository.listTrials()[0]?.failure).toEqual(saved.failure)
+  })
+
+  it('fails as ERROR_RESPONSE when the adapter reports an error status, keeping the first-response mark', async () => {
+    const adapter = new FakeAdapter(Subject.DOE_ORACLE, {
+      delays: { first: 400, completion: 'never' },
+      signals: { first: { httpStatus: 500, timedOut: false } },
+    })
+    const controller = controllerWith([adapter])
+
+    const pending = controller.startTrial(Subject.DOE_ORACLE, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    const saved = await pending
+
+    expect(saved).toMatchObject({
+      status: TrialStatus.FAILED,
+      beginTs: '2026-11-12T15:00:01.000Z',
+      firstResponseTs: '2026-11-12T15:00:01.300Z',
+      firstResponseMs: 300,
+      endTs: null,
+      failure: { type: FailureType.ERROR_RESPONSE, message: 'DOE Oracle answered with HTTP 500', elapsedMs: 400 },
+    })
+    expect(statuses()).toEqual(['started', 'first_response', 'failed'])
+    expect(events.at(-1)).toMatchObject({ failureType: FailureType.ERROR_RESPONSE, message: 'DOE Oracle answered with HTTP 500' })
+    expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'dispose'])
+    expect(controller.isReady()).toBe(true)
+  })
+
+  it('fails as UNREACHABLE when the subject cannot be reached, with no marks at all', async () => {
+    const message = 'Could not reach the DOE Oracle at http://localhost:5173/chat. Make sure it is running, then try again. (net::ERR_CONNECTION_REFUSED)'
+    const adapter = new FakeAdapter(Subject.DOE_ORACLE, {
+      errors: { start: message },
+      signals: { start: { networkError: message, timedOut: false } },
+    })
+    const controller = controllerWith([adapter])
+
+    const saved = await controller.startTrial(Subject.DOE_ORACLE, 1)
+
+    expect(saved).toMatchObject({
+      status: TrialStatus.FAILED,
+      dataSetName: `DOE_ORACLE-${localDate(new Date(T0))}`,
+      beginTs: null,
+      firstResponseTs: null,
+      endTs: null,
+      responseMs: null,
+      firstResponseMs: null,
+      failure: { type: FailureType.UNREACHABLE, message, elapsedMs: 0 },
+    })
+    expect(repository.listTrials()).toEqual([saved])
+    expect(statuses()).toEqual(['started', 'failed'])
+  })
+
+  it('fails as EMPTY_ANSWER when the completed answer has no text, keeping all three marks', async () => {
+    const adapter = new FakeAdapter(Subject.DOE_ORACLE, { answer: { text: '  \n ', citations: [] } })
+    const controller = controllerWith([adapter])
+
+    const saved = await controller.startTrial(Subject.DOE_ORACLE, 1)
+
+    expect(saved).toMatchObject({
+      status: TrialStatus.FAILED,
+      responseMs: 900,
+      firstResponseMs: 300,
+      answerText: '  \n ',
+      failure: { type: FailureType.EMPTY_ANSWER, message: 'DOE Oracle completed with an empty answer' },
+    })
+    expect(statuses()).toEqual(['started', 'first_response', 'failed'])
+  })
+
+  it('treats a refusal as an answer: the trial succeeds', async () => {
+    const adapter = new FakeAdapter(Subject.DOE_ORACLE, { answer: { text: "I can't answer that question.", citations: [] } })
+    const controller = controllerWith([adapter])
+
+    const saved = await controller.startTrial(Subject.DOE_ORACLE, 1)
+
+    expect(saved).toMatchObject({ status: TrialStatus.SUCCESS, answerText: "I can't answer that question." })
+    expect(saved.failure).toBeUndefined()
+  })
+
+  it('ignores a signal that is not a failure by the rules', async () => {
+    const adapter = new FakeAdapter(Subject.DOE_ORACLE, { signals: { first: { httpStatus: 200, timedOut: false } } })
+    const controller = controllerWith([adapter])
+
+    await expect(controller.startTrial(Subject.DOE_ORACLE, 1)).resolves.toMatchObject({ status: TrialStatus.SUCCESS })
   })
 
   it('starts the clock at submit for subjects configured that way, so a slow Tester is not a timeout', async () => {

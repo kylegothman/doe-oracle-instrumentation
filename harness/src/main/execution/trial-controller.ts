@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { FailureType } from '../../shared/failures'
+import { FailureType, type FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import { SUBJECT_LABELS, type Subject } from '../../shared/subjects'
-import { TrialStatus, type Trial, type TrialEvent, type TrialEventStatus } from '../../shared/trials'
+import { TrialStatus, type Trial, type TrialEvent, type TrialEventStatus, type TrialFailure } from '../../shared/trials'
 import type { CapturedAnswer, SubjectAdapter } from '../adapters/subject-adapter'
 import type { TrialTimeoutPolicy } from '../config/settings'
 import type { MetricsRepository, NewTrial } from '../data/metrics-repository'
+import { FailureDetector } from './failure-detector'
 import type { QuestionBank } from './question-bank'
 import type { SessionManager } from './session-manager'
 import type { TimingService } from './timing-service'
@@ -21,18 +22,12 @@ export interface TrialControllerDeps {
   timeouts: Record<Subject, TrialTimeoutPolicy>
   /** Where status events go: the IpcRouter. */
   events: { sendTrialEvent(event: TrialEvent): void }
+  /** Classifies failure signals; defaults to the standard rules. */
+  detector?: FailureDetector
   /** Clock for elapsed times; defaults to Date.now. Tests use fake timers. */
   now?: () => number
   /** Upper bound on waiting for adapter.dispose(), so the harness is ready again soon after a failure (NFR-3). */
   disposeTimeoutMs?: number
-}
-
-/** Why a trial ended before it completed. */
-export interface TrialFailure {
-  type: FailureType
-  message: string
-  /** Milliseconds from the trial's start to the failure. */
-  elapsedMs: number
 }
 
 /** Thrown from startTrial when cancelTrial ended the trial. Nothing was saved. */
@@ -130,10 +125,13 @@ class RunningTrial {
  * 2. It drives the adapter through start, waitForFirstResponse,
  *    waitForCompletion, and captureAnswer, sending `first_response` on the
  *    way. Each step is raced against the trial being interrupted by the
- *    timer, by a failure, or by cancelTrial.
- * 3. closeTrial releases the adapter (dispose, bounded by disposeTimeoutMs)
- *    and the timer, saves the trial as SUCCESS or FAILED, and sends
- *    `completed` or `failed`.
+ *    timer, by a failure signal from the adapter, or by cancelTrial.
+ * 3. On a failure (SD-4): the FailureDetector classifies the signal, the
+ *    adapter is disposed, the clock stops, and closeTrial saves the trial
+ *    as FAILED with a failed_requests row and sends `failed`. The failed
+ *    trial is returned like a successful one. A captured answer that is
+ *    empty fails the same way, as EMPTY_ANSWER, for every subject.
+ * 4. On success closeTrial saves the trial as SUCCESS and sends `completed`.
  *
  * A cancelled trial rejects with TrialCancelledError and saves nothing. An
  * error from the harness itself (Chromium missing, the page closed under
@@ -141,8 +139,6 @@ class RunningTrial {
  * sent, and the error reaches the caller. Either way the controller is
  * ready for the next trial as soon as closeTrial returns.
  *
- * TODO(#28): failures reported by adapters are classified by the Failure
- * Detector next; until then they end the trial as aborted.
  * TODO(#35): confirmCompletion(trialId), for Copilot's streamed answer.
  * TODO(#37): markAnswerFound(trialId) and markNoAnswerFound(trialId), for
  * Google, where the Tester reports whether the answer was on the page.
@@ -151,10 +147,12 @@ export class TrialController {
   private current: RunningTrial | null = null
   private readonly now: () => number
   private readonly disposeTimeoutMs: number
+  private readonly detector: FailureDetector
 
   constructor(private readonly deps: TrialControllerDeps) {
     this.now = deps.now ?? Date.now
     this.disposeTimeoutMs = deps.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS
+    this.detector = deps.detector ?? new FailureDetector()
   }
 
   /** True when no trial is running, so startTrial can be called. */
@@ -181,6 +179,7 @@ export class TrialController {
 
     const trial = new RunningTrial(subject, question, adapter, this.now())
     this.current = trial
+    adapter.onFailure((signal) => this.onFailureSignal(trial, signal))
     if (policy.startsAt === 'trial_start') {
       trial.startTimer(policy.timeoutMs, () => this.onTimeout(trial))
     }
@@ -200,7 +199,9 @@ export class TrialController {
       // Completion reached: the clock stops here, before the answer is read.
       trial.stopTimer()
       trial.answer = await trial.step(adapter.captureAnswer())
-      return await this.closeTrial(trial)
+      // The subject-independent check: an answer with no text is a failure, whatever the adapter said.
+      this.onFailureSignal(trial, { answerText: trial.answer.text, timedOut: false })
+      return await this.closeTrial(trial, trial.interruption?.kind === 'failure' ? trial.interruption.failure : undefined)
     } catch (error) {
       if (trial.released) {
         // closeTrial already released the trial and reported the problem (the save failed).
@@ -231,16 +232,36 @@ export class TrialController {
 
   /** The subject's clock ran out: the trial fails as TIMEOUT. */
   private onTimeout(trial: RunningTrial): void {
-    if (this.current !== trial) return
-    const limit = this.deps.timeouts[trial.subject].timeoutMs
+    this.onFailureSignal(trial, { timedOut: true })
+  }
+
+  /**
+   * A signal from the adapter (or the clock). Classified by the detector;
+   * a signal that is not a failure by the rules is ignored and the trial
+   * goes on. The first failure ends the trial; later ones are ignored.
+   */
+  private onFailureSignal(trial: RunningTrial, signal: FailureSignal): void {
+    if (this.current !== trial || trial.released) return
+    const type = this.detector.classify(signal)
+    if (!type) return
     trial.interrupt({
       kind: 'failure',
-      failure: {
-        type: FailureType.TIMEOUT,
-        message: `No answer from ${SUBJECT_LABELS[trial.subject]} within ${seconds(limit)}`,
-        elapsedMs: this.elapsed(trial),
-      },
+      failure: { type, message: this.failureMessage(trial, type, signal), elapsedMs: this.elapsed(trial) },
     })
+  }
+
+  private failureMessage(trial: RunningTrial, type: FailureType, signal: FailureSignal): string {
+    const label = SUBJECT_LABELS[trial.subject]
+    switch (type) {
+      case FailureType.TIMEOUT:
+        return `No answer from ${label} within ${seconds(this.deps.timeouts[trial.subject].timeoutMs)}`
+      case FailureType.ERROR_RESPONSE:
+        return `${label} answered with HTTP ${String(signal.httpStatus)}`
+      case FailureType.UNREACHABLE:
+        return signal.networkError ?? `${label} could not be reached`
+      case FailureType.EMPTY_ANSWER:
+        return `${label} completed with an empty answer`
+    }
   }
 
   /**
@@ -252,7 +273,7 @@ export class TrialController {
     await this.releaseTrial(trial)
     let saved: Trial
     try {
-      saved = this.deps.repository.saveTrial(record)
+      saved = this.deps.repository.saveTrial(record, failure)
     } catch (error) {
       this.send(trial, 'aborted', { message: `The trial could not be saved: ${describe(error)}` })
       throw error

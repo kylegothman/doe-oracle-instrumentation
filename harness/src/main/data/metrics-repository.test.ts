@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { FailureType } from '../../shared/failures'
 import { Subject } from '../../shared/subjects'
 import { TrialStatus } from '../../shared/trials'
 import { MetricsRepository, type NewTrial } from './metrics-repository'
 
-const CURRENT_SCHEMA_VERSION = 3
+const CURRENT_SCHEMA_VERSION = 4
 
 function sampleTrial(overrides: Partial<NewTrial> = {}): NewTrial {
   return {
@@ -134,6 +135,49 @@ describe('MetricsRepository', () => {
     expect(repository.filePath).toBe(':memory:')
   })
 
+  it('saves a failed trial with its failure and reads both back together', () => {
+    const failure = { type: FailureType.TIMEOUT, message: 'No answer from DOE Oracle within 60 s', elapsedMs: 60_000 }
+    const failed = sampleTrial({ trialId: 'failed-1', status: TrialStatus.FAILED, endTs: null, responseMs: null, answerText: null, citations: [] })
+
+    const saved = repository.saveTrial(failed, failure)
+
+    expect(saved).toEqual({ ...failed, testNumber: 1, failure })
+    expect(repository.listTrials()).toEqual([saved])
+    expect(repository.listTrials({ sessionId: 'session-a' })[0]?.failure).toEqual(failure)
+  })
+
+  it('lists successful and failed trials together, newest first, with the failure only where there is one', () => {
+    repository.saveTrial(sampleTrial({ trialId: 'ok' }))
+    repository.saveTrial(sampleTrial({ trialId: 'bad', status: TrialStatus.FAILED }), {
+      type: FailureType.ERROR_RESPONSE,
+      message: 'DOE Oracle answered with HTTP 500',
+      elapsedMs: 1_200,
+    })
+
+    const [newest, oldest] = repository.listTrials()
+    expect(newest?.trialId).toBe('bad')
+    expect(newest?.failure).toEqual({ type: FailureType.ERROR_RESPONSE, message: 'DOE Oracle answered with HTTP 500', elapsedMs: 1_200 })
+    expect(oldest?.trialId).toBe('ok')
+    expect(oldest?.failure).toBeUndefined()
+    expect(repository.listTrials({ subject: Subject.DOE_ORACLE, limit: 1 }).map((t) => t.trialId)).toEqual(['bad'])
+  })
+
+  it('refuses a FAILED trial without a failure, and a failure on a trial that did not fail', () => {
+    expect(() => repository.saveTrial(sampleTrial({ status: TrialStatus.FAILED }))).toThrow(/FAILED but no failure was given/)
+    expect(() =>
+      repository.saveTrial(sampleTrial(), { type: FailureType.TIMEOUT, message: 'x', elapsedMs: 1 }),
+    ).toThrow(/status is SUCCESS, not FAILED/)
+    expect(repository.listTrials()).toEqual([])
+  })
+
+  it('enforces that a failure belongs to a saved trial', () => {
+    const db = new Database(':memory:')
+    db.pragma('foreign_keys = ON')
+    db.exec('CREATE TABLE trials (trial_id TEXT PRIMARY KEY); CREATE TABLE failed_requests (trial_id TEXT PRIMARY KEY REFERENCES trials (trial_id))')
+    expect(() => db.prepare('INSERT INTO failed_requests VALUES (?)').run('orphan')).toThrow(/FOREIGN KEY constraint failed/)
+    db.close()
+  })
+
   it('saves a session and reads it back by id', () => {
     const session = { sessionId: 'session-a', startedAt: '2026-11-12T01:02:03.456Z', appVersion: '0.1.0' }
 
@@ -175,7 +219,7 @@ describe('MetricsRepository migrations from an E1 database', () => {
     const applied = new Database(filePath, { readonly: true })
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as Array<{ version: number }>
-    expect(applied.map((row) => row.version)).toEqual([1, 2, 3])
+    expect(applied.map((row) => row.version)).toEqual([1, 2, 3, 4])
 
     const [trial] = upgraded.listTrials()
     expect(trial).toMatchObject({
@@ -190,5 +234,12 @@ describe('MetricsRepository migrations from an E1 database', () => {
     expect(upgraded.saveTrial(sampleTrial({ trialId: 'e2-trial' })).testNumber).toBe(2)
     upgraded.saveSession({ sessionId: 'e2-session', startedAt: '2026-11-12T00:00:00.000Z', appVersion: '0.1.0' })
     expect(upgraded.getSession('e2-session')?.appVersion).toBe('0.1.0')
+    const failed = upgraded.saveTrial(sampleTrial({ trialId: 'e2-failed', status: TrialStatus.FAILED }), {
+      type: FailureType.UNREACHABLE,
+      message: 'net::ERR_CONNECTION_REFUSED',
+      elapsedMs: 15,
+    })
+    expect(failed.testNumber).toBe(3)
+    expect(upgraded.listTrials()[0]?.failure?.type).toBe(FailureType.UNREACHABLE)
   })
 })
