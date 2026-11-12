@@ -1,27 +1,25 @@
 # Lint, typecheck, unit tests, and a production bundle for the harness,
-# on Ubuntu and Windows, for every pull request that touches harness/
-# and for every push to main.
+# on Ubuntu and Windows.
+#
+# Runs on every pull request so the required status checks always report.
+# On a pull request the job first reads the PR's changed files; when none
+# are under harness/ or the harness workflows, it ends green without
+# installing anything. Pushes to main always run the full job, and so does
+# any pull request whose file list cannot be read.
 #
 # Required status checks for branch protection (job names):
 #   harness-ci (ubuntu-latest)
 #   harness-ci (windows-latest)
-# harness-ci-skip.yml reports the same names on pull requests this
-# workflow does not run for, so those PRs are not blocked.
 name: harness-ci
 
 on:
   pull_request:
-    paths:
-      - 'harness/**'
-      - '.github/workflows/harness-ci.yml'
   push:
     branches: [main]
-    paths:
-      - 'harness/**'
-      - '.github/workflows/harness-ci.yml'
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: harness-ci-${{ github.event.pull_request.number || github.ref }}
@@ -46,23 +44,59 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Decide whether the harness changed
+        id: scope
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Push to main: running the full job."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename'); then
+            echo "Could not read the pull request's file list: running the full job."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed files:"
+          printf '  %s\n' $files
+          if printf '%s\n' "$files" | grep -Eq '^(harness/|\.github/workflows/harness-)'; then
+            echo "Harness files changed: running the full job."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No harness changes in this pull request. Nothing to check."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.run == 'true'
         with:
           node-version-file: harness/.nvmrc
           cache: npm
           cache-dependency-path: harness/package-lock.json
 
       - name: Install
+        if: steps.scope.outputs.run == 'true'
         run: npm ci
 
       - name: Lint
+        if: steps.scope.outputs.run == 'true'
         run: npm run lint
 
       - name: Typecheck
+        if: steps.scope.outputs.run == 'true'
         run: npm run typecheck
 
       - name: Unit tests
+        if: steps.scope.outputs.run == 'true'
         run: npm test
 
       - name: Build
+        if: steps.scope.outputs.run == 'true'
         run: npm run build
