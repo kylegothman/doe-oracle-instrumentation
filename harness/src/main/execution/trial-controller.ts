@@ -13,7 +13,7 @@ export interface TrialControllerDeps {
   adapters: ReadonlyMap<Subject, SubjectAdapter>
   timing: TimingService
   repository: Pick<MetricsRepository, 'saveTrial'>
-  session: SessionManager
+  session: Pick<SessionManager, 'getCurrentSession' | 'buildDataSetName'>
   /** Looks up a question by number. Tests inject their own. */
   findQuestion?: (questionNumber: number) => Question
 }
@@ -55,7 +55,7 @@ export class TrialController {
 
       const trial: NewTrial = {
         trialId,
-        sessionId: session.sessionId,
+        sessionId: session.getCurrentSession().sessionId,
         dataSetName: session.buildDataSetName(subject, new Date(beginMs)),
         subject,
         questionNumber: question.number,

@@ -22,6 +22,7 @@ function invoke<C extends IpcChannel>(channel: C, ...args: IpcArgs<C>): Promise<
 const harnessApi: HarnessApi = {
   getAppInfo: () => invoke(IpcChannels.getAppInfo),
   getSqliteStatus: () => invoke(IpcChannels.getSqliteStatus),
+  getSession: () => invoke(IpcChannels.getSession),
   startTrial: (subject, questionNumber) => invoke(IpcChannels.startTrial, subject, questionNumber),
   listTrials: (sessionId) =>
     sessionId === undefined ? invoke(IpcChannels.listTrials) : invoke(IpcChannels.listTrials, sessionId),

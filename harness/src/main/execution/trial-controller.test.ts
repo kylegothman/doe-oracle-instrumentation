@@ -51,12 +51,18 @@ describe('TrialController', () => {
     repository.close()
   })
 
+  function startedSession(sessionId = 'session-1'): SessionManager {
+    const session = new SessionManager({ store: repository, appVersion: '0.1.0', sessionId: () => sessionId })
+    session.startSession()
+    return session
+  }
+
   function controllerWith(adapter: SubjectAdapter, timing = new TimingService()) {
     return new TrialController({
       adapters: new Map([[Subject.DOE_ORACLE, adapter]]),
       timing,
       repository,
-      session: new SessionManager({ sessionId: 'session-1' }),
+      session: startedSession(),
       findQuestion: () => QUESTION,
     })
   }
@@ -148,7 +154,7 @@ describe('TrialController', () => {
       adapters: new Map([[Subject.DOE_ORACLE, adapter]]),
       timing: new TimingService(),
       repository,
-      session: new SessionManager(),
+      session: startedSession(),
     })
 
     await expect(controller.runTrial(Subject.DOE_ORACLE, 99)).rejects.toThrow(/Question 99 is not in the harness config/)

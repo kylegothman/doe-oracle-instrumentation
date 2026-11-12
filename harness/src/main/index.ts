@@ -9,6 +9,7 @@ import { loadSettings } from './config/settings'
 import { MetricsRepository } from './data/metrics-repository'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
+import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { createListTrialsHandler, createStartTrialHandler } from './execution/handlers/trials'
 import { IpcRouter } from './execution/ipc-router'
@@ -18,9 +19,6 @@ import { TrialController } from './execution/trial-controller'
 
 /** The one Chromium instance the harness drives. Launched on first use, closed on quit. */
 const browserManager = new BrowserManager()
-
-/** One session ID per launch; every trial saved in this run carries it. */
-const session = new SessionManager()
 
 /** Opens harness.db under the per-user app data folder and applies migrations. */
 async function openRepository(): Promise<MetricsRepository> {
@@ -42,13 +40,22 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRo
   const adapters = new Map<Subject, SubjectAdapter>([
     [Subject.DOE_ORACLE, new OracleAdapter(browserManager, settings.oracle)],
   ])
-  const controllerReady = repositoryReady.then(
-    (repository) => new TrialController({ adapters, timing: new TimingService(), repository, session }),
+  // One session per launch, started as soon as the database is open so it
+  // is saved before any trial can reference it.
+  const sessionReady = repositoryReady.then((repository) => {
+    const session = new SessionManager({ store: repository, appVersion: app.getVersion() })
+    const started = session.startSession()
+    console.log(`[session] ${started.sessionId} started ${started.startedAt} (harness ${started.appVersion})`)
+    return session
+  })
+  const controllerReady = Promise.all([repositoryReady, sessionReady]).then(
+    ([repository, session]) => new TrialController({ adapters, timing: new TimingService(), repository, session }),
   )
 
   const router = new IpcRouter(ipcMain)
   router.register(IpcChannels.getAppInfo, createGetAppInfoHandler(app))
   router.register(IpcChannels.getSqliteStatus, createGetSqliteStatusHandler(sqliteStatus))
+  router.register(IpcChannels.getSession, createGetSessionHandler(() => sessionReady))
   router.register(IpcChannels.startTrial, createStartTrialHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   return router
@@ -93,7 +100,6 @@ function createMainWindow(): BrowserWindow {
 let repositoryReady: Promise<MetricsRepository> | null = null
 
 void app.whenReady().then(() => {
-  console.log(`[session] ${session.sessionId}`)
   repositoryReady = openRepository()
   repositoryReady.catch((error: unknown) => {
     console.error(`[data] ${error instanceof Error ? error.message : String(error)}`)

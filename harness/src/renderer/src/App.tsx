@@ -37,6 +37,28 @@ function useBridgeCall<T>(call: () => Promise<T>, refreshKey = 0): Loadable<T> {
   return state
 }
 
+/** The session bar: this launch's session ID, which every saved trial carries. */
+function SessionBar() {
+  const session = useBridgeCall(() => window.harness.getSession())
+
+  return (
+    <p className="session-bar" data-testid="session-bar">
+      {session.status === 'loading' && 'Starting session…'}
+      {session.status === 'ready' && (
+        <>
+          Session <code data-testid="session-id">{session.value.sessionId}</code> started {session.value.startedAt}{' '}
+          · harness {session.value.appVersion}
+        </>
+      )}
+      {session.status === 'error' && (
+        <span role="alert" className="error" data-testid="session-error">
+          No session: {session.message}
+        </span>
+      )}
+    </p>
+  )
+}
+
 function AppInfoPanel({ appInfo }: { appInfo: Loadable<AppInfo> }) {
   return (
     <section aria-labelledby="app-info-heading">
@@ -221,6 +243,7 @@ export function App() {
   return (
     <main className="app">
       <h1>DOE Oracle Test Harness</h1>
+      <SessionBar />
       <TrialPanel onSaved={() => setSavedVersion((v) => v + 1)} />
       <SavedTrials refreshKey={savedVersion} />
       <AppInfoPanel appInfo={appInfo} />

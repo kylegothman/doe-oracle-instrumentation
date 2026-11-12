@@ -1,3 +1,4 @@
+import type { Session } from './session'
 import type { Subject } from './subjects'
 import type { Trial } from './trials'
 
@@ -37,6 +38,7 @@ export type SqliteStatus =
 export interface IpcContracts {
   'app:get-info': { args: []; result: AppInfo }
   'diagnostics:get-sqlite-status': { args: []; result: SqliteStatus }
+  'session:get': { args: []; result: Session }
   'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
   'trials:list': { args: [sessionId?: string]; result: Trial[] }
 }
@@ -49,6 +51,7 @@ export type IpcResult<C extends IpcChannel> = IpcContracts[C]['result']
 export const IpcChannels = {
   getAppInfo: 'app:get-info',
   getSqliteStatus: 'diagnostics:get-sqlite-status',
+  getSession: 'session:get',
   startTrial: 'trial:start',
   listTrials: 'trials:list',
 } as const satisfies Record<string, IpcChannel>
@@ -62,6 +65,8 @@ export interface HarnessApi {
   getAppInfo(): Promise<AppInfo>
   /** Returns the result of the SQLite startup probe. */
   getSqliteStatus(): Promise<SqliteStatus>
+  /** Returns this launch's session: its ID, start time, and the harness version. */
+  getSession(): Promise<Session>
   /** Runs one trial of a question against a subject and resolves with the saved trial. */
   startTrial(subject: Subject, questionNumber: number): Promise<Trial>
   /** Lists saved trials, newest first, for one session or for all sessions. */

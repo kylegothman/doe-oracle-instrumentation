@@ -1,4 +1,5 @@
 import type BetterSqlite3 from 'better-sqlite3'
+import type { Session } from '../../shared/session'
 import type { Subject } from '../../shared/subjects'
 import type { Trial, TrialStatus } from '../../shared/trials'
 
@@ -61,7 +62,26 @@ const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 3,
+    name: 'create sessions',
+    up(db) {
+      db.exec(`
+        CREATE TABLE sessions (
+          session_id TEXT PRIMARY KEY,
+          started_at TEXT,
+          app_version TEXT
+        );
+      `)
+    },
+  },
 ]
+
+interface SessionRow {
+  session_id: string
+  started_at: string
+  app_version: string
+}
 
 interface TrialRow {
   trial_id: string
@@ -184,6 +204,19 @@ export class MetricsRepository {
       .prepare(`SELECT * FROM trials ${where} ORDER BY test_number DESC LIMIT ?`)
       .all(...params, filter.limit ?? 50) as TrialRow[]
     return rows.map(toTrial)
+  }
+
+  /** Records this launch's session. Throws if the id was saved before. */
+  saveSession(session: Session): void {
+    this.db
+      .prepare('INSERT INTO sessions (session_id, started_at, app_version) VALUES (?, ?, ?)')
+      .run(session.sessionId, session.startedAt, session.appVersion)
+  }
+
+  /** The session with this id, or null when none was saved. */
+  getSession(sessionId: string): Session | null {
+    const row = this.db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(sessionId) as SessionRow | undefined
+    return row ? { sessionId: row.session_id, startedAt: row.started_at, appVersion: row.app_version } : null
   }
 
   close(): void {

@@ -7,7 +7,7 @@ import { Subject } from '../../shared/subjects'
 import { TrialStatus } from '../../shared/trials'
 import { MetricsRepository, type NewTrial } from './metrics-repository'
 
-const CURRENT_SCHEMA_VERSION = 2
+const CURRENT_SCHEMA_VERSION = 3
 
 function sampleTrial(overrides: Partial<NewTrial> = {}): NewTrial {
   return {
@@ -133,6 +133,22 @@ describe('MetricsRepository', () => {
   it('reports the file it opened', () => {
     expect(repository.filePath).toBe(':memory:')
   })
+
+  it('saves a session and reads it back by id', () => {
+    const session = { sessionId: 'session-a', startedAt: '2026-11-12T01:02:03.456Z', appVersion: '0.1.0' }
+
+    repository.saveSession(session)
+
+    expect(repository.getSession('session-a')).toEqual(session)
+    expect(repository.getSession('nope')).toBeNull()
+  })
+
+  it('refuses to save the same session id twice', () => {
+    const session = { sessionId: 'session-a', startedAt: '2026-11-12T01:02:03.456Z', appVersion: '0.1.0' }
+    repository.saveSession(session)
+
+    expect(() => repository.saveSession(session)).toThrow(/UNIQUE constraint failed: sessions.session_id/)
+  })
 })
 
 describe('MetricsRepository migrations from an E1 database', () => {
@@ -159,7 +175,7 @@ describe('MetricsRepository migrations from an E1 database', () => {
     const applied = new Database(filePath, { readonly: true })
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as Array<{ version: number }>
-    expect(applied.map((row) => row.version)).toEqual([1, 2])
+    expect(applied.map((row) => row.version)).toEqual([1, 2, 3])
 
     const [trial] = upgraded.listTrials()
     expect(trial).toMatchObject({
@@ -170,7 +186,9 @@ describe('MetricsRepository migrations from an E1 database', () => {
       responseMs: 22383,
       citations: ['Applying_Combinatorial_Testing_in_Industrial_Settings · p.1'],
     })
-    // A trial saved after the upgrade continues the numbering.
+    // A trial saved after the upgrade continues the numbering, and the new tables are usable.
     expect(upgraded.saveTrial(sampleTrial({ trialId: 'e2-trial' })).testNumber).toBe(2)
+    upgraded.saveSession({ sessionId: 'e2-session', startedAt: '2026-11-12T00:00:00.000Z', appVersion: '0.1.0' })
+    expect(upgraded.getSession('e2-session')?.appVersion).toBe('0.1.0')
   })
 })
