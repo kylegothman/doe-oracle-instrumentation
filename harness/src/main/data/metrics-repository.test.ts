@@ -53,6 +53,17 @@ function createE1Database(filePath: string): void {
   db.close()
 }
 
+/** The migration versions recorded in a database file. Opens and closes its own connection: Windows cannot delete a file that is still open. */
+function appliedVersions(filePath: string): number[] {
+  const db = new Database(filePath, { readonly: true })
+  try {
+    const rows = db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>
+    return rows.map((row) => row.version)
+  } finally {
+    db.close()
+  }
+}
+
 describe('MetricsRepository', () => {
   let repository: MetricsRepository
 
@@ -216,10 +227,7 @@ describe('MetricsRepository migrations from an E1 database', () => {
     upgraded = await MetricsRepository.open(filePath)
 
     expect(upgraded.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
-    const applied = new Database(filePath, { readonly: true })
-      .prepare('SELECT version FROM schema_migrations ORDER BY version')
-      .all() as Array<{ version: number }>
-    expect(applied.map((row) => row.version)).toEqual([1, 2, 3, 4])
+    expect(appliedVersions(filePath)).toEqual([1, 2, 3, 4])
 
     const [trial] = upgraded.listTrials()
     expect(trial).toMatchObject({
