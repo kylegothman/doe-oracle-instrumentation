@@ -73,7 +73,12 @@ class FakeAdapter implements SubjectAdapter {
     return this.run('dispose', () => undefined)
   }
 
-  private run<T>(step: Step, value: () => T): Promise<T> {
+  /** Settles through an async wrapper, as the real adapter's async methods do, so the same microtask ordering applies. */
+  private async run<T>(step: Step, value: () => T): Promise<T> {
+    return this.settleStep(step, value)
+  }
+
+  private settleStep<T>(step: Step, value: () => T): Promise<T> {
     const delay = this.script.delays?.[step]
     const error = this.script.errors?.[step]
     const signal = this.script.signals?.[step]
@@ -248,10 +253,30 @@ describe('TrialController', () => {
       endTs: null,
       failure: { type: FailureType.ERROR_RESPONSE, message: 'DOE Oracle answered with HTTP 500', elapsedMs: 400 },
     })
-    expect(statuses()).toEqual(['started', 'first_response', 'failed'])
+    // The failure arrived with the response, so the trial closed before a first_response event or the next step.
+    expect(statuses()).toEqual(['started', 'failed'])
     expect(events.at(-1)).toMatchObject({ failureType: FailureType.ERROR_RESPONSE, message: 'DOE Oracle answered with HTTP 500' })
-    expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'dispose'])
+    expect(adapter.calls).toEqual(['start:1', 'first', 'dispose'])
     expect(controller.isReady()).toBe(true)
+  })
+
+  it('keeps the begin mark when the request leaves and fails in the same tick, as a refused backend looks', async () => {
+    const message = 'The request to /api/search failed before a response arrived (net::ERR_CONNECTION_REFUSED)'
+    const adapter = new FakeAdapter(Subject.DOE_ORACLE, {
+      signals: { start: { networkError: message, timedOut: false } },
+    })
+    const controller = controllerWith([adapter])
+
+    const saved = await controller.startTrial(Subject.DOE_ORACLE, 1)
+
+    expect(saved).toMatchObject({
+      status: TrialStatus.FAILED,
+      beginTs: '2026-11-12T15:00:01.000Z',
+      firstResponseTs: null,
+      dataSetName: `DOE_ORACLE-${localDate(new Date(T0 + 1_000))}`,
+      failure: { type: FailureType.UNREACHABLE, message },
+    })
+    expect(adapter.calls).toEqual(['start:1', 'dispose'])
   })
 
   it('fails as UNREACHABLE when the subject cannot be reached, with no marks at all', async () => {

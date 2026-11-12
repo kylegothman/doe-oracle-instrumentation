@@ -38,6 +38,8 @@ export interface CapturedAnswer {
  *   failed, an empty answer. The controller registers it before each
  *   start(). Reporting a failure does not replace rejecting the pending
  *   promise; the adapter may do both, and the controller acts on the signal.
+ *   Resolving a step and reporting a failure in the same tick is fine: the
+ *   controller still records that step's timestamp on the failed trial.
  * - dispose() releases everything the current trial holds: listeners,
  *   timers, pending waits (which reject). It is called at the end of every
  *   trial, however it ended, must be safe to call at any time and more than

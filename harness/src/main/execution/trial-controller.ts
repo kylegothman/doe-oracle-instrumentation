@@ -9,7 +9,7 @@ import type { MetricsRepository, NewTrial } from '../data/metrics-repository'
 import { FailureDetector } from './failure-detector'
 import type { QuestionBank } from './question-bank'
 import type { SessionManager } from './session-manager'
-import type { TimingService } from './timing-service'
+import type { TimingEvent, TimingService } from './timing-service'
 
 export interface TrialControllerDeps {
   /** One adapter per subject, held for the whole session. */
@@ -60,6 +60,8 @@ class RunningTrial {
   answer: CapturedAnswer | null = null
   /** True once the controller has released the trial; nothing more happens to it after that. */
   released = false
+  /** The timed adapter step in flight, so its stamp can still be recorded if the trial is interrupted as it settles. */
+  pending: { event: TimingEvent; work: Promise<number> } | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private readonly interrupted: Promise<never>
   private rejectInterrupted: (error: TrialInterruptedError) => void = () => {}
@@ -186,16 +188,13 @@ export class TrialController {
     this.send(trial, 'started')
 
     try {
-      const beginMs = await trial.step(adapter.start(question))
-      this.deps.timing.mark(trial.trialId, 'begin', beginMs)
+      await this.timedStep(trial, 'begin', adapter.start(question))
       if (policy.startsAt === 'submit') {
         trial.startTimer(policy.timeoutMs, () => this.onTimeout(trial))
       }
-      const firstResponseMs = await trial.step(adapter.waitForFirstResponse())
-      this.deps.timing.mark(trial.trialId, 'first_response', firstResponseMs)
+      await this.timedStep(trial, 'first_response', adapter.waitForFirstResponse())
       this.send(trial, 'first_response')
-      const endMs = await trial.step(adapter.waitForCompletion())
-      this.deps.timing.mark(trial.trialId, 'end', endMs)
+      await this.timedStep(trial, 'end', adapter.waitForCompletion())
       // Completion reached: the clock stops here, before the answer is read.
       trial.stopTimer()
       trial.answer = await trial.step(adapter.captureAnswer())
@@ -209,6 +208,7 @@ export class TrialController {
       }
       const interruption = trial.interruption
       if (interruption?.kind === 'failure') {
+        await this.recoverPendingMark(trial)
         return this.closeTrial(trial, interruption.failure)
       }
       if (interruption?.kind === 'cancel') {
@@ -228,6 +228,34 @@ export class TrialController {
     }
     trial.interrupt({ kind: 'cancel' })
     await trial.closed
+  }
+
+  /** Runs a timed adapter step and records its stamp. */
+  private async timedStep(trial: RunningTrial, event: TimingEvent, work: Promise<number>): Promise<void> {
+    trial.pending = { event, work }
+    const ms = await trial.step(work)
+    trial.pending = null
+    this.deps.timing.mark(trial.trialId, event, ms)
+  }
+
+  /**
+   * An adapter may resolve a step and report a failure in the same tick,
+   * as the Oracle adapter does when Playwright delivers a request and its
+   * failure together. The interruption then wins the race before the
+   * step's stamp is recorded. Once the microtasks have drained, the step's
+   * promise has settled if it was going to; record its stamp so the failed
+   * trial keeps every mark the subject actually reached.
+   */
+  private async recoverPendingMark(trial: RunningTrial): Promise<void> {
+    const pending = trial.pending
+    trial.pending = null
+    if (!pending) return
+    await new Promise<void>((resolve) => process.nextTick(resolve))
+    const unsettled = Symbol('unsettled')
+    const value = await Promise.race([pending.work, Promise.resolve(unsettled)]).catch(() => unsettled)
+    if (typeof value === 'number') {
+      this.deps.timing.mark(trial.trialId, pending.event, value)
+    }
   }
 
   /** The subject's clock ran out: the trial fails as TIMEOUT. */
