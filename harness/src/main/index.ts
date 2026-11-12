@@ -1,6 +1,9 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { IpcChannels } from '../shared/ipc'
+import { Subject } from '../shared/subjects'
+import { OracleAdapter } from './adapters/oracle-adapter'
+import type { SubjectAdapter } from './adapters/subject-adapter'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
 import { MetricsRepository } from './data/metrics-repository'
@@ -34,9 +37,13 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRo
   void sqliteStatus.then(logSqliteStatus)
 
   const settings = loadSettings()
+  // One adapter per subject, each driving its own page in the shared Chromium.
+  // TODO(#5, #6): register the Copilot and Google adapters here.
+  const adapters = new Map<Subject, SubjectAdapter>([
+    [Subject.DOE_ORACLE, new OracleAdapter(browserManager, settings.oracle)],
+  ])
   const controllerReady = repositoryReady.then(
-    (repository) =>
-      new TrialController({ settings, browser: browserManager, timing: new TimingService(), repository, session }),
+    (repository) => new TrialController({ adapters, timing: new TimingService(), repository, session }),
   )
 
   const router = new IpcRouter(ipcMain)

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { Subject } from '../../shared/subjects'
 import { SessionManager } from './session-manager'
 
 describe('SessionManager', () => {
@@ -20,7 +21,8 @@ describe('SessionManager', () => {
   it('builds the data set name from the subject code and the local date', () => {
     const session = new SessionManager()
 
-    expect(session.buildDataSetName('oracle', new Date(2026, 10, 11, 23, 59, 59))).toBe('DOE_ORACLE-2026-11-11')
-    expect(session.buildDataSetName('oracle', new Date(2026, 0, 5, 0, 0, 1))).toBe('DOE_ORACLE-2026-01-05')
+    expect(session.buildDataSetName(Subject.DOE_ORACLE, new Date(2026, 10, 11, 23, 59, 59))).toBe('DOE_ORACLE-2026-11-11')
+    expect(session.buildDataSetName(Subject.COPILOT, new Date(2026, 0, 5, 0, 0, 1))).toBe('COPILOT-2026-01-05')
+    expect(session.buildDataSetName(Subject.GOOGLE, new Date(2026, 0, 5))).toBe('GOOGLE-2026-01-05')
   })
 })

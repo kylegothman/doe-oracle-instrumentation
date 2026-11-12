@@ -1,13 +1,13 @@
 import type BetterSqlite3 from 'better-sqlite3'
-import type { TrialRecord, TrialStatus } from '../../shared/ipc'
-import type { SubjectId } from '../../shared/subjects'
+import type { Subject } from '../../shared/subjects'
+import type { Trial, TrialStatus } from '../../shared/trials'
 
 /** A trial to save. The repository assigns the test number. */
-export type NewTrial = Omit<TrialRecord, 'testNumber'>
+export type NewTrial = Omit<Trial, 'testNumber'>
 
 export interface TrialListFilter {
   sessionId?: string
-  subject?: SubjectId
+  subject?: Subject
   /** Newest trials first; defaults to 50. */
   limit?: number
 }
@@ -46,6 +46,18 @@ const MIGRATIONS: readonly Migration[] = [
           citations TEXT
         );
         CREATE INDEX trials_session_id ON trials (session_id);
+      `)
+    },
+  },
+  {
+    // E1 stored the Oracle as "oracle" and a finished trial as "completed".
+    // E2's shared enums use the subject codes and the design's status names.
+    version: 2,
+    name: 'subject and status codes',
+    up(db) {
+      db.exec(`
+        UPDATE trials SET subject = 'DOE_ORACLE' WHERE subject = 'oracle';
+        UPDATE trials SET status = 'SUCCESS' WHERE status = 'completed';
       `)
     },
   },
@@ -124,7 +136,7 @@ export class MetricsRepository {
   }
 
   /** Saves a trial with the next test number and returns the stored record. */
-  saveTrial(trial: NewTrial): TrialRecord {
+  saveTrial(trial: NewTrial): Trial {
     const insert = this.db.prepare(`
       INSERT INTO trials (
         trial_id, test_number, session_id, data_set_name, subject, question_number, status,
@@ -132,7 +144,7 @@ export class MetricsRepository {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const nextNumber = this.db.prepare('SELECT COALESCE(MAX(test_number), 0) + 1 AS next FROM trials')
-    const save = this.db.transaction((input: NewTrial): TrialRecord => {
+    const save = this.db.transaction((input: NewTrial): Trial => {
       const { next } = nextNumber.get() as { next: number }
       insert.run(
         input.trialId,
@@ -156,7 +168,7 @@ export class MetricsRepository {
   }
 
   /** Lists saved trials, newest first. */
-  listTrials(filter: TrialListFilter = {}): TrialRecord[] {
+  listTrials(filter: TrialListFilter = {}): Trial[] {
     const conditions: string[] = []
     const params: Array<string | number> = []
     if (filter.sessionId !== undefined) {
@@ -171,7 +183,7 @@ export class MetricsRepository {
     const rows = this.db
       .prepare(`SELECT * FROM trials ${where} ORDER BY test_number DESC LIMIT ?`)
       .all(...params, filter.limit ?? 50) as TrialRow[]
-    return rows.map(toRecord)
+    return rows.map(toTrial)
   }
 
   close(): void {
@@ -179,13 +191,13 @@ export class MetricsRepository {
   }
 }
 
-function toRecord(row: TrialRow): TrialRecord {
+function toTrial(row: TrialRow): Trial {
   return {
     trialId: row.trial_id,
     testNumber: row.test_number,
     sessionId: row.session_id,
     dataSetName: row.data_set_name,
-    subject: row.subject as SubjectId,
+    subject: row.subject as Subject,
     questionNumber: row.question_number,
     status: row.status as TrialStatus,
     beginTs: row.begin_ts,

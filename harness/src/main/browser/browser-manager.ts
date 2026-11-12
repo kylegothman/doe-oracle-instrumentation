@@ -1,5 +1,5 @@
 import { chromium, type Browser, type LaunchOptions, type Page } from 'playwright'
-import type { SubjectId } from '../../shared/subjects'
+import type { Subject } from '../../shared/subjects'
 
 /** The part of Playwright the manager calls. Injected so tests run without a browser. */
 export interface BrowserLauncher {
@@ -30,7 +30,7 @@ export class BrowserManager {
   private readonly headless: boolean
   private readonly launcher: BrowserLauncher
   private browser: Browser | null = null
-  private readonly pages = new Map<SubjectId, Page>()
+  private readonly pages = new Map<Subject, Page>()
 
   constructor(options: BrowserManagerOptions = {}) {
     this.headless = options.headless ?? false
@@ -67,7 +67,7 @@ export class BrowserManager {
   }
 
   /** The page for a subject, in its own context. Launches the browser if needed. */
-  async getPage(subject: SubjectId): Promise<Page> {
+  async getPage(subject: Subject): Promise<Page> {
     await this.launch()
     const browser = this.browser
     if (!browser) {

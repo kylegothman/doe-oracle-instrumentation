@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { SUBJECT_CODES, type SubjectId } from '../../shared/subjects'
+import type { Subject } from '../../shared/subjects'
 
 /**
  * One session per launch of the harness: a UUID that every trial saved
  * during this run carries.
- * TODO(#26): E2 completes session management (status, the session bar, and
- * assigning the ID where the Test Console shows it).
+ * TODO(#26): E2 completes session management: the sessions table,
+ * startSession(), getCurrentSession(), and the session ID in the UI.
  */
 export class SessionManager {
   readonly sessionId: string
@@ -20,8 +20,8 @@ export class SessionManager {
    * The data set name the requirements prescribe: the subject code plus the
    * calendar date of the trial on this machine, for example DOE_ORACLE-2026-11-11.
    */
-  buildDataSetName(subject: SubjectId, date: Date): string {
-    return `${SUBJECT_CODES[subject]}-${localIsoDate(date)}`
+  buildDataSetName(subject: Subject, date: Date): string {
+    return `${subject}-${localIsoDate(date)}`
   }
 }
 

@@ -1,4 +1,4 @@
-import { SUBJECT_LABELS, type SubjectId } from '../../shared/subjects'
+import { SUBJECT_LABELS, type Subject } from '../../shared/subjects'
 
 /** The part of a Playwright page that navigation needs. Tests pass a stub. */
 export interface Navigable {
@@ -10,7 +10,7 @@ export class SubjectUnreachableError extends Error {
   override readonly name = 'SubjectUnreachableError'
 
   constructor(
-    readonly subject: SubjectId,
+    readonly subject: Subject,
     readonly url: string,
     reason: string,
   ) {
@@ -28,7 +28,7 @@ const DEFAULT_TIMEOUT_MS = 15_000
  */
 export async function openSubjectPage(
   page: Navigable,
-  subject: SubjectId,
+  subject: Subject,
   url: string,
   options: { timeoutMs?: number } = {},
 ): Promise<void> {

@@ -1,14 +1,22 @@
+import Database from 'better-sqlite3'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { Subject } from '../../shared/subjects'
+import { TrialStatus } from '../../shared/trials'
 import { MetricsRepository, type NewTrial } from './metrics-repository'
+
+const CURRENT_SCHEMA_VERSION = 2
 
 function sampleTrial(overrides: Partial<NewTrial> = {}): NewTrial {
   return {
     trialId: 'trial-1',
     sessionId: 'session-a',
     dataSetName: 'DOE_ORACLE-2026-11-11',
-    subject: 'oracle',
+    subject: Subject.DOE_ORACLE,
     questionNumber: 1,
-    status: 'completed',
+    status: TrialStatus.SUCCESS,
     beginTs: '2026-11-11T02:53:28.530Z',
     firstResponseTs: '2026-11-11T02:53:28.830Z',
     endTs: '2026-11-11T02:53:29.430Z',
@@ -18,6 +26,30 @@ function sampleTrial(overrides: Partial<NewTrial> = {}): NewTrial {
     citations: ['paper-a.pdf · p.3', 'paper-b.pdf · p.12'],
     ...overrides,
   }
+}
+
+/**
+ * Builds a database exactly as E1 (schema version 1) left it, with one
+ * trial saved under E1's vocabulary, so the upgrade path stays tested.
+ */
+function createE1Database(filePath: string): void {
+  const db = new Database(filePath)
+  db.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations VALUES (1, 'create trials', '2026-11-11T16:00:00.000Z');
+    CREATE TABLE trials (
+      trial_id TEXT PRIMARY KEY, test_number INTEGER UNIQUE, session_id TEXT, data_set_name TEXT,
+      subject TEXT, question_number INTEGER, status TEXT, begin_ts TEXT, first_response_ts TEXT,
+      end_ts TEXT, response_ms INTEGER, first_response_ms INTEGER, answer_text TEXT, citations TEXT
+    );
+    CREATE INDEX trials_session_id ON trials (session_id);
+    INSERT INTO trials VALUES (
+      'e1-trial', 1, 'e1-session', 'DOE_ORACLE-2026-11-11', 'oracle', 1, 'completed',
+      '2026-11-11T16:28:12.439Z', '2026-11-11T16:28:34.786Z', '2026-11-11T16:28:34.822Z', 22383, 22347,
+      'Combinatorial testing is a test design technique.', '["Applying_Combinatorial_Testing_in_Industrial_Settings · p.1"]'
+    );
+  `)
+  db.close()
 }
 
 describe('MetricsRepository', () => {
@@ -31,16 +63,12 @@ describe('MetricsRepository', () => {
     repository.close()
   })
 
-  it('migrates a fresh database to version 1 and creates the trials table with the agreed columns', async () => {
-    expect(repository.schemaVersion).toBe(1)
+  it('migrates a fresh database to the current version and creates the trials table with the agreed columns', () => {
+    expect(repository.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
 
-    const columns = (await (async () => {
-      // Read the schema back through a second, throw-away save: the column list comes from the row shape.
-      const saved = repository.saveTrial(sampleTrial())
-      return Object.keys(saved).sort()
-    })()).sort()
+    const saved = repository.saveTrial(sampleTrial())
 
-    expect(columns).toEqual(
+    expect(Object.keys(saved).sort()).toEqual(
       [
         'trialId', 'testNumber', 'sessionId', 'dataSetName', 'subject', 'questionNumber', 'status',
         'beginTs', 'firstResponseTs', 'endTs', 'responseMs', 'firstResponseMs', 'answerText', 'citations',
@@ -50,7 +78,7 @@ describe('MetricsRepository', () => {
 
   it('runs each migration once', () => {
     expect(repository.migrate()).toEqual([])
-    expect(repository.schemaVersion).toBe(1)
+    expect(repository.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
   })
 
   it('saves a trial with the next test number and reads it back unchanged', () => {
@@ -72,11 +100,12 @@ describe('MetricsRepository', () => {
   it('filters by session and subject and honours the limit', () => {
     repository.saveTrial(sampleTrial({ trialId: 'a', sessionId: 's1' }))
     repository.saveTrial(sampleTrial({ trialId: 'b', sessionId: 's2' }))
-    repository.saveTrial(sampleTrial({ trialId: 'c', sessionId: 's1' }))
+    repository.saveTrial(sampleTrial({ trialId: 'c', sessionId: 's1', subject: Subject.COPILOT }))
 
     expect(repository.listTrials({ sessionId: 's1' }).map((t) => t.trialId)).toEqual(['c', 'a'])
     expect(repository.listTrials({ sessionId: 's1', limit: 1 }).map((t) => t.trialId)).toEqual(['c'])
-    expect(repository.listTrials({ subject: 'oracle' })).toHaveLength(3)
+    expect(repository.listTrials({ subject: Subject.DOE_ORACLE })).toHaveLength(2)
+    expect(repository.listTrials({ subject: Subject.COPILOT })).toHaveLength(1)
     expect(repository.listTrials({ sessionId: 'nope' })).toEqual([])
   })
 
@@ -103,5 +132,45 @@ describe('MetricsRepository', () => {
 
   it('reports the file it opened', () => {
     expect(repository.filePath).toBe(':memory:')
+  })
+})
+
+describe('MetricsRepository migrations from an E1 database', () => {
+  let dir: string
+  let upgraded: MetricsRepository | null = null
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'harness-e1-'))
+  })
+
+  afterEach(() => {
+    upgraded?.close()
+    upgraded = null
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('applies the later migrations in order and rewrites E1 rows into the shared vocabulary', async () => {
+    const filePath = join(dir, 'harness.db')
+    createE1Database(filePath)
+
+    upgraded = await MetricsRepository.open(filePath)
+
+    expect(upgraded.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
+    const applied = new Database(filePath, { readonly: true })
+      .prepare('SELECT version FROM schema_migrations ORDER BY version')
+      .all() as Array<{ version: number }>
+    expect(applied.map((row) => row.version)).toEqual([1, 2])
+
+    const [trial] = upgraded.listTrials()
+    expect(trial).toMatchObject({
+      trialId: 'e1-trial',
+      testNumber: 1,
+      subject: Subject.DOE_ORACLE,
+      status: TrialStatus.SUCCESS,
+      responseMs: 22383,
+      citations: ['Applying_Combinatorial_Testing_in_Industrial_Settings · p.1'],
+    })
+    // A trial saved after the upgrade continues the numbering.
+    expect(upgraded.saveTrial(sampleTrial({ trialId: 'e2-trial' })).testNumber).toBe(2)
   })
 })

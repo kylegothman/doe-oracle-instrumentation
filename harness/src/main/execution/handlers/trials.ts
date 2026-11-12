@@ -1,5 +1,5 @@
-import type { TrialRecord } from '../../../shared/ipc'
-import { SUBJECT_IDS, type SubjectId } from '../../../shared/subjects'
+import { isSubject, type Subject } from '../../../shared/subjects'
+import type { Trial } from '../../../shared/trials'
 import type { MetricsRepository } from '../../data/metrics-repository'
 import type { TrialController } from '../trial-controller'
 
@@ -12,9 +12,9 @@ const LIST_LIMIT = 20
  */
 export function createStartTrialHandler(
   controller: () => Promise<Pick<TrialController, 'runTrial'>>,
-): (subject: SubjectId, questionNumber: number) => Promise<TrialRecord> {
+): (subject: Subject, questionNumber: number) => Promise<Trial> {
   return async (subject, questionNumber) => {
-    if (!SUBJECT_IDS.includes(subject)) {
+    if (!isSubject(subject)) {
       throw new Error(`Unknown subject "${String(subject)}"`)
     }
     if (!Number.isInteger(questionNumber) || questionNumber < 1) {
@@ -27,7 +27,7 @@ export function createStartTrialHandler(
 /** Builds the handler for `trials:list`: the newest trials, for one session or for all. */
 export function createListTrialsHandler(
   repository: () => Promise<Pick<MetricsRepository, 'listTrials'>>,
-): (sessionId?: string) => Promise<TrialRecord[]> {
+): (sessionId?: string) => Promise<Trial[]> {
   return async (sessionId) => {
     const filter = sessionId ? { sessionId, limit: LIST_LIMIT } : { limit: LIST_LIMIT }
     return (await repository()).listTrials(filter)

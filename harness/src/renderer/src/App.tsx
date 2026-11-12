@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { AppInfo, SqliteStatus, TrialRecord } from '../../shared/ipc'
+import type { AppInfo, SqliteStatus } from '../../shared/ipc'
+import { Subject } from '../../shared/subjects'
+import type { Trial } from '../../shared/trials'
 
 type Loadable<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string }
 
@@ -90,12 +92,12 @@ function SqlitePanel({ sqlite }: { sqlite: Loadable<SqliteStatus> }) {
 type TrialRunState =
   | { status: 'idle' }
   | { status: 'running' }
-  | { status: 'done'; trial: TrialRecord }
+  | { status: 'done'; trial: Trial }
   | { status: 'error'; message: string }
 
 const ANSWER_PREVIEW_CHARS = 400
 
-function TrialResult({ trial }: { trial: TrialRecord }) {
+function TrialResult({ trial }: { trial: Trial }) {
   const preview =
     trial.answerText && trial.answerText.length > ANSWER_PREVIEW_CHARS
       ? `${trial.answerText.slice(0, ANSWER_PREVIEW_CHARS)}…`
@@ -133,7 +135,7 @@ function TrialPanel({ onSaved }: { onSaved: () => void }) {
   const startTrial = () => {
     setRun({ status: 'running' })
     window.harness
-      .startTrial('oracle', 1)
+      .startTrial(Subject.DOE_ORACLE, 1)
       .then((trial) => {
         setRun({ status: 'done', trial })
         onSaved()

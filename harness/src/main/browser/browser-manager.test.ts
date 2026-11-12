@@ -1,5 +1,6 @@
 import type { Browser, Page } from 'playwright'
 import { describe, expect, it, vi } from 'vitest'
+import { Subject } from '../../shared/subjects'
 import { BrowserLaunchError, BrowserManager, type BrowserLauncher } from './browser-manager'
 
 /** A minimal stand-in for a Playwright Browser: contexts, pages, and the disconnected event. */
@@ -40,7 +41,7 @@ describe('BrowserManager', () => {
 
     await manager.launch()
     await manager.launch()
-    await manager.getPage('oracle')
+    await manager.getPage(Subject.DOE_ORACLE)
 
     expect(launcher.launch).toHaveBeenCalledTimes(1)
     expect(manager.isRunning).toBe(true)
@@ -60,8 +61,8 @@ describe('BrowserManager', () => {
     const { launcher, fake } = createFakeLauncher()
     const manager = new BrowserManager({ launcher })
 
-    const first = await manager.getPage('oracle')
-    const second = await manager.getPage('oracle')
+    const first = await manager.getPage(Subject.DOE_ORACLE)
+    const second = await manager.getPage(Subject.DOE_ORACLE)
 
     expect(second).toBe(first)
     expect(fake.newContext).toHaveBeenCalledTimes(1)
@@ -72,9 +73,9 @@ describe('BrowserManager', () => {
     const { launcher, fake } = createFakeLauncher()
     const manager = new BrowserManager({ launcher })
 
-    const first = await manager.getPage('oracle')
+    const first = await manager.getPage(Subject.DOE_ORACLE)
     fake.pages[0]!.closed = true
-    const second = await manager.getPage('oracle')
+    const second = await manager.getPage(Subject.DOE_ORACLE)
 
     expect(second).not.toBe(first)
     expect(fake.pages).toHaveLength(2)
@@ -83,25 +84,25 @@ describe('BrowserManager', () => {
   it('closes the browser and relaunches on the next use', async () => {
     const { launcher, fake } = createFakeLauncher()
     const manager = new BrowserManager({ launcher })
-    await manager.getPage('oracle')
+    await manager.getPage(Subject.DOE_ORACLE)
 
     await manager.close()
 
     expect(fake.browser.close).toHaveBeenCalledTimes(1)
     expect(manager.isRunning).toBe(false)
-    await manager.getPage('oracle')
+    await manager.getPage(Subject.DOE_ORACLE)
     expect(launcher.launch).toHaveBeenCalledTimes(2)
   })
 
   it('forgets a browser that disconnects on its own, so the next call relaunches', async () => {
     const { launcher, fake } = createFakeLauncher()
     const manager = new BrowserManager({ launcher })
-    await manager.getPage('oracle')
+    await manager.getPage(Subject.DOE_ORACLE)
 
     await fake.disconnect()
 
     expect(manager.isRunning).toBe(false)
-    await manager.getPage('oracle')
+    await manager.getPage(Subject.DOE_ORACLE)
     expect(launcher.launch).toHaveBeenCalledTimes(2)
   })
 

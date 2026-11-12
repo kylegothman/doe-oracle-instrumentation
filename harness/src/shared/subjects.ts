@@ -1,18 +1,28 @@
 /**
- * The systems under test. E1 drives the DOE Oracle only.
- * TODO(#25): the shared SubjectAdapter interface arrives with E2.
- * TODO(#5, #6): the Copilot and Google adapters add their ids here.
+ * The systems under test (Detailed Design 3.2). The enum values are the
+ * subject codes: what the trials table stores in its subject column and
+ * what a data set name starts with, for example DOE_ORACLE-2026-11-12.
+ *
+ * TODO(#5, #6): the Copilot and Google adapters arrive with E4 and E5;
+ * until then only DOE_ORACLE has an adapter registered.
  */
-export type SubjectId = 'oracle'
-
-export const SUBJECT_IDS: readonly SubjectId[] = ['oracle']
-
-/** Human-readable names for messages and the UI. */
-export const SUBJECT_LABELS: Record<SubjectId, string> = {
-  oracle: 'DOE Oracle',
+export enum Subject {
+  DOE_ORACLE = 'DOE_ORACLE',
+  COPILOT = 'COPILOT',
+  GOOGLE = 'GOOGLE',
 }
 
-/** Upper-case subject codes used in data set names, for example DOE_ORACLE-2026-11-11. */
-export const SUBJECT_CODES: Record<SubjectId, string> = {
-  oracle: 'DOE_ORACLE',
+/** Every subject, in the order the harness lists them. */
+export const SUBJECTS: readonly Subject[] = [Subject.DOE_ORACLE, Subject.COPILOT, Subject.GOOGLE]
+
+/** Human-readable names for messages and the UI. */
+export const SUBJECT_LABELS: Record<Subject, string> = {
+  [Subject.DOE_ORACLE]: 'DOE Oracle',
+  [Subject.COPILOT]: 'Microsoft Copilot',
+  [Subject.GOOGLE]: 'Google Search',
+}
+
+/** True when value is one of the subject codes. Use it on anything that crossed the IPC bridge. */
+export function isSubject(value: unknown): value is Subject {
+  return typeof value === 'string' && (SUBJECTS as readonly string[]).includes(value)
 }
