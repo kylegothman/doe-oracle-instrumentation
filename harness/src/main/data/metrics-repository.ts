@@ -4,8 +4,15 @@ import type { Subject } from '../../shared/subjects'
 import type { FailureType } from '../../shared/failures'
 import { TrialStatus, type Trial, type TrialFailure } from '../../shared/trials'
 
-/** A trial to save. The repository assigns the test number; the failure is passed separately. */
-export type NewTrial = Omit<Trial, 'testNumber' | 'failure'>
+/** Fields only some subjects or later epics fill in. Left out, they are saved as null. */
+type OptionalTrialFields = 'pageLoadMs' | 'timeToAnswerMs' | 'sourceUrl' | 'keywords'
+
+/**
+ * A trial to save. The repository assigns the test number and computes the
+ * size from the answer; the failure is passed separately.
+ */
+export type NewTrial = Omit<Trial, 'testNumber' | 'failure' | 'sizeBytes' | OptionalTrialFields> &
+  Partial<Pick<Trial, OptionalTrialFields>>
 
 export interface TrialListFilter {
   sessionId?: string
@@ -23,7 +30,7 @@ interface Migration {
 /**
  * Schema versions, applied in order inside one transaction each. Add a new
  * entry to change the schema; never edit an applied one.
- * TODO(#29): E3 extends the trials table and adds the export tables here.
+ * TODO(#29): E3 adds the expert tables here.
  */
 const MIGRATIONS: readonly Migration[] = [
   {
@@ -91,6 +98,24 @@ const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    // The rest of the Trial fields in Detailed Design Figure 10. Existing
+    // trials keep null for the Google-only fields and keywords; their size is
+    // computed from the answer they already have (a BLOB's length is its
+    // byte count, so this is the UTF-8 size, not the character count).
+    version: 5,
+    name: 'trial export fields',
+    up(db) {
+      db.exec(`
+        ALTER TABLE trials ADD COLUMN page_load_ms INTEGER;
+        ALTER TABLE trials ADD COLUMN time_to_answer_ms INTEGER;
+        ALTER TABLE trials ADD COLUMN source_url TEXT;
+        ALTER TABLE trials ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE trials ADD COLUMN keywords TEXT;
+        UPDATE trials SET size_bytes = COALESCE(LENGTH(CAST(answer_text AS BLOB)), 0);
+      `)
+    },
+  },
 ]
 
 interface SessionRow {
@@ -114,6 +139,11 @@ interface TrialRow {
   first_response_ms: number | null
   answer_text: string | null
   citations: string | null
+  page_load_ms: number | null
+  time_to_answer_ms: number | null
+  source_url: string | null
+  size_bytes: number
+  keywords: string | null
   /** From the LEFT JOIN on failed_requests; null for a trial that did not fail. */
   failure_type: string | null
   error_message: string | null
@@ -193,8 +223,9 @@ export class MetricsRepository {
     const insert = this.db.prepare(`
       INSERT INTO trials (
         trial_id, test_number, session_id, data_set_name, subject, question_number, status,
-        begin_ts, first_response_ts, end_ts, response_ms, first_response_ms, answer_text, citations
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        begin_ts, first_response_ts, end_ts, response_ms, first_response_ms, answer_text, citations,
+        page_load_ms, time_to_answer_ms, source_url, size_bytes, keywords
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertFailure = this.db.prepare(`
       INSERT INTO failed_requests (trial_id, failure_type, error_message, elapsed_ms) VALUES (?, ?, ?, ?)
@@ -202,6 +233,15 @@ export class MetricsRepository {
     const nextNumber = this.db.prepare('SELECT COALESCE(MAX(test_number), 0) + 1 AS next FROM trials')
     const save = this.db.transaction((input: NewTrial, failed?: TrialFailure): Trial => {
       const { next } = nextNumber.get() as { next: number }
+      const stored: Omit<Trial, 'testNumber' | 'failure'> = {
+        ...input,
+        citations: [...input.citations],
+        pageLoadMs: input.pageLoadMs ?? null,
+        timeToAnswerMs: input.timeToAnswerMs ?? null,
+        sourceUrl: input.sourceUrl ?? null,
+        sizeBytes: utf8ByteLength(input.answerText),
+        keywords: input.keywords ?? null,
+      }
       insert.run(
         input.trialId,
         next,
@@ -217,11 +257,16 @@ export class MetricsRepository {
         input.firstResponseMs,
         input.answerText,
         JSON.stringify(input.citations),
+        stored.pageLoadMs,
+        stored.timeToAnswerMs,
+        stored.sourceUrl,
+        stored.sizeBytes,
+        stored.keywords,
       )
       if (failed) {
         insertFailure.run(input.trialId, failed.type, failed.message, failed.elapsedMs)
       }
-      const saved: Trial = { ...input, testNumber: next, citations: [...input.citations] }
+      const saved: Trial = { ...stored, testNumber: next }
       return failed ? { ...saved, failure: { ...failed } } : saved
     })
     return save(trial, failure)
@@ -284,6 +329,11 @@ function toTrial(row: TrialRow): Trial {
     firstResponseMs: row.first_response_ms,
     answerText: row.answer_text,
     citations: parseCitations(row.citations),
+    pageLoadMs: row.page_load_ms,
+    timeToAnswerMs: row.time_to_answer_ms,
+    sourceUrl: row.source_url,
+    sizeBytes: row.size_bytes,
+    keywords: row.keywords,
   }
   if (row.failure_type !== null) {
     trial.failure = {
@@ -293,6 +343,11 @@ function toTrial(row: TrialRow): Trial {
     }
   }
   return trial
+}
+
+/** Size Kbytes in the export is derived from this, so it counts bytes, not characters. */
+function utf8ByteLength(text: string | null): number {
+  return text === null ? 0 : Buffer.byteLength(text, 'utf8')
 }
 
 function parseCitations(value: string | null): string[] {

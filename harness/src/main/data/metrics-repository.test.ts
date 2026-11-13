@@ -5,10 +5,23 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FailureType } from '../../shared/failures'
 import { Subject } from '../../shared/subjects'
-import { TrialStatus } from '../../shared/trials'
+import { TrialStatus, type Trial } from '../../shared/trials'
 import { MetricsRepository, type NewTrial } from './metrics-repository'
 
-const CURRENT_SCHEMA_VERSION = 4
+const CURRENT_SCHEMA_VERSION = 5
+
+/** What saveTrial returns for a NewTrial that leaves the optional fields out. */
+function asSaved(trial: NewTrial, testNumber: number): Trial {
+  return {
+    pageLoadMs: null,
+    timeToAnswerMs: null,
+    sourceUrl: null,
+    keywords: null,
+    ...trial,
+    testNumber,
+    sizeBytes: trial.answerText === null ? 0 : Buffer.byteLength(trial.answerText, 'utf8'),
+  }
+}
 
 function sampleTrial(overrides: Partial<NewTrial> = {}): NewTrial {
   return {
@@ -84,6 +97,7 @@ describe('MetricsRepository', () => {
       [
         'trialId', 'testNumber', 'sessionId', 'dataSetName', 'subject', 'questionNumber', 'status',
         'beginTs', 'firstResponseTs', 'endTs', 'responseMs', 'firstResponseMs', 'answerText', 'citations',
+        'pageLoadMs', 'timeToAnswerMs', 'sourceUrl', 'sizeBytes', 'keywords',
       ].sort(),
     )
   })
@@ -97,7 +111,42 @@ describe('MetricsRepository', () => {
     const saved = repository.saveTrial(sampleTrial())
 
     expect(saved.testNumber).toBe(1)
-    expect(repository.listTrials()).toEqual([{ ...sampleTrial(), testNumber: 1 }])
+    expect(repository.listTrials()).toEqual([asSaved(sampleTrial(), 1)])
+  })
+
+  it('saves and reads back the Google-only fields and keywords', () => {
+    const google = sampleTrial({
+      subject: Subject.GOOGLE,
+      pageLoadMs: 812,
+      timeToAnswerMs: 14_250,
+      sourceUrl: 'https://csrc.nist.gov/projects/automated-combinatorial-testing-for-software',
+      keywords: 'combinatorial testing',
+    })
+
+    const saved = repository.saveTrial(google)
+
+    expect(saved).toMatchObject({ pageLoadMs: 812, timeToAnswerMs: 14_250, keywords: 'combinatorial testing' })
+    expect(repository.listTrials()).toEqual([saved])
+  })
+
+  it('saves the optional fields as null when a subject leaves them out', () => {
+    repository.saveTrial(sampleTrial())
+
+    expect(repository.listTrials()[0]).toMatchObject({ pageLoadMs: null, timeToAnswerMs: null, sourceUrl: null, keywords: null })
+  })
+
+  it('computes the size as the UTF-8 byte length of the answer, not its character count', () => {
+    // "é" and "·" take two bytes each in UTF-8, "→" takes three.
+    const saved = repository.saveTrial(sampleTrial({ answerText: 'é · →' }))
+
+    expect(saved.sizeBytes).toBe(9)
+    expect(repository.listTrials()[0]?.sizeBytes).toBe(9)
+  })
+
+  it('gives a trial with no answer a size of 0', () => {
+    const saved = repository.saveTrial(sampleTrial({ answerText: null }))
+
+    expect(saved.sizeBytes).toBe(0)
   })
 
   it('numbers trials sequentially across sessions', () => {
@@ -152,7 +201,7 @@ describe('MetricsRepository', () => {
 
     const saved = repository.saveTrial(failed, failure)
 
-    expect(saved).toEqual({ ...failed, testNumber: 1, failure })
+    expect(saved).toEqual({ ...asSaved(failed, 1), failure })
     expect(repository.listTrials()).toEqual([saved])
     expect(repository.listTrials({ sessionId: 'session-a' })[0]?.failure).toEqual(failure)
   })
@@ -227,7 +276,7 @@ describe('MetricsRepository migrations from an E1 database', () => {
     upgraded = await MetricsRepository.open(filePath)
 
     expect(upgraded.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
-    expect(appliedVersions(filePath)).toEqual([1, 2, 3, 4])
+    expect(appliedVersions(filePath)).toEqual([1, 2, 3, 4, 5])
 
     const [trial] = upgraded.listTrials()
     expect(trial).toMatchObject({
@@ -237,6 +286,12 @@ describe('MetricsRepository migrations from an E1 database', () => {
       status: TrialStatus.SUCCESS,
       responseMs: 22383,
       citations: ['Applying_Combinatorial_Testing_in_Industrial_Settings · p.1'],
+      // Migration 5 fills the size from the existing answer and leaves the rest null.
+      sizeBytes: Buffer.byteLength('Combinatorial testing is a test design technique.', 'utf8'),
+      pageLoadMs: null,
+      timeToAnswerMs: null,
+      sourceUrl: null,
+      keywords: null,
     })
     // A trial saved after the upgrade continues the numbering, and the new tables are usable.
     expect(upgraded.saveTrial(sampleTrial({ trialId: 'e2-trial' })).testNumber).toBe(2)
