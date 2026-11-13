@@ -170,6 +170,10 @@ The schema is versioned in `MetricsRepository` (`src/main/data/metrics-repositor
 | 2 | subject codes (`DOE_ORACLE`, `COPILOT`, `GOOGLE`) and status values (`SUCCESS`, `FAILED`, `NO_ANSWER_FOUND`) |
 | 3 | `sessions`: `session_id`, `started_at`, `app_version` |
 | 4 | `failed_requests`: `trial_id` (references `trials`), `failure_type`, `error_message`, `elapsed_ms` |
+| 5 | `trials` gains `page_load_ms`, `time_to_answer_ms`, `source_url` (Google only, null otherwise), `size_bytes` (UTF-8 bytes of the answer, computed on save and backfilled), and `keywords` |
+| 6 | `experts`: `expert_id`, `name`, `source` (`EMAIL` or `INTERVIEW`), `outreach_ts`, `first_answer_ts`, `turnaround_ms` (stored once per expert). `expert_responses`: `response_id`, `test_number`, `expert_id` (references `experts`), `session_id`, `question_number`, `answer_text`, `size_bytes`, `keywords`, `recorded_at`, `superseded_by` (references `expert_responses`; null for the active answer) |
+
+Trials and expert answers share one Test # sequence (`nextTestNumber()`), so every exported row has a unique Test #. Expert answers are never overwritten: replacing one keeps the old row, points its `superseded_by` at the new row, and moves its Test # to the new row, so a revised answer keeps its number. Only one active answer per expert and question is allowed.
 
 ### Startup check
 

@@ -44,6 +44,16 @@ export interface Trial {
   firstResponseMs: number | null
   answerText: string | null
   citations: string[]
+  /** Google only: Enter to the results page finishing loading. Null for the other subjects. */
+  pageLoadMs: number | null
+  /** Google only: Enter to the Tester's Answer Found click. Null for the other subjects. */
+  timeToAnswerMs: number | null
+  /** Google only: the page the answering passage came from. Null for the other subjects. */
+  sourceUrl: string | null
+  /** UTF-8 byte length of answerText, 0 when there is none. The repository computes it on save. */
+  sizeBytes: number
+  /** The question's most significant terms, for the export's Keywords column. Null until a source for them exists. */
+  keywords: string | null
   /** Present when status is FAILED. */
   failure?: TrialFailure
 }

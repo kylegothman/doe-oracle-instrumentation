@@ -3,9 +3,47 @@ import type { Session } from '../../shared/session'
 import type { Subject } from '../../shared/subjects'
 import type { FailureType } from '../../shared/failures'
 import { TrialStatus, type Trial, type TrialFailure } from '../../shared/trials'
+import type { Expert, ExpertResponse, ResponseSource } from '../../shared/experts'
 
-/** A trial to save. The repository assigns the test number; the failure is passed separately. */
-export type NewTrial = Omit<Trial, 'testNumber' | 'failure'>
+/** Fields only some subjects or later epics fill in. Left out, they are saved as null. */
+type OptionalTrialFields = 'pageLoadMs' | 'timeToAnswerMs' | 'sourceUrl' | 'keywords'
+
+/**
+ * A trial to save. The repository assigns the test number and computes the
+ * size from the answer; the failure is passed separately.
+ */
+export type NewTrial = Omit<Trial, 'testNumber' | 'failure' | 'sizeBytes' | OptionalTrialFields> &
+  Partial<Pick<Trial, OptionalTrialFields>>
+
+/**
+ * An expert answer to save. The repository assigns the response id and test
+ * number and computes the size; a new answer is always active.
+ */
+export type NewExpertResponse = Omit<ExpertResponse, 'responseId' | 'testNumber' | 'sizeBytes' | 'supersededBy' | 'keywords'> &
+  Partial<Pick<ExpertResponse, 'keywords'>>
+
+/** What saveExpertResponse stored, and the answer it replaced, if any. */
+export interface ExpertResponseSaved {
+  saved: ExpertResponse
+  /** The previously active answer, now pointing at saved; null when there was none. */
+  superseded: ExpertResponse | null
+}
+
+/**
+ * Thrown by saveExpertResponse when the question already has an active
+ * answer and replace was not requested. The Expert Responses page shows the
+ * existing answer and asks the Researcher to confirm before saving again
+ * with replace: true (UC-5, SD-5).
+ */
+export class ActiveAnswerExistsError extends Error {
+  constructor(readonly existing: ExpertResponse) {
+    super(
+      `Expert ${existing.expertId} already has an answer to question ${existing.questionNumber} ` +
+        `(response ${existing.responseId}); save with replace: true to supersede it`,
+    )
+    this.name = 'ActiveAnswerExistsError'
+  }
+}
 
 export interface TrialListFilter {
   sessionId?: string
@@ -23,7 +61,6 @@ interface Migration {
 /**
  * Schema versions, applied in order inside one transaction each. Add a new
  * entry to change the schema; never edit an applied one.
- * TODO(#29): E3 extends the trials table and adds the export tables here.
  */
 const MIGRATIONS: readonly Migration[] = [
   {
@@ -91,7 +128,88 @@ const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    // The rest of the Trial fields in Detailed Design Figure 10. Existing
+    // trials keep null for the Google-only fields and keywords; their size is
+    // computed from the answer they already have (a BLOB's length is its
+    // byte count, so this is the UTF-8 size, not the character count).
+    version: 5,
+    name: 'trial export fields',
+    up(db) {
+      db.exec(`
+        ALTER TABLE trials ADD COLUMN page_load_ms INTEGER;
+        ALTER TABLE trials ADD COLUMN time_to_answer_ms INTEGER;
+        ALTER TABLE trials ADD COLUMN source_url TEXT;
+        ALTER TABLE trials ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE trials ADD COLUMN keywords TEXT;
+        UPDATE trials SET size_bytes = COALESCE(LENGTH(CAST(answer_text AS BLOB)), 0);
+      `)
+    },
+  },
+  {
+    // Detailed Design Table 3. The expert's turnaround is stored once, on the
+    // expert. Answers are never overwritten: a replacement is a new row, and
+    // the old row's superseded_by points at it. The partial unique index
+    // allows only one active (superseded_by IS NULL) answer per expert and
+    // question. superseded_by is checked at commit (DEFERRABLE), so a
+    // replacement can mark the old row with the new row's id and then insert
+    // the new row in the same transaction without breaking that index.
+    // The replacement takes over the old row's test_number, so a revised
+    // answer keeps its Test # and the export has no gaps; the old row's
+    // test_number becomes null (UNIQUE allows any number of nulls).
+    version: 6,
+    name: 'create experts and expert_responses',
+    up(db) {
+      db.exec(`
+        CREATE TABLE experts (
+          expert_id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('EMAIL', 'INTERVIEW')),
+          outreach_ts TEXT,
+          first_answer_ts TEXT,
+          turnaround_ms INTEGER
+        );
+        CREATE TABLE expert_responses (
+          response_id INTEGER PRIMARY KEY,
+          test_number INTEGER UNIQUE,
+          expert_id TEXT NOT NULL REFERENCES experts (expert_id),
+          session_id TEXT NOT NULL,
+          question_number INTEGER NOT NULL,
+          answer_text TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          keywords TEXT,
+          recorded_at TEXT NOT NULL,
+          superseded_by INTEGER REFERENCES expert_responses (response_id) DEFERRABLE INITIALLY DEFERRED
+        );
+        CREATE INDEX expert_responses_expert_id ON expert_responses (expert_id);
+        CREATE UNIQUE INDEX expert_responses_one_active
+          ON expert_responses (expert_id, question_number) WHERE superseded_by IS NULL;
+      `)
+    },
+  },
 ]
+
+interface ExpertRow {
+  expert_id: string
+  name: string
+  source: string
+  outreach_ts: string | null
+  first_answer_ts: string | null
+  turnaround_ms: number | null
+}
+
+interface ExpertResponseRow {
+  response_id: number
+  test_number: number | null
+  expert_id: string
+  session_id: string
+  question_number: number
+  answer_text: string
+  size_bytes: number
+  keywords: string | null
+  recorded_at: string
+  superseded_by: number | null
+}
 
 interface SessionRow {
   session_id: string
@@ -114,6 +232,11 @@ interface TrialRow {
   first_response_ms: number | null
   answer_text: string | null
   citations: string | null
+  page_load_ms: number | null
+  time_to_answer_ms: number | null
+  source_url: string | null
+  size_bytes: number
+  keywords: string | null
   /** From the LEFT JOIN on failed_requests; null for a trial that did not fail. */
   failure_type: string | null
   error_message: string | null
@@ -178,6 +301,26 @@ export class MetricsRepository {
   }
 
   /**
+   * The Test # the next saved row gets. Trials and expert answers share one
+   * sequence, so every row in the TestLogV3 export has a unique Test #: this
+   * is one more than the highest number in either table, 1 for an empty
+   * database. Call it inside the transaction that saves the row, so nothing
+   * can take the number in between.
+   */
+  nextTestNumber(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(n), 0) + 1 AS next FROM (
+           SELECT MAX(test_number) AS n FROM trials
+           UNION ALL
+           SELECT MAX(test_number) AS n FROM expert_responses
+         )`,
+      )
+      .get() as { next: number }
+    return row.next
+  }
+
+  /**
    * Saves a trial with the next test number and returns the stored record.
    * A FAILED trial is saved together with its failure (a failed_requests
    * row) in one transaction; any other status takes no failure.
@@ -193,15 +336,24 @@ export class MetricsRepository {
     const insert = this.db.prepare(`
       INSERT INTO trials (
         trial_id, test_number, session_id, data_set_name, subject, question_number, status,
-        begin_ts, first_response_ts, end_ts, response_ms, first_response_ms, answer_text, citations
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        begin_ts, first_response_ts, end_ts, response_ms, first_response_ms, answer_text, citations,
+        page_load_ms, time_to_answer_ms, source_url, size_bytes, keywords
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertFailure = this.db.prepare(`
       INSERT INTO failed_requests (trial_id, failure_type, error_message, elapsed_ms) VALUES (?, ?, ?, ?)
     `)
-    const nextNumber = this.db.prepare('SELECT COALESCE(MAX(test_number), 0) + 1 AS next FROM trials')
     const save = this.db.transaction((input: NewTrial, failed?: TrialFailure): Trial => {
-      const { next } = nextNumber.get() as { next: number }
+      const next = this.nextTestNumber()
+      const stored: Omit<Trial, 'testNumber' | 'failure'> = {
+        ...input,
+        citations: [...input.citations],
+        pageLoadMs: input.pageLoadMs ?? null,
+        timeToAnswerMs: input.timeToAnswerMs ?? null,
+        sourceUrl: input.sourceUrl ?? null,
+        sizeBytes: utf8ByteLength(input.answerText),
+        keywords: input.keywords ?? null,
+      }
       insert.run(
         input.trialId,
         next,
@@ -217,11 +369,16 @@ export class MetricsRepository {
         input.firstResponseMs,
         input.answerText,
         JSON.stringify(input.citations),
+        stored.pageLoadMs,
+        stored.timeToAnswerMs,
+        stored.sourceUrl,
+        stored.sizeBytes,
+        stored.keywords,
       )
       if (failed) {
         insertFailure.run(input.trialId, failed.type, failed.message, failed.elapsedMs)
       }
-      const saved: Trial = { ...input, testNumber: next, citations: [...input.citations] }
+      const saved: Trial = { ...stored, testNumber: next }
       return failed ? { ...saved, failure: { ...failed } } : saved
     })
     return save(trial, failure)
@@ -263,8 +420,149 @@ export class MetricsRepository {
     return row ? { sessionId: row.session_id, startedAt: row.started_at, appVersion: row.app_version } : null
   }
 
+  /**
+   * Saves an expert, or updates the one with the same id: the Researcher
+   * can enter the name and source first and the timestamps once the reply
+   * arrives. Returns the expert id.
+   *
+   * An update replaces turnaround_ms too, on purpose. UC-5 measures the
+   * turnaround once per expert (one value on the expert, not one per
+   * answer), and this is how that one value is first filled in or
+   * corrected after a typo in a timestamp. ExpertRecordService computes it
+   * from the two timestamps; nothing else should change it.
+   */
+  saveExpert(expert: Expert): string {
+    this.db
+      .prepare(
+        `INSERT INTO experts (expert_id, name, source, outreach_ts, first_answer_ts, turnaround_ms)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (expert_id) DO UPDATE SET
+           name = excluded.name,
+           source = excluded.source,
+           outreach_ts = excluded.outreach_ts,
+           first_answer_ts = excluded.first_answer_ts,
+           turnaround_ms = excluded.turnaround_ms`,
+      )
+      .run(expert.expertId, expert.name, expert.source, expert.outreachTs, expert.firstAnswerTs, expert.turnaroundMs)
+    return expert.expertId
+  }
+
+  /** The expert with this id, or null when none was saved. */
+  getExpert(expertId: string): Expert | null {
+    const row = this.db.prepare('SELECT * FROM experts WHERE expert_id = ?').get(expertId) as ExpertRow | undefined
+    return row ? toExpert(row) : null
+  }
+
+  /** Every saved expert, by name. */
+  listExperts(): Expert[] {
+    const rows = this.db.prepare('SELECT * FROM experts ORDER BY name, expert_id').all() as ExpertRow[]
+    return rows.map(toExpert)
+  }
+
+  /**
+   * Saves an expert's answer with the next test number. If the question
+   * already has an active answer, this throws ActiveAnswerExistsError unless
+   * replace is true; with replace, the new answer is saved with the old
+   * one's test number, and the old one is kept with its supersededBy
+   * pointing at the new one and no test number, in one transaction.
+   */
+  saveExpertResponse(response: NewExpertResponse, options: { replace?: boolean } = {}): ExpertResponseSaved {
+    const save = this.db.transaction((input: NewExpertResponse): ExpertResponseSaved => {
+      const existing = this.getActiveResponse(input.expertId, input.questionNumber)
+      if (existing && !options.replace) throw new ActiveAnswerExistsError(existing)
+
+      const { nextId } = this.db
+        .prepare('SELECT COALESCE(MAX(response_id), 0) + 1 AS nextId FROM expert_responses')
+        .get() as { nextId: number }
+      const saved: ExpertResponse = {
+        ...input,
+        responseId: nextId,
+        // A revised answer keeps the Test # of the one it replaces.
+        testNumber: existing?.testNumber ?? this.nextTestNumber(),
+        sizeBytes: utf8ByteLength(input.answerText),
+        keywords: input.keywords ?? null,
+        supersededBy: null,
+      }
+      // Update the old answer first: the one-active-answer index and the
+      // unique test number would both refuse the insert otherwise.
+      // superseded_by is checked when this commits.
+      if (existing) {
+        this.db
+          .prepare('UPDATE expert_responses SET superseded_by = ?, test_number = NULL WHERE response_id = ?')
+          .run(nextId, existing.responseId)
+      }
+      this.db
+        .prepare(
+          `INSERT INTO expert_responses (
+             response_id, test_number, expert_id, session_id, question_number,
+             answer_text, size_bytes, keywords, recorded_at, superseded_by
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(
+          saved.responseId,
+          saved.testNumber,
+          saved.expertId,
+          saved.sessionId,
+          saved.questionNumber,
+          saved.answerText,
+          saved.sizeBytes,
+          saved.keywords,
+          saved.recordedAt,
+        )
+      return { saved, superseded: existing ? { ...existing, supersededBy: nextId, testNumber: null } : null }
+    })
+    return save(response)
+  }
+
+  /** The expert's current answer to a question, or null when it has none. */
+  getActiveResponse(expertId: string, questionNumber: number): ExpertResponse | null {
+    const row = this.db
+      .prepare('SELECT * FROM expert_responses WHERE expert_id = ? AND question_number = ? AND superseded_by IS NULL')
+      .get(expertId, questionNumber) as ExpertResponseRow | undefined
+    return row ? toExpertResponse(row) : null
+  }
+
+  /**
+   * The expert's answers by question number. Only active answers unless
+   * includeSuperseded is set; then each question's answers follow in the
+   * order they were saved.
+   */
+  listExpertResponses(expertId: string, options: { includeSuperseded?: boolean } = {}): ExpertResponse[] {
+    const active = options.includeSuperseded ? '' : 'AND superseded_by IS NULL'
+    const rows = this.db
+      .prepare(`SELECT * FROM expert_responses WHERE expert_id = ? ${active} ORDER BY question_number, response_id`)
+      .all(expertId) as ExpertResponseRow[]
+    return rows.map(toExpertResponse)
+  }
+
   close(): void {
     this.db.close()
+  }
+}
+
+function toExpert(row: ExpertRow): Expert {
+  return {
+    expertId: row.expert_id,
+    name: row.name,
+    source: row.source as ResponseSource,
+    outreachTs: row.outreach_ts,
+    firstAnswerTs: row.first_answer_ts,
+    turnaroundMs: row.turnaround_ms,
+  }
+}
+
+function toExpertResponse(row: ExpertResponseRow): ExpertResponse {
+  return {
+    responseId: row.response_id,
+    testNumber: row.test_number,
+    expertId: row.expert_id,
+    sessionId: row.session_id,
+    questionNumber: row.question_number,
+    answerText: row.answer_text,
+    sizeBytes: row.size_bytes,
+    keywords: row.keywords,
+    recordedAt: row.recorded_at,
+    supersededBy: row.superseded_by,
   }
 }
 
@@ -284,6 +582,11 @@ function toTrial(row: TrialRow): Trial {
     firstResponseMs: row.first_response_ms,
     answerText: row.answer_text,
     citations: parseCitations(row.citations),
+    pageLoadMs: row.page_load_ms,
+    timeToAnswerMs: row.time_to_answer_ms,
+    sourceUrl: row.source_url,
+    sizeBytes: row.size_bytes,
+    keywords: row.keywords,
   }
   if (row.failure_type !== null) {
     trial.failure = {
@@ -293,6 +596,11 @@ function toTrial(row: TrialRow): Trial {
     }
   }
   return trial
+}
+
+/** Size Kbytes in the export is derived from this, so it counts bytes, not characters. */
+function utf8ByteLength(text: string | null): number {
+  return text === null ? 0 : Buffer.byteLength(text, 'utf8')
 }
 
 function parseCitations(value: string | null): string[] {
