@@ -1,8 +1,10 @@
 import type { IpcMainInvokeEvent } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 import { IpcChannels } from '../../shared/ipc'
+import { Subject } from '../../shared/subjects'
+import type { TrialEvent } from '../../shared/trials'
 import { createGetAppInfoHandler } from './handlers/app-info'
-import { IpcRouter, type IpcMainLike } from './ipc-router'
+import { IpcRouter, type IpcEventTarget, type IpcMainLike } from './ipc-router'
 
 type Listener = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
 
@@ -77,5 +79,36 @@ describe('IpcRouter', () => {
     expect(ipcMain.removeHandler).toHaveBeenCalledWith('app:get-info')
     expect(listeners.size).toBe(0)
     expect(router.channels).toEqual([])
+  })
+
+  it('pushes a trial event to every live window and skips destroyed ones', () => {
+    const { ipcMain } = createFakeIpcMain()
+    const live: IpcEventTarget = { send: vi.fn(), isDestroyed: () => false }
+    const gone: IpcEventTarget = { send: vi.fn(), isDestroyed: () => true }
+    const router = new IpcRouter(ipcMain, { eventTargets: () => [live, gone] })
+    const event: TrialEvent = { trialId: 't', subject: Subject.DOE_ORACLE, questionNumber: 1, status: 'started', elapsedMs: 0 }
+
+    router.sendTrialEvent(event)
+
+    expect(live.send).toHaveBeenCalledWith('trial:event', event)
+    expect(gone.send).not.toHaveBeenCalled()
+  })
+
+  it('keeps going when a window throws on send, and sends nothing without targets', () => {
+    const { ipcMain } = createFakeIpcMain()
+    const broken: IpcEventTarget = {
+      send: vi.fn(() => {
+        throw new Error('Object has been destroyed')
+      }),
+      isDestroyed: () => false,
+    }
+    const live: IpcEventTarget = { send: vi.fn(), isDestroyed: () => false }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const event: TrialEvent = { trialId: 't', subject: Subject.DOE_ORACLE, questionNumber: 1, status: 'completed', elapsedMs: 5 }
+
+    expect(() => new IpcRouter(ipcMain, { eventTargets: () => [broken, live] }).sendTrialEvent(event)).not.toThrow()
+    expect(live.send).toHaveBeenCalledWith('trial:event', event)
+    expect(() => new IpcRouter(ipcMain).sendTrialEvent(event)).not.toThrow()
+    warn.mockRestore()
   })
 })

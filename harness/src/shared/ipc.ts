@@ -1,4 +1,6 @@
-import type { SubjectId } from './subjects'
+import type { Session } from './session'
+import type { Subject } from './subjects'
+import type { Trial, TrialEvent } from './trials'
 
 /**
  * The contract between the renderer and the main process.
@@ -29,35 +31,6 @@ export type SqliteStatus =
   | { ok: true; version: string }
   | { ok: false; error: string }
 
-/** Outcome of a trial. TODO(#28): the Failure Detector adds the failure statuses in E2. */
-export type TrialStatus = 'completed'
-
-/**
- * One saved trial. Field names are camelCase here and snake_case in the
- * trials table (trial_id, test_number, ...). Timestamps are ISO 8601 UTC
- * with milliseconds; durations are whole milliseconds.
- */
-export interface TrialRecord {
-  trialId: string
-  /** Sequential number across the whole database, assigned when saved. */
-  testNumber: number
-  sessionId: string
-  /** Subject code plus date, for example DOE_ORACLE-2026-11-11. */
-  dataSetName: string
-  subject: SubjectId
-  questionNumber: number
-  status: TrialStatus
-  beginTs: string | null
-  firstResponseTs: string | null
-  endTs: string | null
-  /** begin to end. */
-  responseMs: number | null
-  /** begin to first response. */
-  firstResponseMs: number | null
-  answerText: string | null
-  citations: string[]
-}
-
 /**
  * Request and response shape for every IPC channel. Add a new channel here
  * first; the compiler then points at the handler and the bridge to update.
@@ -65,8 +38,9 @@ export interface TrialRecord {
 export interface IpcContracts {
   'app:get-info': { args: []; result: AppInfo }
   'diagnostics:get-sqlite-status': { args: []; result: SqliteStatus }
-  'trial:start': { args: [subject: SubjectId, questionNumber: number]; result: TrialRecord }
-  'trials:list': { args: [sessionId?: string]; result: TrialRecord[] }
+  'session:get': { args: []; result: Session }
+  'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
+  'trials:list': { args: [sessionId?: string]; result: Trial[] }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -77,9 +51,28 @@ export type IpcResult<C extends IpcChannel> = IpcContracts[C]['result']
 export const IpcChannels = {
   getAppInfo: 'app:get-info',
   getSqliteStatus: 'diagnostics:get-sqlite-status',
+  getSession: 'session:get',
   startTrial: 'trial:start',
   listTrials: 'trials:list',
 } as const satisfies Record<string, IpcChannel>
+
+/**
+ * Events the main process pushes to the renderer without being asked.
+ * The payload type is what the renderer's listener receives.
+ */
+export interface IpcEvents {
+  'trial:event': TrialEvent
+}
+
+export type IpcEventChannel = keyof IpcEvents
+export type IpcEventPayload<C extends IpcEventChannel> = IpcEvents[C]
+
+export const IpcEventChannels = {
+  trialEvent: 'trial:event',
+} as const satisfies Record<string, IpcEventChannel>
+
+/** Returned by every subscription; call it to stop listening. */
+export type Unsubscribe = () => void
 
 /** The property name the preload script exposes on `window`. */
 export const HARNESS_API_KEY = 'harness' as const
@@ -90,8 +83,12 @@ export interface HarnessApi {
   getAppInfo(): Promise<AppInfo>
   /** Returns the result of the SQLite startup probe. */
   getSqliteStatus(): Promise<SqliteStatus>
-  /** Runs one trial of a question against a subject and resolves with the saved record. */
-  startTrial(subject: SubjectId, questionNumber: number): Promise<TrialRecord>
+  /** Returns this launch's session: its ID, start time, and the harness version. */
+  getSession(): Promise<Session>
+  /** Runs one trial of a question against a subject and resolves with the saved trial. */
+  startTrial(subject: Subject, questionNumber: number): Promise<Trial>
   /** Lists saved trials, newest first, for one session or for all sessions. */
-  listTrials(sessionId?: string): Promise<TrialRecord[]>
+  listTrials(sessionId?: string): Promise<Trial[]>
+  /** Receives the running trial's status events. Returns the function that unsubscribes. */
+  onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }

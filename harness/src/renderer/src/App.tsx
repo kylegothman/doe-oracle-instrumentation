@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { AppInfo, SqliteStatus, TrialRecord } from '../../shared/ipc'
+import type { AppInfo, SqliteStatus } from '../../shared/ipc'
+import { Subject } from '../../shared/subjects'
+import type { Trial, TrialEvent } from '../../shared/trials'
 
 type Loadable<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string }
 
@@ -33,6 +35,28 @@ function useBridgeCall<T>(call: () => Promise<T>, refreshKey = 0): Loadable<T> {
   }, [refreshKey])
 
   return state
+}
+
+/** The session bar: this launch's session ID, which every saved trial carries. */
+function SessionBar() {
+  const session = useBridgeCall(() => window.harness.getSession())
+
+  return (
+    <p className="session-bar" data-testid="session-bar">
+      {session.status === 'loading' && 'Starting session…'}
+      {session.status === 'ready' && (
+        <>
+          Session <code data-testid="session-id">{session.value.sessionId}</code> started {session.value.startedAt}{' '}
+          · harness {session.value.appVersion}
+        </>
+      )}
+      {session.status === 'error' && (
+        <span role="alert" className="error" data-testid="session-error">
+          No session: {session.message}
+        </span>
+      )}
+    </p>
+  )
 }
 
 function AppInfoPanel({ appInfo }: { appInfo: Loadable<AppInfo> }) {
@@ -90,16 +114,36 @@ function SqlitePanel({ sqlite }: { sqlite: Loadable<SqliteStatus> }) {
 type TrialRunState =
   | { status: 'idle' }
   | { status: 'running' }
-  | { status: 'done'; trial: TrialRecord }
+  | { status: 'done'; trial: Trial }
   | { status: 'error'; message: string }
+
+function formatSeconds(ms: number | null): string {
+  return ms === null ? '–' : `${(ms / 1000).toFixed(1)} s`
+}
+
+/** The status events the main process pushed for the current trial, oldest first. */
+function TrialEvents({ events }: { events: TrialEvent[] }) {
+  if (events.length === 0) return null
+  return (
+    <ol className="events" data-testid="trial-events">
+      {events.map((event, index) => (
+        <li key={index} data-status={event.status}>
+          <span className="event-status">{event.status.replace('_', ' ')}</span> at {formatSeconds(event.elapsedMs)}
+          {event.failureType && <> · {event.failureType}</>}
+          {event.message && <> · {event.message}</>}
+        </li>
+      ))}
+    </ol>
+  )
+}
 
 const ANSWER_PREVIEW_CHARS = 400
 
-function TrialResult({ trial }: { trial: TrialRecord }) {
+function TrialResult({ trial }: { trial: Trial }) {
   const preview =
     trial.answerText && trial.answerText.length > ANSWER_PREVIEW_CHARS
       ? `${trial.answerText.slice(0, ANSWER_PREVIEW_CHARS)}…`
-      : (trial.answerText ?? '(no answer text)')
+      : trial.answerText || '(no answer text)'
   return (
     <div className="result" data-testid="trial-result">
       <dl className="facts">
@@ -113,10 +157,29 @@ function TrialResult({ trial }: { trial: TrialRecord }) {
         <dd data-testid="trial-first-response">{trial.firstResponseTs}</dd>
         <dt>End</dt>
         <dd data-testid="trial-end">{trial.endTs}</dd>
+        <dt>Status</dt>
+        <dd data-testid="trial-status">
+          {trial.status}
+          {trial.failure && (
+            <>
+              {' '}
+              · <strong data-testid="trial-failure-type">{trial.failure.type}</strong> after{' '}
+              {formatSeconds(trial.failure.elapsedMs)}
+            </>
+          )}
+        </dd>
+        {trial.failure && (
+          <>
+            <dt>Failure</dt>
+            <dd className="error" data-testid="trial-failure-message">
+              {trial.failure.message}
+            </dd>
+          </>
+        )}
         <dt>Response time</dt>
-        <dd data-testid="trial-response-ms">{trial.responseMs} ms</dd>
+        <dd data-testid="trial-response-ms">{trial.responseMs === null ? '–' : `${trial.responseMs} ms`}</dd>
         <dt>Time to first response</dt>
-        <dd data-testid="trial-first-response-ms">{trial.firstResponseMs} ms</dd>
+        <dd data-testid="trial-first-response-ms">{trial.firstResponseMs === null ? '–' : `${trial.firstResponseMs} ms`}</dd>
         <dt>Citations</dt>
         <dd>{trial.citations.length > 0 ? trial.citations.join('; ') : 'none'}</dd>
       </dl>
@@ -129,11 +192,18 @@ function TrialResult({ trial }: { trial: TrialRecord }) {
 
 function TrialPanel({ onSaved }: { onSaved: () => void }) {
   const [run, setRun] = useState<TrialRunState>({ status: 'idle' })
+  const [events, setEvents] = useState<TrialEvent[]>([])
+
+  useEffect(() => {
+    // Subscribed for the panel's lifetime; the main process sends one stream for every trial.
+    return window.harness.onTrialEvent((event) => setEvents((prev) => [...prev, event]))
+  }, [])
 
   const startTrial = () => {
     setRun({ status: 'running' })
+    setEvents([])
     window.harness
-      .startTrial('oracle', 1)
+      .startTrial(Subject.DOE_ORACLE, 1)
       .then((trial) => {
         setRun({ status: 'done', trial })
         onSaved()
@@ -154,6 +224,7 @@ function TrialPanel({ onSaved }: { onSaved: () => void }) {
       {run.status === 'running' && (
         <p data-testid="trial-running">Watch the Chromium window. The question is typed and submitted for you.</p>
       )}
+      <TrialEvents events={events} />
       {run.status === 'error' && (
         <p role="alert" className="error" data-testid="trial-error">
           {run.message}
@@ -198,8 +269,11 @@ function SavedTrials({ refreshKey }: { refreshKey: number }) {
                 <td>{trial.testNumber}</td>
                 <td>{trial.subject}</td>
                 <td>{trial.questionNumber}</td>
-                <td>{trial.status}</td>
-                <td>{trial.responseMs ?? '–'} ms</td>
+                <td title={trial.failure?.message}>
+                  {trial.status}
+                  {trial.failure && ` · ${trial.failure.type}`}
+                </td>
+                <td>{trial.responseMs === null ? '–' : `${trial.responseMs} ms`}</td>
                 <td>{trial.beginTs}</td>
                 <td title={trial.sessionId}>{trial.sessionId.slice(0, 8)}</td>
               </tr>
@@ -219,6 +293,7 @@ export function App() {
   return (
     <main className="app">
       <h1>DOE Oracle Test Harness</h1>
+      <SessionBar />
       <TrialPanel onSaved={() => setSavedVersion((v) => v + 1)} />
       <SavedTrials refreshKey={savedVersion} />
       <AppInfoPanel appInfo={appInfo} />

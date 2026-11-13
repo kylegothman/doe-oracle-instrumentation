@@ -1,14 +1,19 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { IpcChannels } from '../shared/ipc'
+import { Subject } from '../shared/subjects'
+import { OracleAdapter } from './adapters/oracle-adapter'
+import type { SubjectAdapter } from './adapters/subject-adapter'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
 import { MetricsRepository } from './data/metrics-repository'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
+import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { createListTrialsHandler, createStartTrialHandler } from './execution/handlers/trials'
 import { IpcRouter } from './execution/ipc-router'
+import { QuestionBank } from './execution/question-bank'
 import { SessionManager } from './execution/session-manager'
 import { TimingService } from './execution/timing-service'
 import { TrialController } from './execution/trial-controller'
@@ -16,8 +21,14 @@ import { TrialController } from './execution/trial-controller'
 /** The one Chromium instance the harness drives. Launched on first use, closed on quit. */
 const browserManager = new BrowserManager()
 
-/** One session ID per launch; every trial saved in this run carries it. */
-const session = new SessionManager()
+/**
+ * The 12 standard questions ship in config/questions.json: next to
+ * package.json during development, under resources/ in the packaged app
+ * (see extraResources in electron-builder.yml).
+ */
+function questionsConfigPath(): string {
+  return join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'config', 'questions.json')
+}
 
 /** Opens harness.db under the per-user app data folder and applies migrations. */
 async function openRepository(): Promise<MetricsRepository> {
@@ -34,14 +45,43 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRo
   void sqliteStatus.then(logSqliteStatus)
 
   const settings = loadSettings()
-  const controllerReady = repositoryReady.then(
-    (repository) =>
-      new TrialController({ settings, browser: browserManager, timing: new TimingService(), repository, session }),
-  )
+  // One adapter per subject, each driving its own page in the shared Chromium.
+  // TODO(#5, #6): register the Copilot and Google adapters here.
+  const adapters = new Map<Subject, SubjectAdapter>([
+    [Subject.DOE_ORACLE, new OracleAdapter(browserManager, settings.oracle)],
+  ])
+  // One session per launch, started as soon as the database is open so it
+  // is saved before any trial can reference it.
+  const sessionReady = repositoryReady.then((repository) => {
+    const session = new SessionManager({ store: repository, appVersion: app.getVersion() })
+    const started = session.startSession()
+    console.log(`[session] ${started.sessionId} started ${started.startedAt} (harness ${started.appVersion})`)
+    return session
+  })
+  // Read once at startup; a bad file makes every trial:start report the problem.
+  const questionsReady = Promise.resolve().then(() => QuestionBank.load(questionsConfigPath()))
+  questionsReady.catch((error: unknown) => {
+    console.error(`[questions] ${error instanceof Error ? error.message : String(error)}`)
+  })
 
-  const router = new IpcRouter(ipcMain)
+  const router = new IpcRouter(ipcMain, {
+    eventTargets: () => BrowserWindow.getAllWindows().map((window) => window.webContents),
+  })
+  const controllerReady = Promise.all([repositoryReady, sessionReady, questionsReady]).then(
+    ([repository, session, questions]) =>
+      new TrialController({
+        adapters,
+        questions,
+        timing: new TimingService(),
+        repository,
+        session,
+        timeouts: settings.trialTimeouts,
+        events: router,
+      }),
+  )
   router.register(IpcChannels.getAppInfo, createGetAppInfoHandler(app))
   router.register(IpcChannels.getSqliteStatus, createGetSqliteStatusHandler(sqliteStatus))
+  router.register(IpcChannels.getSession, createGetSessionHandler(() => sessionReady))
   router.register(IpcChannels.startTrial, createStartTrialHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   return router
@@ -86,7 +126,6 @@ function createMainWindow(): BrowserWindow {
 let repositoryReady: Promise<MetricsRepository> | null = null
 
 void app.whenReady().then(() => {
-  console.log(`[session] ${session.sessionId}`)
   repositoryReady = openRepository()
   repositoryReady.catch((error: unknown) => {
     console.error(`[data] ${error instanceof Error ? error.message : String(error)}`)

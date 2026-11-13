@@ -68,7 +68,8 @@ Run `lint`, `typecheck`, `test`, and `build` before opening a pull request. Cont
 ```
 harness/
   electron.vite.config.ts   bundling for main, preload, and renderer
-  electron-builder.yml      installer packaging (MSI)
+  electron-builder.yml      installer packaging (MSI); ships config/ as an extra resource
+  config/questions.json     the 12 standard questions, read at startup by QuestionBank
   eslint.config.mjs         lint rules (the renderer may not import Electron or Node)
   vitest.config.ts          unit test settings
   tsconfig.node.json        TypeScript for main, preload, shared
@@ -76,14 +77,14 @@ harness/
   src/
     main/                   Electron main process (Node)
       index.ts              app lifecycle and window creation
-      execution/            IpcRouter, TimingService, SessionManager, TrialController, IPC handlers
-      adapters/             one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
+      execution/            TrialController, FailureDetector, TimingService, SessionManager, QuestionBank, IpcRouter, IPC handlers
+      adapters/             SubjectAdapter interface and one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
       browser/              BrowserManager: launches and owns the Playwright Chromium window
-      config/               settings (Oracle URL) and the question config
+      config/               settings (Oracle URL, per-subject time limits)
       data/                 MetricsRepository (SQLite, versioned migrations) and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
-    shared/                 types shared by main, preload, and renderer
+    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
 ```
@@ -113,40 +114,64 @@ The Oracle's address is a setting. The default, `http://localhost:5173`, is in `
 
 Playwright's Chromium lives in the user's cache, not in the app, so the MSI does not include it yet (tracked in #44).
 
-## Running a trial (walking skeleton)
+## Running a trial
 
-1. Start the Oracle: its Flask backend and its Vite frontend (see the repository README). The harness only needs the frontend URL, `http://localhost:5173` by default.
-2. From `harness/`, run `npm run dev` and click **Run Oracle trial (Q1)**.
-3. A Chromium window opens on the Oracle chat page. The harness types "What is combinatorial testing?", presses Enter, and waits for the answer.
-4. The result panel shows begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. The saved-trials table below it reads back from the database, so a trial from an earlier launch is still listed.
-
-If the Oracle is not running, the panel shows "Could not reach the DOE Oracle at http://localhost:5173/chat. Make sure it is running, then try again." If the Oracle's backend is down, the page's own error ("Error searching for ...") is reported instead.
+1. Start the Oracle: its Flask backend and its Vite frontend (see the repository README). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else.
+2. From `harness/`, run `npm run dev`. The window shows this launch's session ID in the bar at the top; every trial saved during the launch carries it.
+3. Click **Run Oracle trial (Q1)**. A Chromium window opens on the Oracle chat page. The harness types "What is combinatorial testing?", presses Enter, and waits for the answer. Status events (`started`, `first response`, `completed`, or `failed`) appear under the button as they happen.
+4. The result panel shows the status, begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. A failed trial shows its failure type and message instead. The saved-trials table below reads back from the database, so a trial from an earlier launch is still listed.
 
 ### What happens underneath
 
-`TrialController` (`src/main/execution/trial-controller.ts`) runs one trial at a time: it takes the subject's page from `BrowserManager`, hands it to `OracleAdapter`, records the three timing marks with `TimingService`, captures the answer, and saves the trial through `MetricsRepository`. `SessionManager` gives each launch one session UUID and builds the data set name as subject code plus local date, for example `DOE_ORACLE-2026-11-11`. The question text comes from `src/shared/harness-config.json`.
+`TrialController` (`src/main/execution/trial-controller.ts`) is the Test Execution core: every subject runs through it the same way. It holds one adapter per subject (`SubjectAdapter`, `src/main/adapters/subject-adapter.ts`), runs one trial at a time, and drives the adapter through `start`, `waitForFirstResponse`, `waitForCompletion`, and `captureAnswer`, recording the three timing marks with `TimingService` and saving the trial through `MetricsRepository`. `SessionManager` starts one session per launch (saved in the `sessions` table) and builds the data set name as subject code plus local date, for example `DOE_ORACLE-2026-11-12`. `QuestionBank` reads the 12 standard questions from `config/questions.json`.
 
-The database is `harness.db` in Electron's per-user app data folder (`app.getPath('userData')`): `~/Library/Application Support/DOE Oracle Test Harness/` on macOS and `%APPDATA%\DOE Oracle Test Harness\` on Windows. The main log prints the exact path at startup. The schema is versioned in `MetricsRepository`; version 1 creates the `trials` table with `trial_id`, `test_number`, `session_id`, `data_set_name`, `subject`, `question_number`, `status`, `begin_ts`, `first_response_ts`, `end_ts`, `response_ms`, `first_response_ms`, `answer_text`, and `citations` (a JSON array). Delete the file to start over.
+Each subject has a time limit, 60 seconds by default (`trialTimeoutMs` in `src/shared/harness-config.json`, or `HARNESS_TRIAL_TIMEOUT_MS` to override it for a run). When the clock starts is also per subject: for the Oracle it starts as the trial starts, before the page is opened, so a hang anywhere ends within the limit; for Copilot and Google it will start at the Tester's submit. It stops when completion is reached. A trial that runs out of time is saved as a `TIMEOUT` failure.
 
-The 60-second timeout, failure classification, and the other subjects are later epics; the code marks each with a TODO naming its issue.
+### Failures
+
+`FailureDetector` (`src/main/execution/failure-detector.ts`) classifies what the adapter or the clock observed into one of four types, in this order of precedence:
+
+| Type | Rule | How the Oracle adapter sees it |
+| --- | --- | --- |
+| `TIMEOUT` | the subject's clock ran out | the controller's timer |
+| `ERROR_RESPONSE` | the subject's endpoint answered with HTTP 400 or higher | the `response` event's status for the POST to `/api/search` |
+| `UNREACHABLE` | a connection or navigation error, including the Flask backend being down while the frontend loads | `page.goto` failing, the POST's `requestfailed` event, or the page showing "Error searching for … Failed to fetch" before any request left |
+| `EMPTY_ANSWER` | the answer is empty or only whitespace | an answer bubble that stays empty once the page is idle; the controller also checks every captured answer |
+
+A refusal to answer is an answer, not a failure. On a failure the controller disposes the adapter (bounded by 3 seconds), stops the clock, saves the trial as `FAILED` with whichever marks it reached plus a `failed_requests` row (type, message, elapsed milliseconds), sends a `failed` event, and returns the failed trial to the UI. The harness is ready for the next trial as soon as that returns, within 5 seconds of the failure (NFR-3).
+
+Two outcomes are never saved: a trial the Tester cancels (`cancelTrial`, not yet wired to a button) and a trial the harness itself could not run, for example because Playwright's Chromium is missing or the page was closed under the adapter. Those report `cancelled` or `aborted` with the reason.
 
 ## Driving the Oracle
 
-`OracleAdapter` (`src/main/adapters/oracle-adapter.ts`) opens the Oracle chat page, types the question into the input (found by its placeholder), checks the typed text matches exactly, and submits with Enter, which runs the same handler as the icon-only Send button. It then waits for a new answer bubble, found through the per-answer "Copy" button, and reads the answer text without citation lines and buttons, plus the citation lines. The selectors live in `ORACLE_SELECTORS` with a note on why each one was chosen; the Oracle's own code is never changed.
+`OracleAdapter` (`src/main/adapters/oracle-adapter.ts`) implements `SubjectAdapter` for the Oracle. Its `start()` opens the chat page, types the question into the input (found by its placeholder), checks the typed text matches exactly, and submits with Enter, which runs the same handler as the icon-only Send button. It then waits for a new answer bubble, found through the per-answer "Copy" button, and reads the answer text without citation lines and buttons, plus the citation lines. `dispose()` drops the trial's listeners and pending waits; the next `start()` loads the page afresh. The selectors live in `ORACLE_SELECTORS` with a note on why each one was chosen; the Oracle's own code is never changed.
 
 Trials are timed from the browser's own events, not from the Oracle's code:
 
 | Event | When | Clock |
 | --- | --- | --- |
 | begin | the POST to `/api/search` leaves the page (Playwright `request` event; the CORS preflight is not a POST) | main process |
-| first response | that request's response arrives (`response` event) | main process |
+| first response | that request's response arrives (`response` event), whatever its status | main process |
 | end | the answer text is on the page | the page's own `Date.now()` |
 
 `TimingService` (`src/main/execution/timing-service.ts`) records these marks per trial and converts them for storage: `toIso()` gives ISO 8601 UTC with milliseconds and `durationMs()` whole milliseconds. Both clocks are the same system clock on the same machine, so the marks are directly comparable.
 
-The adapter test serves a small copy of the chat page from `src/main/adapters/__fixtures__/oracle-chat.html` and fakes `/api/search` with a delay through `page.route`, so it needs no Oracle and no Ollama, only Playwright's Chromium.
+The adapter test serves a small copy of the chat page from `src/main/adapters/__fixtures__/oracle-chat.html` and fakes `/api/search` through `page.route`, with a delay, an error status, an aborted request, or an empty answer, so it needs no Oracle and no Ollama, only Playwright's Chromium.
 
-## Storage check at startup
+## Storage
+
+The database is `harness.db` in Electron's per-user app data folder (`app.getPath('userData')`): `~/Library/Application Support/DOE Oracle Test Harness/` on macOS and `%APPDATA%\DOE Oracle Test Harness\` on Windows. The main log prints the exact path at startup. Delete the file to start over.
+
+The schema is versioned in `MetricsRepository` (`src/main/data/metrics-repository.ts`) and migrations run in order when the database is opened, on a fresh file or one from an earlier version:
+
+| Version | Change |
+| --- | --- |
+| 1 | `trials`: `trial_id`, `test_number`, `session_id`, `data_set_name`, `subject`, `question_number`, `status`, `begin_ts`, `first_response_ts`, `end_ts`, `response_ms`, `first_response_ms`, `answer_text`, `citations` (a JSON array) |
+| 2 | subject codes (`DOE_ORACLE`, `COPILOT`, `GOOGLE`) and status values (`SUCCESS`, `FAILED`, `NO_ANSWER_FOUND`) |
+| 3 | `sessions`: `session_id`, `started_at`, `app_version` |
+| 4 | `failed_requests`: `trial_id` (references `trials`), `failure_type`, `error_message`, `elapsed_ms` |
+
+### Startup check
 
 At startup the main process opens an in-memory SQLite database through better-sqlite3 and reads the SQLite version. The result is logged (`[sqlite] better-sqlite3 loaded, SQLite version 3.x.y`) and shown in the window under "Storage". If the native module cannot be loaded, the window shows a red "SQLite failed to load" box with the error text instead, so a broken install is obvious. No tables are created and nothing is stored.
 
