@@ -30,7 +30,6 @@ interface Migration {
 /**
  * Schema versions, applied in order inside one transaction each. Add a new
  * entry to change the schema; never edit an applied one.
- * TODO(#29): E3 adds the expert tables here.
  */
 const MIGRATIONS: readonly Migration[] = [
   {
@@ -113,6 +112,44 @@ const MIGRATIONS: readonly Migration[] = [
         ALTER TABLE trials ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE trials ADD COLUMN keywords TEXT;
         UPDATE trials SET size_bytes = COALESCE(LENGTH(CAST(answer_text AS BLOB)), 0);
+      `)
+    },
+  },
+  {
+    // Detailed Design Table 3. The expert's turnaround is stored once, on the
+    // expert. Answers are never overwritten: a replacement is a new row, and
+    // the old row's superseded_by points at it. The partial unique index
+    // allows only one active (superseded_by IS NULL) answer per expert and
+    // question. superseded_by is checked at commit (DEFERRABLE), so a
+    // replacement can mark the old row with the new row's id and then insert
+    // the new row in the same transaction without breaking that index.
+    version: 6,
+    name: 'create experts and expert_responses',
+    up(db) {
+      db.exec(`
+        CREATE TABLE experts (
+          expert_id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('EMAIL', 'INTERVIEW')),
+          outreach_ts TEXT,
+          first_answer_ts TEXT,
+          turnaround_ms INTEGER
+        );
+        CREATE TABLE expert_responses (
+          response_id INTEGER PRIMARY KEY,
+          test_number INTEGER NOT NULL UNIQUE,
+          expert_id TEXT NOT NULL REFERENCES experts (expert_id),
+          session_id TEXT NOT NULL,
+          question_number INTEGER NOT NULL,
+          answer_text TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          keywords TEXT,
+          recorded_at TEXT NOT NULL,
+          superseded_by INTEGER REFERENCES expert_responses (response_id) DEFERRABLE INITIALLY DEFERRED
+        );
+        CREATE INDEX expert_responses_expert_id ON expert_responses (expert_id);
+        CREATE UNIQUE INDEX expert_responses_one_active
+          ON expert_responses (expert_id, question_number) WHERE superseded_by IS NULL;
       `)
     },
   },

@@ -8,7 +8,7 @@ import { Subject } from '../../shared/subjects'
 import { TrialStatus, type Trial } from '../../shared/trials'
 import { MetricsRepository, type NewTrial } from './metrics-repository'
 
-const CURRENT_SCHEMA_VERSION = 5
+const CURRENT_SCHEMA_VERSION = 6
 
 /** What saveTrial returns for a NewTrial that leaves the optional fields out. */
 function asSaved(trial: NewTrial, testNumber: number): Trial {
@@ -255,6 +255,110 @@ describe('MetricsRepository', () => {
   })
 })
 
+/**
+ * Migration 6 on its own, through raw SQL: the repository's expert methods
+ * come in a later commit, and these rules must hold whatever code writes.
+ */
+describe('expert tables (migration 6)', () => {
+  let dir: string
+  let db: Database.Database
+
+  const insertExpert = (id = 'expert-1', source = 'EMAIL'): void => {
+    db.prepare(
+      `INSERT INTO experts (expert_id, name, source, outreach_ts, first_answer_ts, turnaround_ms)
+       VALUES (?, 'Dr. Wong', ?, '2026-11-01T15:00:00.000Z', '2026-11-03T09:30:00.000Z', 153000000)`,
+    ).run(id, source)
+  }
+  const insertAnswer = (responseId: number, testNumber: number, questionNumber = 1, supersededBy: number | null = null): void => {
+    db.prepare(
+      `INSERT INTO expert_responses (
+         response_id, test_number, expert_id, session_id, question_number, answer_text, size_bytes, recorded_at, superseded_by
+       ) VALUES (?, ?, 'expert-1', 'session-a', ?, 'An answer.', 10, '2026-11-03T09:31:00.000Z', ?)`,
+    ).run(responseId, testNumber, questionNumber, supersededBy)
+  }
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'harness-experts-'))
+    const filePath = join(dir, 'harness.db')
+    const repository = await MetricsRepository.open(filePath)
+    repository.close()
+    db = new Database(filePath)
+    db.pragma('foreign_keys = ON')
+  })
+
+  afterEach(() => {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('stores an expert with the turnaround once and answers that point back to it', () => {
+    insertExpert()
+    insertAnswer(1, 1, 1)
+    insertAnswer(2, 2, 2)
+
+    expect(db.prepare('SELECT name, source, turnaround_ms FROM experts').get()).toEqual({
+      name: 'Dr. Wong',
+      source: 'EMAIL',
+      turnaround_ms: 153000000,
+    })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM expert_responses WHERE expert_id = ?').get('expert-1')).toEqual({ n: 2 })
+  })
+
+  it('accepts only EMAIL or INTERVIEW as the response source', () => {
+    insertExpert('expert-1', 'INTERVIEW')
+
+    expect(() => insertExpert('expert-2', 'PHONE')).toThrow(/CHECK constraint failed/)
+  })
+
+  it('refuses an answer for an expert that does not exist', () => {
+    expect(() => insertAnswer(1, 1)).toThrow(/FOREIGN KEY constraint failed/)
+  })
+
+  it('refuses a second active answer to the same question from the same expert', () => {
+    insertExpert()
+    insertAnswer(1, 1, 3)
+
+    expect(() => insertAnswer(2, 2, 3)).toThrow(/UNIQUE constraint failed/)
+  })
+
+  it('refuses two expert answers with the same test number', () => {
+    insertExpert()
+    insertAnswer(1, 7, 1)
+
+    expect(() => insertAnswer(2, 7, 2)).toThrow(/UNIQUE constraint failed: expert_responses.test_number/)
+  })
+
+  it('replaces an answer by superseding the old row in the same transaction, keeping both', () => {
+    insertExpert()
+    insertAnswer(1, 1, 3)
+
+    db.transaction(() => {
+      db.prepare('UPDATE expert_responses SET superseded_by = 2 WHERE response_id = 1').run()
+      insertAnswer(2, 2, 3)
+    })()
+
+    const rows = db.prepare('SELECT response_id, superseded_by FROM expert_responses ORDER BY response_id').all()
+    expect(rows).toEqual([
+      { response_id: 1, superseded_by: 2 },
+      { response_id: 2, superseded_by: null },
+    ])
+    // Still only one active answer, so a third one is refused until the second is superseded.
+    expect(() => insertAnswer(3, 3, 3)).toThrow(/UNIQUE constraint failed/)
+  })
+
+  it('rolls back a supersede that points at an answer that was never saved', () => {
+    insertExpert()
+    insertAnswer(1, 1, 3)
+
+    expect(() =>
+      db.transaction(() => {
+        db.prepare('UPDATE expert_responses SET superseded_by = 99 WHERE response_id = 1').run()
+      })(),
+    ).toThrow(/FOREIGN KEY constraint failed/)
+    expect(db.prepare('SELECT superseded_by FROM expert_responses WHERE response_id = 1').get()).toEqual({ superseded_by: null })
+  })
+})
+
 describe('MetricsRepository migrations from an E1 database', () => {
   let dir: string
   let upgraded: MetricsRepository | null = null
@@ -276,7 +380,7 @@ describe('MetricsRepository migrations from an E1 database', () => {
     upgraded = await MetricsRepository.open(filePath)
 
     expect(upgraded.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
-    expect(appliedVersions(filePath)).toEqual([1, 2, 3, 4, 5])
+    expect(appliedVersions(filePath)).toEqual([1, 2, 3, 4, 5, 6])
 
     const [trial] = upgraded.listTrials()
     expect(trial).toMatchObject({
