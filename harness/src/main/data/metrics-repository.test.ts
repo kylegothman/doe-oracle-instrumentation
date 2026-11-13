@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FailureType } from '../../shared/failures'
 import { Subject } from '../../shared/subjects'
 import { TrialStatus, type Trial } from '../../shared/trials'
-import { MetricsRepository, type NewTrial } from './metrics-repository'
+import { ResponseSource, type Expert } from '../../shared/experts'
+import { ActiveAnswerExistsError, MetricsRepository, type NewExpertResponse, type NewTrial } from './metrics-repository'
 
 const CURRENT_SCHEMA_VERSION = 6
 
@@ -255,6 +256,171 @@ describe('MetricsRepository', () => {
   })
 })
 
+function sampleExpert(overrides: Partial<Expert> = {}): Expert {
+  return {
+    expertId: 'expert-1',
+    name: 'Dr. Wong',
+    source: ResponseSource.EMAIL,
+    outreachTs: '2026-10-06T15:00:00.000Z',
+    firstAnswerTs: '2026-11-03T09:30:00.000Z',
+    turnaroundMs: 2_399_400_000,
+    ...overrides,
+  }
+}
+
+function sampleAnswer(overrides: Partial<NewExpertResponse> = {}): NewExpertResponse {
+  return {
+    expertId: 'expert-1',
+    sessionId: 'session-a',
+    questionNumber: 1,
+    answerText: 'Combinatorial testing covers interactions among factors.',
+    recordedAt: '2026-11-13T20:00:00.000Z',
+    ...overrides,
+  }
+}
+
+describe('MetricsRepository expert methods', () => {
+  let repository: MetricsRepository
+
+  beforeEach(async () => {
+    repository = await MetricsRepository.open(':memory:')
+  })
+
+  afterEach(() => {
+    repository.close()
+  })
+
+  it('saves an expert and reads it back by id', () => {
+    expect(repository.saveExpert(sampleExpert())).toBe('expert-1')
+
+    expect(repository.getExpert('expert-1')).toEqual(sampleExpert())
+    expect(repository.getExpert('nope')).toBeNull()
+  })
+
+  it('saves an expert before the reply arrives and fills in the timestamps later', () => {
+    repository.saveExpert(sampleExpert({ firstAnswerTs: null, turnaroundMs: null }))
+    expect(repository.getExpert('expert-1')?.turnaroundMs).toBeNull()
+
+    repository.saveExpert(sampleExpert())
+
+    expect(repository.getExpert('expert-1')).toEqual(sampleExpert())
+    expect(repository.listExperts()).toHaveLength(1)
+  })
+
+  it('lists experts by name', () => {
+    repository.saveExpert(sampleExpert({ expertId: 'b', name: 'Zhang' }))
+    repository.saveExpert(sampleExpert({ expertId: 'a', name: 'Adams', source: ResponseSource.INTERVIEW }))
+
+    expect(repository.listExperts().map((e) => e.name)).toEqual(['Adams', 'Zhang'])
+  })
+
+  it('saves an answer with the next test number and its size, and reads it back as the active answer', () => {
+    repository.saveExpert(sampleExpert())
+
+    const { saved, superseded } = repository.saveExpertResponse(sampleAnswer({ answerText: 'é · →', keywords: 'combinatorial testing' }))
+
+    expect(superseded).toBeNull()
+    expect(saved).toEqual({
+      ...sampleAnswer({ answerText: 'é · →', keywords: 'combinatorial testing' }),
+      responseId: 1,
+      testNumber: 1,
+      sizeBytes: 9,
+      supersededBy: null,
+    })
+    expect(repository.getActiveResponse('expert-1', 1)).toEqual(saved)
+    expect(repository.getActiveResponse('expert-1', 2)).toBeNull()
+  })
+
+  it('refuses an answer for an expert that was never saved', () => {
+    expect(() => repository.saveExpertResponse(sampleAnswer())).toThrow(/FOREIGN KEY constraint failed/)
+  })
+
+  it('refuses a second answer to the same question unless replace is set, and saves nothing', () => {
+    repository.saveExpert(sampleExpert())
+    const { saved: first } = repository.saveExpertResponse(sampleAnswer())
+
+    let error: unknown
+    try {
+      repository.saveExpertResponse(sampleAnswer({ answerText: 'A revised answer.' }))
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(ActiveAnswerExistsError)
+    expect((error as ActiveAnswerExistsError).existing).toEqual(first)
+    expect(repository.listExpertResponses('expert-1', { includeSuperseded: true })).toEqual([first])
+    expect(repository.nextTestNumber()).toBe(2)
+  })
+
+  it('replaces an answer without losing the original, and the revision keeps its test number', () => {
+    repository.saveExpert(sampleExpert())
+    const { saved: original } = repository.saveExpertResponse(sampleAnswer({ questionNumber: 7 }))
+    expect(original.testNumber).toBe(1)
+
+    const { saved: revised, superseded } = repository.saveExpertResponse(
+      sampleAnswer({ questionNumber: 7, answerText: 'A revised answer.' }),
+      { replace: true },
+    )
+
+    expect(revised).toMatchObject({ responseId: 2, testNumber: 1, supersededBy: null, answerText: 'A revised answer.' })
+    const kept = { ...original, supersededBy: 2, testNumber: null }
+    expect(superseded).toEqual(kept)
+    expect(repository.getActiveResponse('expert-1', 7)).toEqual(revised)
+    expect(repository.listExpertResponses('expert-1')).toEqual([revised])
+    expect(repository.listExpertResponses('expert-1', { includeSuperseded: true })).toEqual([kept, revised])
+  })
+
+  it('does not use up a test number when an answer is replaced, so the numbers stay without gaps', () => {
+    repository.saveExpert(sampleExpert())
+    repository.saveTrial(sampleTrial({ trialId: 'a' }))
+    repository.saveExpertResponse(sampleAnswer({ questionNumber: 7 }))
+    repository.saveExpertResponse(sampleAnswer({ questionNumber: 7, answerText: 'Revised once.' }), { replace: true })
+    repository.saveExpertResponse(sampleAnswer({ questionNumber: 7, answerText: 'Revised twice.' }), { replace: true })
+    const next = repository.saveTrial(sampleTrial({ trialId: 'b' }))
+
+    expect(repository.getActiveResponse('expert-1', 7)).toMatchObject({ testNumber: 2, answerText: 'Revised twice.' })
+    expect(next.testNumber).toBe(3)
+    expect(
+      repository.listExpertResponses('expert-1', { includeSuperseded: true }).map((r) => [r.testNumber, r.supersededBy]),
+    ).toEqual([
+      [null, 2],
+      [null, 3],
+      [2, null],
+    ])
+  })
+
+  it('treats replace on an unanswered question as a plain save', () => {
+    repository.saveExpert(sampleExpert())
+
+    const { saved, superseded } = repository.saveExpertResponse(sampleAnswer(), { replace: true })
+
+    expect(superseded).toBeNull()
+    expect(repository.getActiveResponse('expert-1', 1)).toEqual(saved)
+  })
+
+  it('lists only the active answers by question number by default', () => {
+    repository.saveExpert(sampleExpert())
+    repository.saveExpertResponse(sampleAnswer({ questionNumber: 3 }))
+    repository.saveExpertResponse(sampleAnswer({ questionNumber: 1 }))
+    repository.saveExpertResponse(sampleAnswer({ questionNumber: 3, answerText: 'Revised.' }), { replace: true })
+
+    expect(repository.listExpertResponses('expert-1').map((r) => [r.questionNumber, r.answerText])).toEqual([
+      [1, sampleAnswer().answerText],
+      [3, 'Revised.'],
+    ])
+    expect(repository.listExpertResponses('nobody')).toEqual([])
+  })
+
+  it('shares the test number sequence with trials', () => {
+    repository.saveExpert(sampleExpert())
+    repository.saveTrial(sampleTrial({ trialId: 'a' }))
+    const { saved } = repository.saveExpertResponse(sampleAnswer())
+    const trial = repository.saveTrial(sampleTrial({ trialId: 'b' }))
+
+    expect([saved.testNumber, trial.testNumber]).toEqual([2, 3])
+  })
+})
+
 /**
  * Migration 6 on its own, through raw SQL: the repository's expert methods
  * come in a later commit, and these rules must hold whatever code writes.
@@ -269,7 +435,7 @@ describe('expert tables (migration 6)', () => {
        VALUES (?, 'Dr. Wong', ?, '2026-11-01T15:00:00.000Z', '2026-11-03T09:30:00.000Z', 153000000)`,
     ).run(id, source)
   }
-  const insertAnswer = (responseId: number, testNumber: number, questionNumber = 1, supersededBy: number | null = null): void => {
+  const insertAnswer = (responseId: number, testNumber: number | null, questionNumber = 1, supersededBy: number | null = null): void => {
     db.prepare(
       `INSERT INTO expert_responses (
          response_id, test_number, expert_id, session_id, question_number, answer_text, size_bytes, recorded_at, superseded_by
@@ -333,17 +499,28 @@ describe('expert tables (migration 6)', () => {
     insertAnswer(1, 1, 3)
 
     db.transaction(() => {
-      db.prepare('UPDATE expert_responses SET superseded_by = 2 WHERE response_id = 1').run()
-      insertAnswer(2, 2, 3)
+      db.prepare('UPDATE expert_responses SET superseded_by = 2, test_number = NULL WHERE response_id = 1').run()
+      insertAnswer(2, 1, 3)
     })()
 
-    const rows = db.prepare('SELECT response_id, superseded_by FROM expert_responses ORDER BY response_id').all()
+    const rows = db.prepare('SELECT response_id, test_number, superseded_by FROM expert_responses ORDER BY response_id').all()
     expect(rows).toEqual([
-      { response_id: 1, superseded_by: 2 },
-      { response_id: 2, superseded_by: null },
+      { response_id: 1, test_number: null, superseded_by: 2 },
+      { response_id: 2, test_number: 1, superseded_by: null },
     ])
     // Still only one active answer, so a third one is refused until the second is superseded.
     expect(() => insertAnswer(3, 3, 3)).toThrow(/UNIQUE constraint failed/)
+  })
+
+  it('lets any number of superseded answers have no test number', () => {
+    insertExpert()
+    insertAnswer(3, 1, 3)
+    db.transaction(() => {
+      insertAnswer(1, null, 3, 3)
+      insertAnswer(2, null, 3, 3)
+    })()
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM expert_responses WHERE test_number IS NULL').get()).toEqual({ n: 2 })
   })
 
   it('rolls back a supersede that points at an answer that was never saved', () => {

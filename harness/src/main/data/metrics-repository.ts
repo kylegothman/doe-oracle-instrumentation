@@ -3,6 +3,7 @@ import type { Session } from '../../shared/session'
 import type { Subject } from '../../shared/subjects'
 import type { FailureType } from '../../shared/failures'
 import { TrialStatus, type Trial, type TrialFailure } from '../../shared/trials'
+import type { Expert, ExpertResponse, ResponseSource } from '../../shared/experts'
 
 /** Fields only some subjects or later epics fill in. Left out, they are saved as null. */
 type OptionalTrialFields = 'pageLoadMs' | 'timeToAnswerMs' | 'sourceUrl' | 'keywords'
@@ -13,6 +14,36 @@ type OptionalTrialFields = 'pageLoadMs' | 'timeToAnswerMs' | 'sourceUrl' | 'keyw
  */
 export type NewTrial = Omit<Trial, 'testNumber' | 'failure' | 'sizeBytes' | OptionalTrialFields> &
   Partial<Pick<Trial, OptionalTrialFields>>
+
+/**
+ * An expert answer to save. The repository assigns the response id and test
+ * number and computes the size; a new answer is always active.
+ */
+export type NewExpertResponse = Omit<ExpertResponse, 'responseId' | 'testNumber' | 'sizeBytes' | 'supersededBy' | 'keywords'> &
+  Partial<Pick<ExpertResponse, 'keywords'>>
+
+/** What saveExpertResponse stored, and the answer it replaced, if any. */
+export interface ExpertResponseSaved {
+  saved: ExpertResponse
+  /** The previously active answer, now pointing at saved; null when there was none. */
+  superseded: ExpertResponse | null
+}
+
+/**
+ * Thrown by saveExpertResponse when the question already has an active
+ * answer and replace was not requested. The Expert Responses page shows the
+ * existing answer and asks the Researcher to confirm before saving again
+ * with replace: true (UC-5, SD-5).
+ */
+export class ActiveAnswerExistsError extends Error {
+  constructor(readonly existing: ExpertResponse) {
+    super(
+      `Expert ${existing.expertId} already has an answer to question ${existing.questionNumber} ` +
+        `(response ${existing.responseId}); save with replace: true to supersede it`,
+    )
+    this.name = 'ActiveAnswerExistsError'
+  }
+}
 
 export interface TrialListFilter {
   sessionId?: string
@@ -123,6 +154,9 @@ const MIGRATIONS: readonly Migration[] = [
     // question. superseded_by is checked at commit (DEFERRABLE), so a
     // replacement can mark the old row with the new row's id and then insert
     // the new row in the same transaction without breaking that index.
+    // The replacement takes over the old row's test_number, so a revised
+    // answer keeps its Test # and the export has no gaps; the old row's
+    // test_number becomes null (UNIQUE allows any number of nulls).
     version: 6,
     name: 'create experts and expert_responses',
     up(db) {
@@ -137,7 +171,7 @@ const MIGRATIONS: readonly Migration[] = [
         );
         CREATE TABLE expert_responses (
           response_id INTEGER PRIMARY KEY,
-          test_number INTEGER NOT NULL UNIQUE,
+          test_number INTEGER UNIQUE,
           expert_id TEXT NOT NULL REFERENCES experts (expert_id),
           session_id TEXT NOT NULL,
           question_number INTEGER NOT NULL,
@@ -154,6 +188,28 @@ const MIGRATIONS: readonly Migration[] = [
     },
   },
 ]
+
+interface ExpertRow {
+  expert_id: string
+  name: string
+  source: string
+  outreach_ts: string | null
+  first_answer_ts: string | null
+  turnaround_ms: number | null
+}
+
+interface ExpertResponseRow {
+  response_id: number
+  test_number: number | null
+  expert_id: string
+  session_id: string
+  question_number: number
+  answer_text: string
+  size_bytes: number
+  keywords: string | null
+  recorded_at: string
+  superseded_by: number | null
+}
 
 interface SessionRow {
   session_id: string
@@ -364,8 +420,143 @@ export class MetricsRepository {
     return row ? { sessionId: row.session_id, startedAt: row.started_at, appVersion: row.app_version } : null
   }
 
+  /**
+   * Saves an expert, or updates the one with the same id: the Researcher
+   * can enter the name and source first and the timestamps once the reply
+   * arrives. Returns the expert id.
+   */
+  saveExpert(expert: Expert): string {
+    this.db
+      .prepare(
+        `INSERT INTO experts (expert_id, name, source, outreach_ts, first_answer_ts, turnaround_ms)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (expert_id) DO UPDATE SET
+           name = excluded.name,
+           source = excluded.source,
+           outreach_ts = excluded.outreach_ts,
+           first_answer_ts = excluded.first_answer_ts,
+           turnaround_ms = excluded.turnaround_ms`,
+      )
+      .run(expert.expertId, expert.name, expert.source, expert.outreachTs, expert.firstAnswerTs, expert.turnaroundMs)
+    return expert.expertId
+  }
+
+  /** The expert with this id, or null when none was saved. */
+  getExpert(expertId: string): Expert | null {
+    const row = this.db.prepare('SELECT * FROM experts WHERE expert_id = ?').get(expertId) as ExpertRow | undefined
+    return row ? toExpert(row) : null
+  }
+
+  /** Every saved expert, by name. */
+  listExperts(): Expert[] {
+    const rows = this.db.prepare('SELECT * FROM experts ORDER BY name, expert_id').all() as ExpertRow[]
+    return rows.map(toExpert)
+  }
+
+  /**
+   * Saves an expert's answer with the next test number. If the question
+   * already has an active answer, this throws ActiveAnswerExistsError unless
+   * replace is true; with replace, the new answer is saved with the old
+   * one's test number, and the old one is kept with its supersededBy
+   * pointing at the new one and no test number, in one transaction.
+   */
+  saveExpertResponse(response: NewExpertResponse, options: { replace?: boolean } = {}): ExpertResponseSaved {
+    const save = this.db.transaction((input: NewExpertResponse): ExpertResponseSaved => {
+      const existing = this.getActiveResponse(input.expertId, input.questionNumber)
+      if (existing && !options.replace) throw new ActiveAnswerExistsError(existing)
+
+      const { nextId } = this.db
+        .prepare('SELECT COALESCE(MAX(response_id), 0) + 1 AS nextId FROM expert_responses')
+        .get() as { nextId: number }
+      const saved: ExpertResponse = {
+        ...input,
+        responseId: nextId,
+        // A revised answer keeps the Test # of the one it replaces.
+        testNumber: existing?.testNumber ?? this.nextTestNumber(),
+        sizeBytes: utf8ByteLength(input.answerText),
+        keywords: input.keywords ?? null,
+        supersededBy: null,
+      }
+      // Update the old answer first: the one-active-answer index and the
+      // unique test number would both refuse the insert otherwise.
+      // superseded_by is checked when this commits.
+      if (existing) {
+        this.db
+          .prepare('UPDATE expert_responses SET superseded_by = ?, test_number = NULL WHERE response_id = ?')
+          .run(nextId, existing.responseId)
+      }
+      this.db
+        .prepare(
+          `INSERT INTO expert_responses (
+             response_id, test_number, expert_id, session_id, question_number,
+             answer_text, size_bytes, keywords, recorded_at, superseded_by
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(
+          saved.responseId,
+          saved.testNumber,
+          saved.expertId,
+          saved.sessionId,
+          saved.questionNumber,
+          saved.answerText,
+          saved.sizeBytes,
+          saved.keywords,
+          saved.recordedAt,
+        )
+      return { saved, superseded: existing ? { ...existing, supersededBy: nextId, testNumber: null } : null }
+    })
+    return save(response)
+  }
+
+  /** The expert's current answer to a question, or null when it has none. */
+  getActiveResponse(expertId: string, questionNumber: number): ExpertResponse | null {
+    const row = this.db
+      .prepare('SELECT * FROM expert_responses WHERE expert_id = ? AND question_number = ? AND superseded_by IS NULL')
+      .get(expertId, questionNumber) as ExpertResponseRow | undefined
+    return row ? toExpertResponse(row) : null
+  }
+
+  /**
+   * The expert's answers by question number. Only active answers unless
+   * includeSuperseded is set; then each question's answers follow in the
+   * order they were saved.
+   */
+  listExpertResponses(expertId: string, options: { includeSuperseded?: boolean } = {}): ExpertResponse[] {
+    const active = options.includeSuperseded ? '' : 'AND superseded_by IS NULL'
+    const rows = this.db
+      .prepare(`SELECT * FROM expert_responses WHERE expert_id = ? ${active} ORDER BY question_number, response_id`)
+      .all(expertId) as ExpertResponseRow[]
+    return rows.map(toExpertResponse)
+  }
+
   close(): void {
     this.db.close()
+  }
+}
+
+function toExpert(row: ExpertRow): Expert {
+  return {
+    expertId: row.expert_id,
+    name: row.name,
+    source: row.source as ResponseSource,
+    outreachTs: row.outreach_ts,
+    firstAnswerTs: row.first_answer_ts,
+    turnaroundMs: row.turnaround_ms,
+  }
+}
+
+function toExpertResponse(row: ExpertResponseRow): ExpertResponse {
+  return {
+    responseId: row.response_id,
+    testNumber: row.test_number,
+    expertId: row.expert_id,
+    sessionId: row.session_id,
+    questionNumber: row.question_number,
+    answerText: row.answer_text,
+    sizeBytes: row.size_bytes,
+    keywords: row.keywords,
+    recordedAt: row.recorded_at,
+    supersededBy: row.superseded_by,
   }
 }
 
