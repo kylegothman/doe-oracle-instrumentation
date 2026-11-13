@@ -245,6 +245,26 @@ export class MetricsRepository {
   }
 
   /**
+   * The Test # the next saved row gets. Trials and expert answers share one
+   * sequence, so every row in the TestLogV3 export has a unique Test #: this
+   * is one more than the highest number in either table, 1 for an empty
+   * database. Call it inside the transaction that saves the row, so nothing
+   * can take the number in between.
+   */
+  nextTestNumber(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(n), 0) + 1 AS next FROM (
+           SELECT MAX(test_number) AS n FROM trials
+           UNION ALL
+           SELECT MAX(test_number) AS n FROM expert_responses
+         )`,
+      )
+      .get() as { next: number }
+    return row.next
+  }
+
+  /**
    * Saves a trial with the next test number and returns the stored record.
    * A FAILED trial is saved together with its failure (a failed_requests
    * row) in one transaction; any other status takes no failure.
@@ -267,9 +287,8 @@ export class MetricsRepository {
     const insertFailure = this.db.prepare(`
       INSERT INTO failed_requests (trial_id, failure_type, error_message, elapsed_ms) VALUES (?, ?, ?, ?)
     `)
-    const nextNumber = this.db.prepare('SELECT COALESCE(MAX(test_number), 0) + 1 AS next FROM trials')
     const save = this.db.transaction((input: NewTrial, failed?: TrialFailure): Trial => {
-      const { next } = nextNumber.get() as { next: number }
+      const next = this.nextTestNumber()
       const stored: Omit<Trial, 'testNumber' | 'failure'> = {
         ...input,
         citations: [...input.citations],

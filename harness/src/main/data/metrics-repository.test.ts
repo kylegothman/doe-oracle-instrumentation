@@ -359,6 +359,90 @@ describe('expert tables (migration 6)', () => {
   })
 })
 
+/**
+ * Trials and expert answers share one Test # sequence. The expert answers
+ * are written through a second connection with raw SQL until the
+ * repository's expert methods exist.
+ */
+describe('shared test numbers', () => {
+  let dir: string
+  let filePath: string
+  let repository: MetricsRepository
+  let raw: Database.Database
+
+  const insertExpertAnswer = (testNumber: number, questionNumber: number): void => {
+    raw.prepare(
+      `INSERT INTO expert_responses (
+         test_number, expert_id, session_id, question_number, answer_text, size_bytes, recorded_at
+       ) VALUES (?, 'expert-1', 'session-a', ?, 'An answer.', 10, '2026-11-03T09:31:00.000Z')`,
+    ).run(testNumber, questionNumber)
+  }
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'harness-numbers-'))
+    filePath = join(dir, 'harness.db')
+    repository = await MetricsRepository.open(filePath)
+    raw = new Database(filePath)
+    raw.pragma('foreign_keys = ON')
+    raw.prepare("INSERT INTO experts (expert_id, name, source) VALUES ('expert-1', 'Dr. Wong', 'EMAIL')").run()
+  })
+
+  afterEach(() => {
+    raw.close()
+    repository.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('starts at 1 on an empty database', () => {
+    expect(repository.nextTestNumber()).toBe(1)
+  })
+
+  it('continues after the highest number in either table', () => {
+    repository.saveTrial(sampleTrial({ trialId: 'oracle' }))
+    repository.saveTrial(sampleTrial({ trialId: 'copilot', subject: Subject.COPILOT }))
+    expect(repository.nextTestNumber()).toBe(3)
+
+    insertExpertAnswer(repository.nextTestNumber(), 1)
+
+    // Without the shared sequence this trial would also get 3.
+    expect(repository.saveTrial(sampleTrial({ trialId: 'google', subject: Subject.GOOGLE })).testNumber).toBe(4)
+    expect(repository.nextTestNumber()).toBe(5)
+  })
+
+  it('gives a trial the number after the expert answers when only they exist', () => {
+    insertExpertAnswer(1, 1)
+    insertExpertAnswer(2, 2)
+
+    expect(repository.saveTrial(sampleTrial()).testNumber).toBe(3)
+  })
+
+  it('never gives two rows the same number across both tables', () => {
+    for (let question = 1; question <= 4; question++) {
+      repository.saveTrial(sampleTrial({ trialId: `trial-${question}`, questionNumber: question }))
+      insertExpertAnswer(repository.nextTestNumber(), question)
+    }
+
+    const numbers = (
+      raw.prepare('SELECT test_number FROM trials UNION ALL SELECT test_number FROM expert_responses').all() as Array<{
+        test_number: number
+      }>
+    ).map((row) => row.test_number)
+    expect(numbers).toHaveLength(8)
+    expect(new Set(numbers).size).toBe(8)
+    expect(Math.max(...numbers)).toBe(8)
+  })
+
+  it('picks up where it left off after the app is reopened', async () => {
+    repository.saveTrial(sampleTrial({ trialId: 'before-restart' }))
+    insertExpertAnswer(repository.nextTestNumber(), 1)
+    repository.close()
+
+    repository = await MetricsRepository.open(filePath)
+
+    expect(repository.saveTrial(sampleTrial({ trialId: 'after-restart' })).testNumber).toBe(3)
+  })
+})
+
 describe('MetricsRepository migrations from an E1 database', () => {
   let dir: string
   let upgraded: MetricsRepository | null = null
