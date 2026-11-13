@@ -424,6 +424,12 @@ export class MetricsRepository {
    * Saves an expert, or updates the one with the same id: the Researcher
    * can enter the name and source first and the timestamps once the reply
    * arrives. Returns the expert id.
+   *
+   * An update replaces turnaround_ms too, on purpose. UC-5 measures the
+   * turnaround once per expert (one value on the expert, not one per
+   * answer), and this is how that one value is first filled in or
+   * corrected after a typo in a timestamp. ExpertRecordService computes it
+   * from the two timestamps; nothing else should change it.
    */
   saveExpert(expert: Expert): string {
     this.db
