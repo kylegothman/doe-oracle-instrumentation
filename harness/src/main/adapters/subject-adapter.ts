@@ -2,6 +2,22 @@ import type { FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import type { Subject } from '../../shared/subjects'
 
+/** Rejects a pending wait when dispose() ends the trial it belonged to. The controller ignores it. */
+export class AdapterDisposedError extends Error {
+  override readonly name = 'AdapterDisposedError'
+}
+
+/**
+ * Something the Tester must do before the trial can go on, reported by an
+ * adapter between its steps. The controller forwards it to the window as a
+ * trial event with the same status.
+ */
+export interface AdapterNotice {
+  /** The question is typed and the subject waits for the Tester to submit it. */
+  status: 'awaiting_submit'
+  message: string
+}
+
 /** What an adapter reads back once the subject has answered. */
 export interface CapturedAnswer {
   /** The answer as shown, without citations, buttons, or other chrome. */
@@ -46,8 +62,11 @@ export interface CapturedAnswer {
  *   once, and leaves the adapter ready for the next start(). It must return
  *   quickly: the harness has to be ready for the next trial within
  *   5 seconds of a failure (NFR-3).
+ * - onNotice(handler), optional, registers the handler for notices to the
+ *   Tester, such as "press Enter" once the question is typed. An adapter
+ *   that drives its subject itself (the Oracle) has nothing to say and
+ *   leaves it out.
  *
- * TODO(#5): the Copilot adapter (E4) implements this interface.
  * TODO(#6): the Google adapter (E5) implements this interface.
  */
 export interface SubjectAdapter {
@@ -57,5 +76,6 @@ export interface SubjectAdapter {
   waitForCompletion(): Promise<number>
   captureAnswer(): Promise<CapturedAnswer>
   onFailure(handler: (signal: FailureSignal) => void): void
+  onNotice?(handler: (notice: AdapterNotice) => void): void
   dispose(): Promise<void>
 }

@@ -4,7 +4,9 @@ import type { Question } from '../../shared/questions'
 import { Subject } from '../../shared/subjects'
 import { openSubjectPage, SubjectUnreachableError } from '../browser/navigation'
 import type { OracleSettings } from '../config/settings'
-import type { CapturedAnswer, SubjectAdapter } from './subject-adapter'
+import { AdapterDisposedError, type CapturedAnswer, type SubjectAdapter } from './subject-adapter'
+
+export { AdapterDisposedError } from './subject-adapter'
 
 /**
  * Where things are on the Oracle chat page (doe-frontend/src/pages/Chat.tsx).
@@ -25,11 +27,6 @@ export const ORACLE_SELECTORS = {
 /** Thrown when the Oracle page does not behave as the adapter expects. */
 export class OracleAnswerError extends Error {
   override readonly name = 'OracleAnswerError'
-}
-
-/** Rejects a pending wait when dispose() ends the trial it belonged to. The controller ignores it. */
-export class AdapterDisposedError extends Error {
-  override readonly name = 'AdapterDisposedError'
 }
 
 /** Where the adapter gets the Oracle's page: the BrowserManager. */

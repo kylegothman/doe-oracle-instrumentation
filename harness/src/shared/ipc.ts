@@ -1,3 +1,4 @@
+import type { CopilotSignInStatus } from './copilot'
 import type { Session } from './session'
 import type { Subject } from './subjects'
 import type { Trial, TrialEvent } from './trials'
@@ -40,7 +41,10 @@ export interface IpcContracts {
   'diagnostics:get-sqlite-status': { args: []; result: SqliteStatus }
   'session:get': { args: []; result: Session }
   'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
+  'trial:confirm': { args: [trialId: string, endMs?: number]; result: void }
+  'trial:cancel': { args: [trialId: string]; result: void }
   'trials:list': { args: [sessionId?: string]; result: Trial[] }
+  'copilot:open-sign-in': { args: []; result: CopilotSignInStatus }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -53,7 +57,10 @@ export const IpcChannels = {
   getSqliteStatus: 'diagnostics:get-sqlite-status',
   getSession: 'session:get',
   startTrial: 'trial:start',
+  confirmCompletion: 'trial:confirm',
+  cancelTrial: 'trial:cancel',
   listTrials: 'trials:list',
+  openCopilotSignIn: 'copilot:open-sign-in',
 } as const satisfies Record<string, IpcChannel>
 
 /**
@@ -87,8 +94,22 @@ export interface HarnessApi {
   getSession(): Promise<Session>
   /** Runs one trial of a question against a subject and resolves with the saved trial. */
   startTrial(subject: Subject, questionNumber: number): Promise<Trial>
+  /**
+   * Confirms the end of a trial that is awaiting confirmation, keeping the
+   * detected end or replacing it with endMs (epoch milliseconds). The trial
+   * is then captured and saved; startTrial's promise delivers the record.
+   */
+  confirmCompletion(trialId: string, endMs?: number): Promise<void>
+  /** Ends the running trial without saving it. startTrial's promise then rejects. */
+  cancelTrial(trialId: string): Promise<void>
   /** Lists saved trials, newest first, for one session or for all sessions. */
   listTrials(sessionId?: string): Promise<Trial[]>
+  /**
+   * Brings the Copilot window to the front on the chat page so the Tester
+   * can sign in there, and reports whether the chat is usable. The harness
+   * never signs in itself.
+   */
+  openCopilotSignIn(): Promise<CopilotSignInStatus>
   /** Receives the running trial's status events. Returns the function that unsubscribes. */
   onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }

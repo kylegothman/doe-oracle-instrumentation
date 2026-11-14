@@ -108,7 +108,11 @@ Only plain data that survives `structuredClone` may cross the bridge.
 
 ## Browser automation
 
-`BrowserManager` (`src/main/browser`) launches one headed Chromium window through Playwright from the Electron main process, gives each system under test its own browser context and page, and closes the browser when the harness quits. The window is headed on purpose: the Tester watches the trial happen.
+`BrowserManager` (`src/main/browser`) launches headed Chromium through Playwright from the Electron main process, gives each system under test its own browser context and page, and closes everything when the harness quits. The windows are headed on purpose: the Tester watches the trial happen.
+
+The Oracle runs in a throw-away context of a shared Chromium, gone when the harness quits. Copilot runs in its own Chromium on a persistent profile folder, `browser-profiles/copilot` under the per-user app data folder (the same place as `harness.db`, never the repository), so the Tester signs in once and later launches find the session. The harness only hands the folder's path to Playwright; it never reads cookies or tokens from it. Delete the folder to sign out for good.
+
+**Open Copilot to sign in** in the window brings the Copilot window to the front on the chat page and reports what it shows: signed in (the question input is there), signed out (the sign-in landing page or a sign-in host), offline, or unknown. Signing in, including any second factor, is done by the Tester in that window; the harness never types credentials. A Copilot trial that finds the page signed out is aborted, not saved, with a message saying to sign in first.
 
 The Oracle's address is a setting. The default, `http://localhost:5173`, is in `src/shared/harness-config.json`; set `HARNESS_ORACLE_URL` to point somewhere else, for example `HARNESS_ORACLE_URL=http://127.0.0.1:4173 npm run dev`. The chat page is `/chat` under that URL. If the Oracle is not running, the harness reports "Could not reach the DOE Oracle at ..." instead of failing silently.
 
@@ -116,31 +120,33 @@ Playwright's Chromium lives in the user's cache, not in the app, so the MSI does
 
 ## Running a trial
 
-1. Start the Oracle: its Flask backend and its Vite frontend (see the repository README). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else.
+1. For the Oracle, start it: its Flask backend and its Vite frontend (see the repository README). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else. For Copilot, sign in once with **Open Copilot to sign in** (see "Driving Copilot").
 2. From `harness/`, run `npm run dev`. The window shows this launch's session ID in the bar at the top; every trial saved during the launch carries it.
-3. Click **Run Oracle trial (Q1)**. A Chromium window opens on the Oracle chat page. The harness types "What is combinatorial testing?", presses Enter, and waits for the answer. Status events (`started`, `first response`, `completed`, or `failed`) appear under the button as they happen.
+3. Pick the subject and click **Run … trial (Q1)**. For the Oracle, a Chromium window opens on the chat page, the harness types "What is combinatorial testing?", presses Enter, and waits for the answer. For Copilot, the harness types the question in the Copilot window and the status line says **Press Enter in the Copilot window**; you press Enter, and when the answer has finished the status line gives the detected response time with **Confirm**, an end you can adjust (seconds after your Enter) with **Adjust and confirm**, and **Cancel**. Status events (`started`, `awaiting submit`, `first response`, `awaiting confirmation`, `completed`, `failed`, `cancelled`, or `aborted`) appear under the buttons as they happen.
 4. The result panel shows the status, begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. A failed trial shows its failure type and message instead. The saved-trials table below reads back from the database, so a trial from an earlier launch is still listed.
 
 ### What happens underneath
 
 `TrialController` (`src/main/execution/trial-controller.ts`) is the Test Execution core: every subject runs through it the same way. It holds one adapter per subject (`SubjectAdapter`, `src/main/adapters/subject-adapter.ts`), runs one trial at a time, and drives the adapter through `start`, `waitForFirstResponse`, `waitForCompletion`, and `captureAnswer`, recording the three timing marks with `TimingService` and saving the trial through `MetricsRepository`. `SessionManager` starts one session per launch (saved in the `sessions` table) and builds the data set name as subject code plus local date, for example `DOE_ORACLE-2026-11-12`. `QuestionBank` reads the 12 standard questions from `config/questions.json`.
 
-Each subject has a time limit, 60 seconds by default (`trialTimeoutMs` in `src/shared/harness-config.json`, or `HARNESS_TRIAL_TIMEOUT_MS` to override it for a run). When the clock starts is also per subject: for the Oracle it starts as the trial starts, before the page is opened, so a hang anywhere ends within the limit; for Copilot and Google it will start at the Tester's submit. It stops when completion is reached. A trial that runs out of time is saved as a `TIMEOUT` failure.
+Each subject has a time limit, 60 seconds by default (`trialTimeoutMs` in `src/shared/harness-config.json`, or `HARNESS_TRIAL_TIMEOUT_MS` to override it for a run). When the clock starts is also per subject (`timerStartsAt`): for the Oracle it starts as the trial starts, before the page is opened, so a hang anywhere ends within the limit; for Copilot it starts at the Tester's Enter, so a slow Tester cannot cause a false timeout; Google will work like Copilot. It stops when completion is reached. A trial that runs out of time is saved as a `TIMEOUT` failure.
+
+A subject can also require the Tester to confirm the end (`confirmEnd`, on for Copilot): once the adapter reports completion and the clock has stopped, the controller sends `awaiting_confirmation` with the detected begin and end and waits, for as long as it takes, for `confirmCompletion(trialId, endMs?)` through the `trial:confirm` channel. Without `endMs` the detected end stands; with it the end is replaced and the response time recomputed. Only then is the answer captured and the trial saved. `trial:cancel` (`cancelTrial`) ends a running trial at any point, including while waiting for the Tester's Enter or confirmation, and saves nothing.
 
 ### Failures
 
 `FailureDetector` (`src/main/execution/failure-detector.ts`) classifies what the adapter or the clock observed into one of four types, in this order of precedence:
 
-| Type | Rule | How the Oracle adapter sees it |
-| --- | --- | --- |
-| `TIMEOUT` | the subject's clock ran out | the controller's timer |
-| `ERROR_RESPONSE` | the subject's endpoint answered with HTTP 400 or higher | the `response` event's status for the POST to `/api/search` |
-| `UNREACHABLE` | a connection or navigation error, including the Flask backend being down while the frontend loads | `page.goto` failing, the POST's `requestfailed` event, or the page showing "Error searching for … Failed to fetch" before any request left |
-| `EMPTY_ANSWER` | the answer is empty or only whitespace | an answer bubble that stays empty once the page is idle; the controller also checks every captured answer |
+| Type | Rule | How the Oracle adapter sees it | How the Copilot adapter sees it |
+| --- | --- | --- | --- |
+| `TIMEOUT` | the subject's clock ran out | the controller's timer | the controller's timer, running from the Tester's Enter |
+| `ERROR_RESPONSE` | the subject's endpoint answered with HTTP 400 or higher, or the subject showed an error in place of an answer | the `response` event's status for the POST to `/api/search` | an alert shown instead of the answer, an error completion on the ChatHub socket, or a socket handshake refused with a status |
+| `UNREACHABLE` | a connection or navigation error, including the Flask backend being down while the frontend loads | `page.goto` failing, the POST's `requestfailed` event, or the page showing "Error searching for … Failed to fetch" before any request left | `page.goto` failing, the "No internet connection" screen, or the socket failing or closing before the stream completed with no finished marker following |
+| `EMPTY_ANSWER` | the answer is empty or only whitespace | an answer bubble that stays empty once the page is idle; the controller also checks every captured answer | a message marked finished with no answer text |
 
 A refusal to answer is an answer, not a failure. On a failure the controller disposes the adapter (bounded by 3 seconds), stops the clock, saves the trial as `FAILED` with whichever marks it reached plus a `failed_requests` row (type, message, elapsed milliseconds), sends a `failed` event, and returns the failed trial to the UI. The harness is ready for the next trial as soon as that returns, within 5 seconds of the failure (NFR-3).
 
-Two outcomes are never saved: a trial the Tester cancels (`cancelTrial`, not yet wired to a button) and a trial the harness itself could not run, for example because Playwright's Chromium is missing or the page was closed under the adapter. Those report `cancelled` or `aborted` with the reason.
+Two outcomes are never saved: a trial the Tester cancels (the **Cancel** button, `cancelTrial`) and a trial the harness itself could not run, for example because Playwright's Chromium is missing, the page was closed under the adapter, Copilot is signed out, the typed question was changed before it was sent, or the Tester never pressed Enter within the submit wait (`copilot.submitWaitMs`, 5 minutes). Those report `cancelled` or `aborted` with the reason.
 
 ## Driving the Oracle
 
@@ -157,6 +163,24 @@ Trials are timed from the browser's own events, not from the Oracle's code:
 `TimingService` (`src/main/execution/timing-service.ts`) records these marks per trial and converts them for storage: `toIso()` gives ISO 8601 UTC with milliseconds and `durationMs()` whole milliseconds. Both clocks are the same system clock on the same machine, so the marks are directly comparable.
 
 The adapter test serves a small copy of the chat page from `src/main/adapters/__fixtures__/oracle-chat.html` and fakes `/api/search` through `page.route`, with a delay, an error status, an aborted request, or an empty answer, so it needs no Oracle and no Ollama, only Playwright's Chromium.
+
+## Driving Copilot
+
+`CopilotAdapter` (`src/main/adapters/copilot-adapter.ts`) implements `SubjectAdapter` for Microsoft Copilot with the Tester in the loop (Architecture decision AD-3: the harness never presses Enter or clicks Send for Copilot). Which Copilot it drives is a setting: `copilot.product` in `src/shared/harness-config.json`, `m365` (Microsoft 365 Copilot Chat, a work or school account, at `copilot.cloud.microsoft/chat`) or `consumer` (a personal account, at `copilot.com/chat`), overridable for a run with `HARNESS_COPILOT_PRODUCT`. Each product carries its own chat URL, sign-in hosts, ChatHub path, and selectors, so switching needs no code change. The default is `m365`: the spike (`docs/copilot-spike.md`) found consumer Copilot gates every send behind a Cloudflare Turnstile check that Playwright's browser fails, and the harness does nothing to pass or hide from such checks.
+
+A trial goes like this. `start()` opens a new chat on the signed-in profile (so questions never share a conversation), checks the page is the chat and not the sign-in page or the offline screen, types the question into the editor, and checks it read back exactly (the editor appends zero-width characters, which are stripped). It then reports `awaiting_submit` and waits. A `MutationObserver` in the page stamps, with the page's clock, the editor clearing: Copilot clears it as it sends, 14 ms before its own request stamp in the spike. That is **begin**, once a send signal confirms it within `copilot.submitConfirmMs`: the Send button turning into "Stop generating", the new message, or the request frame on the ChatHub WebSocket. An editor that clears with none of those is the Tester deleting the text, and the trial is aborted; so is a question edited before it was sent, and no Enter within `copilot.submitWaitMs`.
+
+| Event | When | Clock |
+| --- | --- | --- |
+| begin | the editor cleared, confirmed by a send signal | the page's own `Date.now()` |
+| first response | the first text in the new answer | the page's |
+| end | the last change to the answer text before the message was marked finished | the page's |
+
+The stream is over when the Stop button reverts to Send or the message's actions toolbar appears, or, failing both, when the text has been quiet for `copilot.quietPeriodMs` (2 seconds). The quiet period is never part of the response time, and the page's re-render of the finished message changes no text, so it does not move the end. The Tester then confirms or corrects the end before anything is saved (see "What happens underneath"). `captureAnswer()` reads the answer text without the inline citation buttons, and the citations as `title · url`: titles from the citation buttons' labels, URLs from the `references` the final message carries on the socket. An answer without web grounding has no citations.
+
+The ChatHub socket is read for three things only: the request frame (the submit cross-check), the completion record (so a socket closing early is told apart from one closing after the answer), and the citation URLs. Its frames are parsed in memory and never logged or stored, and the harness never reads cookies or tokens.
+
+The adapter test serves a fixture page, `src/main/adapters/__fixtures__/copilot-chat.html`, with Copilot's editor, Send/Stop button, message articles, loading state, chunked streaming, citation buttons, and actions toolbar, from a small real WebSocket server (`__fixtures__/fake-chathub.ts`) that stands in for the ChatHub, since Playwright reports frames only for real sockets. The tests press Enter themselves; the adapter never does.
 
 ## Storage
 
