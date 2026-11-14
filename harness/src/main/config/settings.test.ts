@@ -50,6 +50,49 @@ describe('loadSettings', () => {
   })
 })
 
+describe('loadSettings: Copilot', () => {
+  it('drives Microsoft 365 Copilot Chat by default, with its URL, sign-in hosts, selectors, and waits', () => {
+    const { copilot } = loadSettings({})
+
+    expect(copilot.product).toBe('m365')
+    expect(copilot.chatUrl).toBe('https://copilot.cloud.microsoft/chat')
+    expect(copilot.signInHosts).toContain('login.microsoftonline.com')
+    expect(copilot.chatHubPath).toBe('/m365Copilot/Chathub')
+    expect(copilot.selectors.input).toBe('[role="textbox"][aria-label="Message Copilot"]')
+    expect(copilot.selectors.stopButton).toBe('button[aria-label="Stop generating"]')
+    expect(copilot.selectors.reply).toBe('[data-testid="markdown-reply"]')
+    expect(copilot.quietPeriodMs).toBe(2_000)
+    expect(copilot.submitWaitMs).toBe(300_000)
+    expect(copilot.submitConfirmMs).toBe(2_000)
+  })
+
+  it('switches to consumer Copilot from HARNESS_COPILOT_PRODUCT without any code change', () => {
+    const { copilot } = loadSettings({ HARNESS_COPILOT_PRODUCT: 'consumer' })
+
+    expect(copilot.product).toBe('consumer')
+    expect(copilot.chatUrl).toBe('https://copilot.com/chat')
+    expect(copilot.signInHosts).toContain('login.live.com')
+    // The consumer page showed the same editor, so the selectors match until a send works there.
+    expect(copilot.selectors).toEqual(loadSettings({}).copilot.selectors)
+  })
+
+  it('ignores a blank product override and rejects an unknown one', () => {
+    expect(loadSettings({ HARNESS_COPILOT_PRODUCT: '  ' }).copilot.product).toBe('m365')
+    expect(() => loadSettings({ HARNESS_COPILOT_PRODUCT: 'bing' })).toThrow(
+      /HARNESS_COPILOT_PRODUCT must be one of m365, consumer, got "bing"/,
+    )
+  })
+
+  it('gives each product its own settings object, so a caller cannot change the defaults', () => {
+    const first = loadSettings({})
+    first.copilot.selectors.input = 'textarea'
+    first.copilot.signInHosts.push('example.test')
+
+    expect(loadSettings({}).copilot.selectors.input).toBe('[role="textbox"][aria-label="Message Copilot"]')
+    expect(loadSettings({}).copilot.signInHosts).not.toContain('example.test')
+  })
+})
+
 describe('oracleChatUrl', () => {
   it('joins the chat path onto the base URL', () => {
     expect(oracleChatUrl(loadSettings({}))).toBe('http://localhost:5173/chat')
