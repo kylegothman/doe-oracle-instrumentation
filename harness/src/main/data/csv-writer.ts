@@ -48,9 +48,16 @@ function toCsv(headers: readonly string[], rows: ReadonlyArray<ReadonlyArray<str
   return BOM + lines.join(EOL) + EOL
 }
 
-/** One CSV field: empty for null, quoted (with quotes doubled) when it holds a comma, quote, or line break. */
+/** First characters that make Excel read a cell as a formula, so an answer starting with "- " would show as #NAME?. */
+const FORMULA_START = /^[-=+@]/
+
+/**
+ * One CSV field: empty for null, quoted (with quotes doubled) when it holds a
+ * comma, quote, or line break. Text that starts with - = + or @ gets a ' in
+ * front so Excel keeps it as text. Numbers are never prefixed.
+ */
 export function field(value: string | number | null): string {
   if (value === null) return ''
-  const text = String(value)
+  const text = typeof value === 'string' && FORMULA_START.test(value) ? `'${value}` : String(value)
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
 }

@@ -255,6 +255,7 @@ The headers live in one place, `TESTLOG_V3_HEADERS`, so the workbook and the CSV
 `CsvWriter` (`src/main/data/csv-writer.ts`) writes the same 11 columns, in the same order and with the same headers, to the chosen file (for example `TestLog-2026-11-14.csv`), and the supplementary columns to `TestLog-2026-11-14-supplementary.csv` beside it.
 
 - Fields follow RFC 4180: a value with a comma, a double quote, or a line break is wrapped in double quotes, with its quotes doubled, so a long multi-line answer stays in one field. Empty values are empty fields.
+- Text that starts with `-`, `=`, `+`, or `@` gets a `'` in front, so Excel keeps it as text instead of reading it as a formula (an answer starting with "- " would otherwise show as `#NAME?`). Numbers are never prefixed. The workbook needs no prefix: its cells are stored as text.
 - Files are UTF-8 with a byte order mark, so Excel shows characters such as `·` and `é` correctly, and lines end with CRLF.
 - The header row is the first line. A CSV has no cells, so the workbook's `B2` offset does not apply.
 - Size Kbytes is written with 2 decimals, matching the workbook.

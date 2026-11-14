@@ -80,6 +80,20 @@ describe('field', () => {
     expect(field('line 1\nline 2')).toBe('"line 1\nline 2"')
     expect(field('line 1\r\nline 2')).toBe('"line 1\r\nline 2"')
   })
+
+  it.each(['-', '=', '+', '@'])('puts a quote mark in front of text starting with %s so Excel keeps it as text', (char) => {
+    expect(field(`${char} first point`)).toBe(`'${char} first point`)
+  })
+
+  it('adds the quote mark before quoting, and only at the start', () => {
+    expect(field('- a, b')).toBe(`"'- a, b"`)
+    expect(field('=SUM(A1)\nnext')).toBe(`"'=SUM(A1)\nnext"`)
+    expect(field('a - b = c')).toBe('a - b = c')
+  })
+
+  it('never prefixes numbers', () => {
+    expect(field(-5)).toBe('-5')
+  })
 })
 
 describe('supplementaryPathFor', () => {
