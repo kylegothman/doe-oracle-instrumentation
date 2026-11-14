@@ -175,6 +175,16 @@ The schema is versioned in `MetricsRepository` (`src/main/data/metrics-repositor
 
 Trials and expert answers share one Test # sequence (`nextTestNumber()`), so every exported row has a unique Test #. Expert answers are never overwritten: replacing one keeps the old row, points its `superseded_by` at the new row, and moves its Test # to the new row, so a revised answer keeps its number. Only one active answer per expert and question is allowed.
 
+### What an export reads
+
+`listExportRecords(filter)` returns everything an export includes, in Test # order: every matching trial, successful or failed (with its failure), and every matching active expert answer with its expert. Superseded answers are never exported. The `RecordFilter` (`src/shared/export.ts`) narrows it; a null field means no limit:
+
+| Field | Keeps |
+| --- | --- |
+| `sessionId` | trials from that session, and expert answers entered during it |
+| `from`, `to` | records from `from` (inclusive) up to `to` (exclusive), as ISO 8601 UTC. A trial is placed by its begin time, or by its session's start if it failed before beginning; an expert answer by when it was entered |
+| `subject` | one subject's trials, or `'EXPERT'` for only the expert's answers |
+
 ### Startup check
 
 At startup the main process opens an in-memory SQLite database through better-sqlite3 and reads the SQLite version. The result is logged (`[sqlite] better-sqlite3 loaded, SQLite version 3.x.y`) and shown in the window under "Storage". If the native module cannot be loaded, the window shows a red "SQLite failed to load" box with the error text instead, so a broken install is obvious. No tables are created and nothing is stored.

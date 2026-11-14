@@ -7,6 +7,7 @@ import { FailureType } from '../../shared/failures'
 import { Subject } from '../../shared/subjects'
 import { TrialStatus, type Trial } from '../../shared/trials'
 import { ResponseSource, type Expert } from '../../shared/experts'
+import { ALL_RECORDS, type RecordFilter } from '../../shared/export'
 import { ActiveAnswerExistsError, MetricsRepository, type NewExpertResponse, type NewTrial } from './metrics-repository'
 
 const CURRENT_SCHEMA_VERSION = 6
@@ -418,6 +419,106 @@ describe('MetricsRepository expert methods', () => {
     const trial = repository.saveTrial(sampleTrial({ trialId: 'b' }))
 
     expect([saved.testNumber, trial.testNumber]).toEqual([2, 3])
+  })
+})
+
+describe('MetricsRepository.listExportRecords', () => {
+  let repository: MetricsRepository
+
+  /** A filter that narrows only what the test sets. */
+  const filter = (overrides: Partial<RecordFilter> = {}): RecordFilter => ({ ...ALL_RECORDS, ...overrides })
+  const numbersAndKinds = (f: RecordFilter): string[] =>
+    repository.listExportRecords(f).map((r) => `${r.testNumber}:${r.kind === 'TRIAL' ? r.trial.subject : 'EXPERT'}`)
+
+  beforeEach(async () => {
+    repository = await MetricsRepository.open(':memory:')
+    repository.saveSession({ sessionId: 's1', startedAt: '2026-11-10T09:00:00.000Z', appVersion: '0.1.0' })
+    repository.saveSession({ sessionId: 's2', startedAt: '2026-11-12T09:00:00.000Z', appVersion: '0.1.0' })
+    repository.saveExpert(sampleExpert())
+  })
+
+  afterEach(() => {
+    repository.close()
+  })
+
+  it('returns nothing when no trials or answers are saved', () => {
+    expect(repository.listExportRecords(ALL_RECORDS)).toEqual([])
+  })
+
+  it('lists trials and active expert answers together in Test # order, leaving out superseded answers', () => {
+    repository.saveTrial(sampleTrial({ trialId: 'a', sessionId: 's1' }))
+    repository.saveExpertResponse(sampleAnswer({ sessionId: 's1', questionNumber: 1 }))
+    repository.saveTrial(sampleTrial({ trialId: 'b', sessionId: 's1', subject: Subject.COPILOT }))
+    repository.saveExpertResponse(sampleAnswer({ sessionId: 's1', questionNumber: 1, answerText: 'Revised.' }), { replace: true })
+
+    const records = repository.listExportRecords(ALL_RECORDS)
+
+    expect(numbersAndKinds(ALL_RECORDS)).toEqual(['1:DOE_ORACLE', '2:EXPERT', '3:COPILOT'])
+    const expert = records[1]
+    expect(expert?.kind).toBe('EXPERT')
+    if (expert?.kind === 'EXPERT') {
+      expect(expert.response.answerText).toBe('Revised.')
+      expect(expert.expert).toEqual(sampleExpert())
+    }
+  })
+
+  it('includes failed trials with their failure', () => {
+    const failure = { type: FailureType.TIMEOUT, message: 'No answer within 60 s', elapsedMs: 60_000 }
+    repository.saveTrial(sampleTrial({ status: TrialStatus.FAILED, endTs: null, responseMs: null, answerText: null }), failure)
+
+    const [record] = repository.listExportRecords(ALL_RECORDS)
+
+    expect(record?.kind === 'TRIAL' && record.trial.failure).toEqual(failure)
+  })
+
+  it('filters by subject, or to only the expert with EXPERT', () => {
+    repository.saveTrial(sampleTrial({ trialId: 'a' }))
+    repository.saveTrial(sampleTrial({ trialId: 'b', subject: Subject.COPILOT }))
+    repository.saveExpertResponse(sampleAnswer())
+
+    expect(numbersAndKinds(filter({ subject: Subject.COPILOT }))).toEqual(['2:COPILOT'])
+    expect(numbersAndKinds(filter({ subject: 'EXPERT' }))).toEqual(['3:EXPERT'])
+    expect(numbersAndKinds(filter({ subject: Subject.GOOGLE }))).toEqual([])
+  })
+
+  it('filters trials and expert answers by session', () => {
+    repository.saveTrial(sampleTrial({ trialId: 'a', sessionId: 's1' }))
+    repository.saveTrial(sampleTrial({ trialId: 'b', sessionId: 's2' }))
+    repository.saveExpertResponse(sampleAnswer({ sessionId: 's2' }))
+
+    expect(numbersAndKinds(filter({ sessionId: 's1' }))).toEqual(['1:DOE_ORACLE'])
+    expect(numbersAndKinds(filter({ sessionId: 's2' }))).toEqual(['2:DOE_ORACLE', '3:EXPERT'])
+  })
+
+  it('filters by date range, from inclusive and to exclusive, on begin time and entry time', () => {
+    repository.saveTrial(sampleTrial({ trialId: 'nov-10', sessionId: 's1', beginTs: '2026-11-10T10:00:00.000Z' }))
+    repository.saveTrial(sampleTrial({ trialId: 'nov-12', sessionId: 's2', beginTs: '2026-11-12T10:00:00.000Z' }))
+    repository.saveExpertResponse(sampleAnswer({ recordedAt: '2026-11-11T00:00:00.000Z' }))
+
+    expect(numbersAndKinds(filter({ from: '2026-11-11T00:00:00.000Z' }))).toEqual(['2:DOE_ORACLE', '3:EXPERT'])
+    expect(numbersAndKinds(filter({ to: '2026-11-11T00:00:00.000Z' }))).toEqual(['1:DOE_ORACLE'])
+    expect(numbersAndKinds(filter({ from: '2026-11-10T00:00:00.000Z', to: '2026-11-12T00:00:00.000Z' }))).toEqual([
+      '1:DOE_ORACLE',
+      '3:EXPERT',
+    ])
+  })
+
+  it("places a trial that failed before it began by its session's start", () => {
+    repository.saveTrial(
+      sampleTrial({ sessionId: 's2', status: TrialStatus.FAILED, beginTs: null, firstResponseTs: null, endTs: null }),
+      { type: FailureType.UNREACHABLE, message: 'net::ERR_CONNECTION_REFUSED', elapsedMs: 15 },
+    )
+
+    expect(numbersAndKinds(filter({ from: '2026-11-12T00:00:00.000Z' }))).toEqual(['1:DOE_ORACLE'])
+    expect(numbersAndKinds(filter({ to: '2026-11-12T00:00:00.000Z' }))).toEqual([])
+  })
+
+  it('combines filters', () => {
+    repository.saveTrial(sampleTrial({ trialId: 'a', sessionId: 's1', subject: Subject.COPILOT }))
+    repository.saveTrial(sampleTrial({ trialId: 'b', sessionId: 's2', subject: Subject.COPILOT }))
+    repository.saveTrial(sampleTrial({ trialId: 'c', sessionId: 's2' }))
+
+    expect(numbersAndKinds(filter({ sessionId: 's2', subject: Subject.COPILOT }))).toEqual(['2:COPILOT'])
   })
 })
 

@@ -4,6 +4,17 @@ import type { Subject } from '../../shared/subjects'
 import type { FailureType } from '../../shared/failures'
 import { TrialStatus, type Trial, type TrialFailure } from '../../shared/trials'
 import type { Expert, ExpertResponse, ResponseSource } from '../../shared/experts'
+import type { RecordFilter } from '../../shared/export'
+
+/**
+ * One row of an export, before ExportService maps it to the TestLogV3
+ * columns: a trial (with its failure, if it failed) or an active expert
+ * answer with its expert. testNumber is repeated at the top so records of
+ * both kinds sort and key the same way.
+ */
+export type ExportRecord =
+  | { kind: 'TRIAL'; testNumber: number; trial: Trial }
+  | { kind: 'EXPERT'; testNumber: number; expert: Expert; response: ExpertResponse }
 
 /** Fields only some subjects or later epics fill in. Left out, they are saved as null. */
 type OptionalTrialFields = 'pageLoadMs' | 'timeToAnswerMs' | 'sourceUrl' | 'keywords'
@@ -533,6 +544,88 @@ export class MetricsRepository {
       .prepare(`SELECT * FROM expert_responses WHERE expert_id = ? ${active} ORDER BY question_number, response_id`)
       .all(expertId) as ExpertResponseRow[]
     return rows.map(toExpertResponse)
+  }
+
+  /**
+   * Everything an export with this filter includes, in Test # order: every
+   * matching trial, successful or failed, and every matching active expert
+   * answer. Superseded expert answers are never included (UC-5, UC-6).
+   */
+  listExportRecords(filter: RecordFilter): ExportRecord[] {
+    const records: ExportRecord[] = []
+    if (filter.subject !== 'EXPERT') {
+      for (const trial of this.listExportTrials(filter)) {
+        records.push({ kind: 'TRIAL', testNumber: trial.testNumber, trial })
+      }
+    }
+    if (filter.subject === null || filter.subject === 'EXPERT') {
+      for (const { expert, response } of this.listExportAnswers(filter)) {
+        // Active answers always have a test number; only superseded ones give theirs up.
+        if (response.testNumber === null) continue
+        records.push({ kind: 'EXPERT', testNumber: response.testNumber, expert, response })
+      }
+    }
+    return records.sort((a, b) => a.testNumber - b.testNumber)
+  }
+
+  private listExportTrials(filter: RecordFilter): Trial[] {
+    // A trial that failed before it began has no begin_ts; its session's
+    // start places it in a date range instead, so it is not dropped.
+    const when = 'COALESCE(t.begin_ts, s.started_at)'
+    const conditions: string[] = []
+    const params: string[] = []
+    if (filter.sessionId !== null) {
+      conditions.push('t.session_id = ?')
+      params.push(filter.sessionId)
+    }
+    if (filter.subject !== null && filter.subject !== 'EXPERT') {
+      conditions.push('t.subject = ?')
+      params.push(filter.subject)
+    }
+    if (filter.from !== null) {
+      conditions.push(`${when} >= ?`)
+      params.push(filter.from)
+    }
+    if (filter.to !== null) {
+      conditions.push(`${when} < ?`)
+      params.push(filter.to)
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const rows = this.db
+      .prepare(
+        `SELECT t.*, f.failure_type, f.error_message, f.elapsed_ms
+         FROM trials t
+         LEFT JOIN failed_requests f ON f.trial_id = t.trial_id
+         LEFT JOIN sessions s ON s.session_id = t.session_id
+         ${where} ORDER BY t.test_number`,
+      )
+      .all(...params) as TrialRow[]
+    return rows.map(toTrial)
+  }
+
+  private listExportAnswers(filter: RecordFilter): Array<{ expert: Expert; response: ExpertResponse }> {
+    const conditions = ['r.superseded_by IS NULL']
+    const params: string[] = []
+    if (filter.sessionId !== null) {
+      conditions.push('r.session_id = ?')
+      params.push(filter.sessionId)
+    }
+    if (filter.from !== null) {
+      conditions.push('r.recorded_at >= ?')
+      params.push(filter.from)
+    }
+    if (filter.to !== null) {
+      conditions.push('r.recorded_at < ?')
+      params.push(filter.to)
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT r.*, e.name, e.source, e.outreach_ts, e.first_answer_ts, e.turnaround_ms
+         FROM expert_responses r JOIN experts e ON e.expert_id = r.expert_id
+         WHERE ${conditions.join(' AND ')} ORDER BY r.test_number`,
+      )
+      .all(...params) as Array<ExpertResponseRow & Omit<ExpertRow, 'expert_id'>>
+    return rows.map((row) => ({ expert: toExpert(row), response: toExpertResponse(row) }))
   }
 
   close(): void {
