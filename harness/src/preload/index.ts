@@ -26,8 +26,12 @@ const harnessApi: HarnessApi = {
   getSqliteStatus: () => invoke(IpcChannels.getSqliteStatus),
   getSession: () => invoke(IpcChannels.getSession),
   startTrial: (subject, questionNumber) => invoke(IpcChannels.startTrial, subject, questionNumber),
+  confirmCompletion: (trialId, endMs) =>
+    endMs === undefined ? invoke(IpcChannels.confirmCompletion, trialId) : invoke(IpcChannels.confirmCompletion, trialId, endMs),
+  cancelTrial: (trialId) => invoke(IpcChannels.cancelTrial, trialId),
   listTrials: (sessionId) =>
     sessionId === undefined ? invoke(IpcChannels.listTrials) : invoke(IpcChannels.listTrials, sessionId),
+  openCopilotSignIn: () => invoke(IpcChannels.openCopilotSignIn),
   listFailedWrites: () => invoke(IpcChannels.listFailedWrites),
   retryFailedWrites: () => invoke(IpcChannels.retryFailedWrites),
   exportLog: (request) => invoke(IpcChannels.exportLog, request),

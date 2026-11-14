@@ -93,6 +93,44 @@ button:disabled {
   cursor: progress;
 }
 
+button.secondary {
+  background: transparent;
+  color: inherit;
+  border-color: color-mix(in srgb, currentColor 40%, transparent);
+}
+
+select,
+input[type='number'] {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  background: transparent;
+  color: inherit;
+}
+
+input[type='number'] {
+  width: 7rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.status-line {
+  font-weight: 600;
+}
+
+.confirm-box {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid #1f3a5f;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
 .result {
   margin-top: 1rem;
   padding: 0.75rem 1rem;
@@ -136,4 +174,9 @@ button:disabled {
 
 .events li[data-status='completed'] {
   color: #067647;
+}
+
+.events li[data-status='awaiting_submit'],
+.events li[data-status='awaiting_confirmation'] {
+  color: #8a5a00;
 }

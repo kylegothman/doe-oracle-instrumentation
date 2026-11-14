@@ -4,10 +4,60 @@
     "chatPath": "/chat",
     "searchEndpointPath": "/api/search"
   },
+  "copilot": {
+    "product": "m365",
+    "quietPeriodMs": 2000,
+    "submitWaitMs": 300000,
+    "submitConfirmMs": 2000,
+    "products": {
+      "m365": {
+        "label": "Microsoft 365 Copilot Chat (work or school account)",
+        "chatUrl": "https://copilot.cloud.microsoft/chat",
+        "signInHosts": ["copilot.com", "login.microsoftonline.com", "login.microsoft.com", "login.live.com"],
+        "chatHubPath": "/m365Copilot/Chathub",
+        "selectors": {
+          "input": "[role=\"textbox\"][aria-label=\"Message Copilot\"]",
+          "sendButton": "button[aria-label=\"Send\"]",
+          "stopButton": "button[aria-label=\"Stop generating\"]",
+          "conversation": "[role=\"feed\"][aria-label=\"Chat conversation\"]",
+          "message": "[role=\"article\"]",
+          "botMessage": "[data-testid=\"chat-response-message\"]",
+          "reply": "[data-testid=\"markdown-reply\"]",
+          "loading": "[data-testid=\"loading-message\"]",
+          "messageActions": ".fai-CopilotMessage__actions",
+          "citation": "button.fai-BebopCitation",
+          "answerError": "[role=\"alert\"]",
+          "offline": "img[alt=\"No network connection\"]",
+          "signInPrompt": "h1:has-text(\"Sign into Copilot\")"
+        }
+      },
+      "consumer": {
+        "label": "Consumer Copilot (personal Microsoft account)",
+        "chatUrl": "https://copilot.com/chat",
+        "signInHosts": ["login.live.com", "signup.live.com", "login.microsoft.com", "login.microsoftonline.com"],
+        "chatHubPath": "/m365Copilot/Chathub",
+        "selectors": {
+          "input": "[role=\"textbox\"][aria-label=\"Message Copilot\"]",
+          "sendButton": "button[aria-label=\"Send\"]",
+          "stopButton": "button[aria-label=\"Stop generating\"]",
+          "conversation": "[role=\"feed\"][aria-label=\"Chat conversation\"]",
+          "message": "[role=\"article\"]",
+          "botMessage": "[data-testid=\"chat-response-message\"]",
+          "reply": "[data-testid=\"markdown-reply\"]",
+          "loading": "[data-testid=\"loading-message\"]",
+          "messageActions": ".fai-CopilotMessage__actions",
+          "citation": "button.fai-BebopCitation",
+          "answerError": "[role=\"alert\"]",
+          "offline": "img[alt=\"No network connection\"]",
+          "signInPrompt": "h1:has-text(\"Sign into Copilot\")"
+        }
+      }
+    }
+  },
   "trialTimeoutMs": 60000,
   "subjects": {
-    "DOE_ORACLE": { "timerStartsAt": "trial_start" },
-    "COPILOT": { "timerStartsAt": "submit" },
-    "GOOGLE": { "timerStartsAt": "submit" }
+    "DOE_ORACLE": { "timerStartsAt": "trial_start", "confirmEnd": false },
+    "COPILOT": { "timerStartsAt": "submit", "confirmEnd": true },
+    "GOOGLE": { "timerStartsAt": "submit", "confirmEnd": false }
   }
 }
