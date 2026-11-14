@@ -81,7 +81,7 @@ harness/
       adapters/             SubjectAdapter interface and one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
       browser/              BrowserManager: launches and owns the Playwright Chromium window
       config/               settings (Oracle URL, per-subject time limits)
-      data/                 MetricsRepository (SQLite, versioned migrations) and the startup probe
+      data/                 MetricsRepository (SQLite, versioned migrations), ErrorLog (failed saves kept for retry), and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
     shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent)
@@ -184,6 +184,14 @@ Trials and expert answers share one Test # sequence (`nextTestNumber()`), so eve
 | `sessionId` | trials from that session, and expert answers entered during it |
 | `from`, `to` | records from `from` (inclusive) up to `to` (exclusive), as ISO 8601 UTC. A trial is placed by its begin time, or by its session's start if it failed before beginning; an expert answer by when it was entered |
 | `subject` | one subject's trials, or `'EXPERT'` for only the expert's answers |
+
+### Failed saves
+
+If a save fails in the database itself (the disk is full, the file is locked or damaged), the record is not lost. `MetricsRepository` hands it to the `ErrorLog` (`src/main/data/error-log.ts`), which appends it as one JSON line to `pending-writes.jsonl`, next to `harness.db`. It is a file, not a table, because a SQLite write is what just failed. The save still throws, with a message saying the record was kept and can be retried, so the Tester sees it; the startup log also reports how many saves are waiting.
+
+Each line is a `PendingWrite`: an `id`, the `operation` (`saveTrial`, `saveExpert`, or `saveExpertResponse`), its `payload`, the `error`, and `failedAt`. `ErrorLog.retry(id, repository)` runs one again and `retryAll(repository)` runs them all, oldest first; a write that succeeds is removed from the file, and one that fails again stays with its new error. Retrying gives a trial or expert answer the next Test # at that time.
+
+Failures the data itself causes are not kept, because a retry would fail the same way: constraint violations such as a duplicate id, a FAILED trial without its failure, or an answer to a question that already has one (`ActiveAnswerExistsError`).
 
 ### Startup check
 

@@ -6,6 +6,7 @@ import { OracleAdapter } from './adapters/oracle-adapter'
 import type { SubjectAdapter } from './adapters/subject-adapter'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
+import { ErrorLog } from './data/error-log'
 import { MetricsRepository } from './data/metrics-repository'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
@@ -30,11 +31,18 @@ function questionsConfigPath(): string {
   return join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'config', 'questions.json')
 }
 
-/** Opens harness.db under the per-user app data folder and applies migrations. */
+/**
+ * Opens harness.db under the per-user app data folder and applies
+ * migrations. Saves that fail in the database are kept for retry in
+ * pending-writes.jsonl, next to it.
+ */
 async function openRepository(): Promise<MetricsRepository> {
   const filePath = join(app.getPath('userData'), 'harness.db')
-  const repository = await MetricsRepository.open(filePath)
+  const errorLog = new ErrorLog(join(app.getPath('userData'), 'pending-writes.jsonl'))
+  const repository = await MetricsRepository.open(filePath, { errorLog })
   console.log(`[data] Opened ${filePath} (schema version ${repository.schemaVersion})`)
+  const pending = errorLog.listPending().length
+  if (pending > 0) console.warn(`[errors] ${pending} failed save(s) waiting for retry in ${errorLog.logPath}`)
   return repository
 }
 
