@@ -185,6 +185,25 @@ Trials and expert answers share one Test # sequence (`nextTestNumber()`), so eve
 | `from`, `to` | records from `from` (inclusive) up to `to` (exclusive), as ISO 8601 UTC. A trial is placed by its begin time, or by its session's start if it failed before beginning; an expert answer by when it was entered |
 | `subject` | one subject's trials, or `'EXPERT'` for only the expert's answers |
 
+### Export rows
+
+`toExportRows(records)` (`src/main/data/export-rows.ts`) turns each record into a row of the TestLogV3 sheet (`TestLogRow`, Tom's 11 columns in order) and a row of the supplementary sheet (`SupplementaryRow`, keyed by the same Test #). An empty cell is `null`.
+
+| Column | Trial | Expert answer |
+| --- | --- | --- |
+| Test # | its Test # | its Test # |
+| Question Number | the question | the question |
+| Test Subject | the subject's UI label: `DOE Oracle`, `Microsoft Copilot`, `Google Search` | `Expert` |
+| log data set name | as saved, for example `DOE_ORACLE-2026-11-14` | `EXPERT-` plus the UTC date of the first answer, or `EXPERT` until it is entered |
+| Answer Text | the answer, empty if none | the answer |
+| Response Milliseconds | total response time; **page-load time for Google** | the turnaround, on one row only (below) |
+| User Email | the session ID (NFR-7) | the session the answer was entered in |
+| Begin / End Timestamp | as captured; a failed trial keeps whatever it reached | outreach sent / first answer received, on one row only |
+| Keywords | empty until the questions have keywords | the same |
+| Size Kbytes | bytes / 1024, rounded to 2 decimals | the same |
+
+The expert's turnaround goes on the row of their **lowest question number** in the export; their other rows leave Response Milliseconds and both timestamps empty. The supplementary row holds what TestLogV3 has no column for: time to first response, Google's page-load time and time to answer, the source URL, the citations joined with `; `, a failed trial's failure type, and the expert's response source (`EMAIL` or `INTERVIEW`).
+
 ### Failed saves
 
 If a save fails in the database itself (the disk is full, the file is locked or damaged), the record is not lost. `MetricsRepository` hands it to the `ErrorLog` (`src/main/data/error-log.ts`), which appends it as one JSON line to `pending-writes.jsonl`, next to `harness.db`. It is a file, not a table, because a SQLite write is what just failed. The save still throws, with a message saying the record was kept and can be retried, so the Tester sees it; the startup log also reports how many saves are waiting.
