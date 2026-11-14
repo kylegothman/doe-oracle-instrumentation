@@ -108,7 +108,11 @@ Only plain data that survives `structuredClone` may cross the bridge.
 
 ## Browser automation
 
-`BrowserManager` (`src/main/browser`) launches one headed Chromium window through Playwright from the Electron main process, gives each system under test its own browser context and page, and closes the browser when the harness quits. The window is headed on purpose: the Tester watches the trial happen.
+`BrowserManager` (`src/main/browser`) launches headed Chromium through Playwright from the Electron main process, gives each system under test its own browser context and page, and closes everything when the harness quits. The windows are headed on purpose: the Tester watches the trial happen.
+
+The Oracle runs in a throw-away context of a shared Chromium, gone when the harness quits. Copilot runs in its own Chromium on a persistent profile folder, `browser-profiles/copilot` under the per-user app data folder (the same place as `harness.db`, never the repository), so the Tester signs in once and later launches find the session. The harness only hands the folder's path to Playwright; it never reads cookies or tokens from it. Delete the folder to sign out for good.
+
+**Open Copilot to sign in** in the window brings the Copilot window to the front on the chat page and reports what it shows: signed in (the question input is there), signed out (the sign-in landing page or a sign-in host), offline, or unknown. Signing in, including any second factor, is done by the Tester in that window; the harness never types credentials. A Copilot trial that finds the page signed out is aborted, not saved, with a message saying to sign in first.
 
 The Oracle's address is a setting. The default, `http://localhost:5173`, is in `src/shared/harness-config.json`; set `HARNESS_ORACLE_URL` to point somewhere else, for example `HARNESS_ORACLE_URL=http://127.0.0.1:4173 npm run dev`. The chat page is `/chat` under that URL. If the Oracle is not running, the harness reports "Could not reach the DOE Oracle at ..." instead of failing silently.
 

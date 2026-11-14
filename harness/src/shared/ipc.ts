@@ -1,3 +1,4 @@
+import type { CopilotSignInStatus } from './copilot'
 import type { Session } from './session'
 import type { Subject } from './subjects'
 import type { Trial, TrialEvent } from './trials'
@@ -41,6 +42,7 @@ export interface IpcContracts {
   'session:get': { args: []; result: Session }
   'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
   'trials:list': { args: [sessionId?: string]; result: Trial[] }
+  'copilot:open-sign-in': { args: []; result: CopilotSignInStatus }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -54,6 +56,7 @@ export const IpcChannels = {
   getSession: 'session:get',
   startTrial: 'trial:start',
   listTrials: 'trials:list',
+  openCopilotSignIn: 'copilot:open-sign-in',
 } as const satisfies Record<string, IpcChannel>
 
 /**
@@ -89,6 +92,12 @@ export interface HarnessApi {
   startTrial(subject: Subject, questionNumber: number): Promise<Trial>
   /** Lists saved trials, newest first, for one session or for all sessions. */
   listTrials(sessionId?: string): Promise<Trial[]>
+  /**
+   * Brings the Copilot window to the front on the chat page so the Tester
+   * can sign in there, and reports whether the chat is usable. The harness
+   * never signs in itself.
+   */
+  openCopilotSignIn(): Promise<CopilotSignInStatus>
   /** Receives the running trial's status events. Returns the function that unsubscribes. */
   onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }

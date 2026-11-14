@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { CopilotSignInStatus } from '../../shared/copilot'
 import type { AppInfo, SqliteStatus } from '../../shared/ipc'
 import { Subject } from '../../shared/subjects'
 import type { Trial, TrialEvent } from '../../shared/trials'
@@ -235,6 +236,64 @@ function TrialPanel({ onSaved }: { onSaved: () => void }) {
   )
 }
 
+type SignInState =
+  | { status: 'idle' }
+  | { status: 'opening' }
+  | { status: 'done'; result: CopilotSignInStatus }
+  | { status: 'error'; message: string }
+
+function describeSignIn(result: CopilotSignInStatus): string {
+  switch (result.state) {
+    case 'chat':
+      return `Copilot is signed in (${result.label}). You can run a Copilot trial.`
+    case 'signed_out':
+      return `Not signed in yet: the Copilot window is at ${result.url}. Sign in there, then run the trial.`
+    case 'offline':
+      return 'The Copilot window shows "No internet connection". Check the network, then try again.'
+    case 'unknown':
+      return `The chat input did not appear at ${result.url}. Look at the Copilot window.`
+  }
+}
+
+/**
+ * The sign-in action for Copilot: opens its window on the chat page and
+ * reports what it shows. The Tester signs in there; the harness never does.
+ */
+function CopilotSignInPanel() {
+  const [state, setState] = useState<SignInState>({ status: 'idle' })
+
+  const open = () => {
+    setState({ status: 'opening' })
+    window.harness
+      .openCopilotSignIn()
+      .then((result) => setState({ status: 'done', result }))
+      .catch((error: unknown) => setState({ status: 'error', message: describeError(error) }))
+  }
+
+  return (
+    <section aria-labelledby="copilot-heading">
+      <h2 id="copilot-heading">Copilot sign-in</h2>
+      <p>
+        Copilot keeps its own browser profile, so signing in once is enough until the session expires. Sign in with the
+        account the trials should run under.
+      </p>
+      <button type="button" onClick={open} disabled={state.status === 'opening'} data-testid="open-copilot-sign-in">
+        {state.status === 'opening' ? 'Opening Copilot…' : 'Open Copilot to sign in'}
+      </button>
+      {state.status === 'done' && (
+        <p data-testid="copilot-sign-in-status" data-state={state.result.state} className={state.result.signedIn ? 'ok' : undefined}>
+          {describeSignIn(state.result)}
+        </p>
+      )}
+      {state.status === 'error' && (
+        <p role="alert" className="error" data-testid="copilot-sign-in-error">
+          {state.message}
+        </p>
+      )}
+    </section>
+  )
+}
+
 function SavedTrials({ refreshKey }: { refreshKey: number }) {
   const trials = useBridgeCall(() => window.harness.listTrials(), refreshKey)
 
@@ -294,6 +353,7 @@ export function App() {
     <main className="app">
       <h1>DOE Oracle Test Harness</h1>
       <SessionBar />
+      <CopilotSignInPanel />
       <TrialPanel onSaved={() => setSavedVersion((v) => v + 1)} />
       <SavedTrials refreshKey={savedVersion} />
       <AppInfoPanel appInfo={appInfo} />

@@ -9,6 +9,7 @@ import { loadSettings } from './config/settings'
 import { MetricsRepository } from './data/metrics-repository'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
+import { createOpenCopilotSignInHandler } from './execution/handlers/copilot'
 import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { createListTrialsHandler, createStartTrialHandler } from './execution/handlers/trials'
@@ -18,8 +19,21 @@ import { SessionManager } from './execution/session-manager'
 import { TimingService } from './execution/timing-service'
 import { TrialController } from './execution/trial-controller'
 
-/** The one Chromium instance the harness drives. Launched on first use, closed on quit. */
-const browserManager = new BrowserManager()
+/** The Chromium instances the harness drives. Created once Electron is ready, launched on first use, closed on quit. */
+let browserManager: BrowserManager | null = null
+
+/**
+ * Subjects whose sign-in must survive a restart keep a browser profile under
+ * the per-user app data folder, never in the repository. Copilot's is
+ * browser-profiles/copilot; the harness only passes the path to Playwright.
+ */
+function createBrowserManager(): BrowserManager {
+  return new BrowserManager({
+    profiles: {
+      [Subject.COPILOT]: join(app.getPath('userData'), 'browser-profiles', 'copilot'),
+    },
+  })
+}
 
 /**
  * The 12 standard questions ship in config/questions.json: next to
@@ -38,7 +52,7 @@ async function openRepository(): Promise<MetricsRepository> {
   return repository
 }
 
-function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRouter {
+function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browserManager: BrowserManager): IpcRouter {
   // Probe once at startup. The handler reports this same result to the
   // renderer, so a broken native module shows up in the window.
   const sqliteStatus = probeSqlite()
@@ -84,6 +98,7 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRo
   router.register(IpcChannels.getSession, createGetSessionHandler(() => sessionReady))
   router.register(IpcChannels.startTrial, createStartTrialHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
+  router.register(IpcChannels.openCopilotSignIn, createOpenCopilotSignInHandler({ pages: browserManager, settings: settings.copilot }))
   return router
 }
 
@@ -126,11 +141,12 @@ function createMainWindow(): BrowserWindow {
 let repositoryReady: Promise<MetricsRepository> | null = null
 
 void app.whenReady().then(() => {
+  browserManager = createBrowserManager()
   repositoryReady = openRepository()
   repositoryReady.catch((error: unknown) => {
     console.error(`[data] ${error instanceof Error ? error.message : String(error)}`)
   })
-  registerIpcHandlers(repositoryReady)
+  registerIpcHandlers(repositoryReady, browserManager)
   createMainWindow()
 
   app.on('activate', () => {
@@ -151,7 +167,7 @@ app.on('before-quit', (event) => {
   shuttingDown = true
   void (async () => {
     try {
-      await browserManager.close()
+      await browserManager?.close()
       const repository = await repositoryReady?.catch(() => null)
       repository?.close()
     } finally {
