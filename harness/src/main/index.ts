@@ -10,6 +10,7 @@ import { ErrorLog } from './data/error-log'
 import { MetricsRepository } from './data/metrics-repository'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
+import { createListFailedWritesHandler, createRetryFailedWritesHandler } from './execution/handlers/errors'
 import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { createListTrialsHandler, createStartTrialHandler } from './execution/handlers/trials'
@@ -31,14 +32,14 @@ function questionsConfigPath(): string {
   return join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'config', 'questions.json')
 }
 
-/**
- * Opens harness.db under the per-user app data folder and applies
- * migrations. Saves that fail in the database are kept for retry in
- * pending-writes.jsonl, next to it.
- */
-async function openRepository(): Promise<MetricsRepository> {
+/** Saves that fail in the database are kept for retry in pending-writes.jsonl, next to harness.db. */
+function openErrorLog(): ErrorLog {
+  return new ErrorLog(join(app.getPath('userData'), 'pending-writes.jsonl'))
+}
+
+/** Opens harness.db under the per-user app data folder and applies migrations. */
+async function openRepository(errorLog: ErrorLog): Promise<MetricsRepository> {
   const filePath = join(app.getPath('userData'), 'harness.db')
-  const errorLog = new ErrorLog(join(app.getPath('userData'), 'pending-writes.jsonl'))
   const repository = await MetricsRepository.open(filePath, { errorLog })
   console.log(`[data] Opened ${filePath} (schema version ${repository.schemaVersion})`)
   const pending = errorLog.listPending().length
@@ -46,7 +47,7 @@ async function openRepository(): Promise<MetricsRepository> {
   return repository
 }
 
-function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRouter {
+function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, errorLog: ErrorLog): IpcRouter {
   // Probe once at startup. The handler reports this same result to the
   // renderer, so a broken native module shows up in the window.
   const sqliteStatus = probeSqlite()
@@ -92,6 +93,8 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>): IpcRo
   router.register(IpcChannels.getSession, createGetSessionHandler(() => sessionReady))
   router.register(IpcChannels.startTrial, createStartTrialHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
+  router.register(IpcChannels.listFailedWrites, createListFailedWritesHandler(errorLog))
+  router.register(IpcChannels.retryFailedWrites, createRetryFailedWritesHandler(errorLog, () => repositoryReady))
   return router
 }
 
@@ -134,11 +137,12 @@ function createMainWindow(): BrowserWindow {
 let repositoryReady: Promise<MetricsRepository> | null = null
 
 void app.whenReady().then(() => {
-  repositoryReady = openRepository()
+  const errorLog = openErrorLog()
+  repositoryReady = openRepository(errorLog)
   repositoryReady.catch((error: unknown) => {
     console.error(`[data] ${error instanceof Error ? error.message : String(error)}`)
   })
-  registerIpcHandlers(repositoryReady)
+  registerIpcHandlers(repositoryReady, errorLog)
   createMainWindow()
 
   app.on('activate', () => {

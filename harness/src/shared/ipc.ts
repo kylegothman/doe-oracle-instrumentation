@@ -1,3 +1,4 @@
+import type { FailedWriteSummary } from './errors'
 import type { Session } from './session'
 import type { Subject } from './subjects'
 import type { Trial, TrialEvent } from './trials'
@@ -41,6 +42,8 @@ export interface IpcContracts {
   'session:get': { args: []; result: Session }
   'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
   'trials:list': { args: [sessionId?: string]; result: Trial[] }
+  'errors:list': { args: []; result: FailedWriteSummary[] }
+  'errors:retry': { args: []; result: number }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -54,6 +57,8 @@ export const IpcChannels = {
   getSession: 'session:get',
   startTrial: 'trial:start',
   listTrials: 'trials:list',
+  listFailedWrites: 'errors:list',
+  retryFailedWrites: 'errors:retry',
 } as const satisfies Record<string, IpcChannel>
 
 /**
@@ -89,6 +94,10 @@ export interface HarnessApi {
   startTrial(subject: Subject, questionNumber: number): Promise<Trial>
   /** Lists saved trials, newest first, for one session or for all sessions. */
   listTrials(sessionId?: string): Promise<Trial[]>
+  /** Lists the saves that failed in the database and are waiting for a retry, oldest first. */
+  listFailedWrites(): Promise<FailedWriteSummary[]>
+  /** Retries every failed save, oldest first, and resolves with how many succeeded. */
+  retryFailedWrites(): Promise<number>
   /** Receives the running trial's status events. Returns the function that unsubscribes. */
   onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }

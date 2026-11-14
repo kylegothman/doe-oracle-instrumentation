@@ -28,6 +28,8 @@ const harnessApi: HarnessApi = {
   startTrial: (subject, questionNumber) => invoke(IpcChannels.startTrial, subject, questionNumber),
   listTrials: (sessionId) =>
     sessionId === undefined ? invoke(IpcChannels.listTrials) : invoke(IpcChannels.listTrials, sessionId),
+  listFailedWrites: () => invoke(IpcChannels.listFailedWrites),
+  retryFailedWrites: () => invoke(IpcChannels.retryFailedWrites),
   onTrialEvent: (callback) => {
     // Only the payload reaches the page; the Electron event object stays in the preload.
     const listener = (_event: IpcRendererEvent, event: TrialEvent): void => callback(event)

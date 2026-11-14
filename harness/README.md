@@ -191,6 +191,8 @@ If a save fails in the database itself (the disk is full, the file is locked or 
 
 Each line is a `PendingWrite`: an `id`, the `operation` (`saveTrial`, `saveExpert`, or `saveExpertResponse`), its `payload`, the `error`, and `failedAt`. `ErrorLog.retry(id, repository)` runs one again and `retryAll(repository)` runs them all, oldest first; a write that succeeds is removed from the file, and one that fails again stays with its new error. Retrying gives a trial or expert answer the next Test # at that time.
 
+The renderer reaches the log through two channels: `errors:list` (`window.harness.listFailedWrites()`) returns a short summary of each waiting save (id, operation, a description such as "DOE Oracle trial, question 3", the error, and when it failed), and `errors:retry` (`window.harness.retryFailedWrites()`) retries them all and resolves with how many succeeded. The Export Page (E6) uses them for its Retry button.
+
 Failures the data itself causes are not kept, because a retry would fail the same way: constraint violations such as a duplicate id, a FAILED trial without its failure, or an answer to a question that already has one (`ActiveAnswerExistsError`).
 
 ### Startup check
