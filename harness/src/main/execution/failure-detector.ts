@@ -6,7 +6,8 @@ import { FailureType, type FailureSignal } from '../../shared/failures'
  * describes no failure. The rules, in the order they are applied:
  *
  * 1. timedOut → TIMEOUT.
- * 2. An HTTP status of 400 or higher from the subject's endpoint → ERROR_RESPONSE.
+ * 2. An HTTP status of 400 or higher from the subject's endpoint, or an
+ *    error the subject showed in place of an answer → ERROR_RESPONSE.
  * 3. A connection or navigation error (the request failed before any
  *    response, or the page could not be loaded) → UNREACHABLE. This covers
  *    the Flask backend being down while the frontend still loads.
@@ -21,6 +22,9 @@ export class FailureDetector {
       return FailureType.TIMEOUT
     }
     if (signal.httpStatus !== undefined && signal.httpStatus >= 400) {
+      return FailureType.ERROR_RESPONSE
+    }
+    if (signal.errorMessage !== undefined && signal.errorMessage.trim().length > 0) {
       return FailureType.ERROR_RESPONSE
     }
     if (signal.networkError !== undefined && signal.networkError.trim().length > 0) {

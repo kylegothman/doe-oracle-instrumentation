@@ -26,6 +26,8 @@ export enum FailureType {
 export interface FailureSignal {
   /** Status of the response from the subject's endpoint, when one arrived. */
   httpStatus?: number
+  /** An error the subject showed in place of an answer, for example Copilot's "Something went wrong". */
+  errorMessage?: string
   /** Why the request or the page load failed, for example net::ERR_CONNECTION_REFUSED. */
   networkError?: string
   /** True when the trial's timer expired. */

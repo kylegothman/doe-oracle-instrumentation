@@ -3,8 +3,8 @@
  * subject codes: what the trials table stores in its subject column and
  * what a data set name starts with, for example DOE_ORACLE-2026-11-12.
  *
- * TODO(#5, #6): the Copilot and Google adapters arrive with E4 and E5;
- * until then only DOE_ORACLE has an adapter registered.
+ * TODO(#6): the Google adapter arrives with E5; until then GOOGLE has no
+ * adapter registered.
  */
 export enum Subject {
   DOE_ORACLE = 'DOE_ORACLE',
