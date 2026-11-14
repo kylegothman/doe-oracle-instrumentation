@@ -84,7 +84,7 @@ harness/
       data/                 MetricsRepository (SQLite, versioned migrations), ErrorLog (failed saves kept for retry), and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
-    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent)
+    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult; FailedWriteSummary)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
 ```
