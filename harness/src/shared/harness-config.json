@@ -56,8 +56,8 @@
   },
   "trialTimeoutMs": 60000,
   "subjects": {
-    "DOE_ORACLE": { "timerStartsAt": "trial_start" },
-    "COPILOT": { "timerStartsAt": "submit" },
-    "GOOGLE": { "timerStartsAt": "submit" }
+    "DOE_ORACLE": { "timerStartsAt": "trial_start", "confirmEnd": false },
+    "COPILOT": { "timerStartsAt": "submit", "confirmEnd": true },
+    "GOOGLE": { "timerStartsAt": "submit", "confirmEnd": false }
   }
 }

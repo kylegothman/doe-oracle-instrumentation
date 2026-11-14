@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { CopilotSignInStatus } from '../../shared/copilot'
 import type { AppInfo, SqliteStatus } from '../../shared/ipc'
-import { Subject } from '../../shared/subjects'
+import { SUBJECT_LABELS, Subject } from '../../shared/subjects'
 import type { Trial, TrialEvent } from '../../shared/trials'
 
 type Loadable<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string }
@@ -116,6 +116,7 @@ type TrialRunState =
   | { status: 'idle' }
   | { status: 'running' }
   | { status: 'done'; trial: Trial }
+  | { status: 'cancelled'; message: string }
   | { status: 'error'; message: string }
 
 function formatSeconds(ms: number | null): string {
@@ -129,7 +130,7 @@ function TrialEvents({ events }: { events: TrialEvent[] }) {
     <ol className="events" data-testid="trial-events">
       {events.map((event, index) => (
         <li key={index} data-status={event.status}>
-          <span className="event-status">{event.status.replace('_', ' ')}</span> at {formatSeconds(event.elapsedMs)}
+          <span className="event-status">{event.status.replaceAll('_', ' ')}</span> at {formatSeconds(event.elapsedMs)}
           {event.failureType && <> · {event.failureType}</>}
           {event.message && <> · {event.message}</>}
         </li>
@@ -191,41 +192,169 @@ function TrialResult({ trial }: { trial: Trial }) {
   )
 }
 
+const QUESTION_NUMBER = 1
+/** Subjects the window can run. TODO(#6): Google arrives with E5. */
+const SUBJECT_CHOICES: readonly Subject[] = [Subject.DOE_ORACLE, Subject.COPILOT]
+
+const SUBJECT_INSTRUCTIONS: Record<Subject, string> = {
+  [Subject.DOE_ORACLE]:
+    'Opens the Oracle chat in a Chromium window the harness controls, types question 1, submits it, times the answer from browser events, and saves the trial.',
+  [Subject.COPILOT]:
+    'Opens a new chat in the Copilot window and types question 1. You press Enter there: the clock runs from your Enter to the end of the streamed answer, which you confirm or correct before the trial is saved.',
+  [Subject.GOOGLE]: 'Not available yet.',
+}
+
+/** One line on where the running trial is, from its latest event. */
+function statusLine(event: TrialEvent | undefined): string | null {
+  if (!event) return null
+  switch (event.status) {
+    case 'started':
+      return 'Starting the trial…'
+    case 'awaiting_submit':
+      return event.message ?? 'Press Enter in the browser'
+    case 'first_response':
+      return `The answer started ${formatSeconds(event.elapsedMs)} into the trial.`
+    case 'awaiting_confirmation':
+      return event.beginMs !== undefined && event.endMs !== undefined
+        ? `The answer finished ${formatSeconds(event.endMs - event.beginMs)} after your Enter. Confirm that end, adjust it, or cancel.`
+        : (event.message ?? 'Confirm the end of the answer.')
+    case 'completed':
+      return 'Saved.'
+    case 'failed':
+      return `Failed: ${event.message ?? event.failureType ?? 'unknown failure'}`
+    case 'cancelled':
+      return 'Cancelled. Nothing was saved.'
+    case 'aborted':
+      return `Aborted: ${event.message ?? 'the harness could not run the trial'}`
+  }
+}
+
 function TrialPanel({ onSaved }: { onSaved: () => void }) {
+  const [subject, setSubject] = useState<Subject>(Subject.DOE_ORACLE)
   const [run, setRun] = useState<TrialRunState>({ status: 'idle' })
   const [events, setEvents] = useState<TrialEvent[]>([])
+  const [adjustSeconds, setAdjustSeconds] = useState('')
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
     // Subscribed for the panel's lifetime; the main process sends one stream for every trial.
-    return window.harness.onTrialEvent((event) => setEvents((prev) => [...prev, event]))
+    return window.harness.onTrialEvent((event) => {
+      setEvents((prev) => [...prev, event])
+      if (event.status === 'awaiting_confirmation' && event.beginMs !== undefined && event.endMs !== undefined) {
+        setAdjustSeconds(((event.endMs - event.beginMs) / 1000).toFixed(3))
+      }
+    })
   }, [])
+
+  const latest = events.at(-1)
+  const trialId = events[0]?.trialId ?? null
+  const running = run.status === 'running'
+  const awaitingConfirmation = running && latest?.status === 'awaiting_confirmation'
+  const beginMs = latest?.status === 'awaiting_confirmation' ? latest.beginMs : undefined
 
   const startTrial = () => {
     setRun({ status: 'running' })
     setEvents([])
+    setActionError(null)
     window.harness
-      .startTrial(Subject.DOE_ORACLE, 1)
+      .startTrial(subject, QUESTION_NUMBER)
       .then((trial) => {
         setRun({ status: 'done', trial })
         onSaved()
       })
-      .catch((error: unknown) => setRun({ status: 'error', message: describeError(error) }))
+      .catch((error: unknown) => {
+        const message = describeError(error)
+        setRun(/cancelled/i.test(message) ? { status: 'cancelled', message } : { status: 'error', message })
+      })
+  }
+
+  /** Runs one of the Tester's actions on the trial, showing its error if it is refused. */
+  const act = (work: Promise<void>) => {
+    setActionError(null)
+    work.catch((error: unknown) => setActionError(describeError(error)))
+  }
+  const confirm = () => {
+    if (trialId) act(window.harness.confirmCompletion(trialId))
+  }
+  const confirmAdjusted = () => {
+    if (!trialId || beginMs === undefined) return
+    const seconds = Number(adjustSeconds)
+    if (adjustSeconds.trim() === '' || !Number.isFinite(seconds) || seconds < 0) {
+      setActionError('Enter the end as seconds after your Enter, for example 8.950')
+      return
+    }
+    act(window.harness.confirmCompletion(trialId, Math.round(beginMs + seconds * 1000)))
+  }
+  const cancel = () => {
+    if (trialId) act(window.harness.cancelTrial(trialId))
   }
 
   return (
     <section aria-labelledby="trial-heading">
-      <h2 id="trial-heading">Oracle trial</h2>
+      <h2 id="trial-heading">Trial</h2>
       <p>
-        Asks question 1, "What is combinatorial testing?", in a Chromium window the harness controls, times it
-        from browser events, and saves the trial.
+        <label>
+          Subject{' '}
+          <select
+            value={subject}
+            onChange={(event) => setSubject(event.target.value as Subject)}
+            disabled={running}
+            data-testid="subject-select"
+          >
+            {SUBJECT_CHOICES.map((choice) => (
+              <option key={choice} value={choice}>
+                {SUBJECT_LABELS[choice]}
+              </option>
+            ))}
+          </select>
+        </label>
       </p>
-      <button type="button" onClick={startTrial} disabled={run.status === 'running'} data-testid="run-oracle-trial">
-        {run.status === 'running' ? 'Running Oracle trial…' : 'Run Oracle trial (Q1)'}
-      </button>
-      {run.status === 'running' && (
-        <p data-testid="trial-running">Watch the Chromium window. The question is typed and submitted for you.</p>
+      <p>{SUBJECT_INSTRUCTIONS[subject]}</p>
+      <p className="actions">
+        <button type="button" onClick={startTrial} disabled={running} data-testid="run-trial">
+          {running ? `Running ${SUBJECT_LABELS[subject]} trial…` : `Run ${SUBJECT_LABELS[subject]} trial (Q${QUESTION_NUMBER})`}
+        </button>
+        {running && (
+          <button type="button" onClick={cancel} className="secondary" data-testid="cancel-trial">
+            Cancel
+          </button>
+        )}
+      </p>
+      {running && latest && (
+        <p className="status-line" data-testid="trial-status-line" data-status={latest.status}>
+          {statusLine(latest)}
+        </p>
+      )}
+      {awaitingConfirmation && (
+        <div className="confirm-box" data-testid="confirm-box">
+          <p className="actions">
+            <button type="button" onClick={confirm} data-testid="confirm-end">
+              Confirm
+            </button>
+            <label>
+              End, seconds after your Enter{' '}
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                value={adjustSeconds}
+                onChange={(event) => setAdjustSeconds(event.target.value)}
+                data-testid="adjust-end-seconds"
+              />
+            </label>
+            <button type="button" onClick={confirmAdjusted} className="secondary" data-testid="confirm-adjusted-end">
+              Adjust and confirm
+            </button>
+          </p>
+        </div>
+      )}
+      {actionError && (
+        <p role="alert" className="error" data-testid="trial-action-error">
+          {actionError}
+        </p>
       )}
       <TrialEvents events={events} />
+      {run.status === 'cancelled' && <p data-testid="trial-cancelled">{run.message}</p>}
       {run.status === 'error' && (
         <p role="alert" className="error" data-testid="trial-error">
           {run.message}

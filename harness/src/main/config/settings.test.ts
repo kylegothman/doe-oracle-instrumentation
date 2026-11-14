@@ -26,21 +26,21 @@ describe('loadSettings', () => {
     expect(() => loadSettings({ HARNESS_ORACLE_URL: 'ftp://oracle.test' })).toThrow(/must use http or https/)
   })
 
-  it('gives every subject a 60-second limit; the Oracle clock starts with the trial, the others at submit', () => {
-    const { trialTimeouts } = loadSettings({})
+  it('gives every subject a 60-second limit; the Oracle clock starts with the trial, the others at submit; only Copilot confirms the end', () => {
+    const { trialPolicies } = loadSettings({})
 
-    expect(trialTimeouts).toEqual({
-      [Subject.DOE_ORACLE]: { timeoutMs: 60_000, startsAt: 'trial_start' },
-      [Subject.COPILOT]: { timeoutMs: 60_000, startsAt: 'submit' },
-      [Subject.GOOGLE]: { timeoutMs: 60_000, startsAt: 'submit' },
+    expect(trialPolicies).toEqual({
+      [Subject.DOE_ORACLE]: { timeoutMs: 60_000, startsAt: 'trial_start', confirmEnd: false },
+      [Subject.COPILOT]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: true },
+      [Subject.GOOGLE]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: false },
     })
   })
 
   it('overrides every subject limit from HARNESS_TRIAL_TIMEOUT_MS', () => {
-    const { trialTimeouts } = loadSettings({ HARNESS_TRIAL_TIMEOUT_MS: '5000' })
+    const { trialPolicies } = loadSettings({ HARNESS_TRIAL_TIMEOUT_MS: '5000' })
 
-    expect(trialTimeouts[Subject.DOE_ORACLE]).toEqual({ timeoutMs: 5_000, startsAt: 'trial_start' })
-    expect(trialTimeouts[Subject.GOOGLE].timeoutMs).toBe(5_000)
+    expect(trialPolicies[Subject.DOE_ORACLE]).toEqual({ timeoutMs: 5_000, startsAt: 'trial_start', confirmEnd: false })
+    expect(trialPolicies[Subject.GOOGLE].timeoutMs).toBe(5_000)
   })
 
   it('rejects a time limit that is not a positive whole number of milliseconds', () => {

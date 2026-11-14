@@ -13,7 +13,12 @@ import { createGetAppInfoHandler } from './execution/handlers/app-info'
 import { createOpenCopilotSignInHandler } from './execution/handlers/copilot'
 import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
-import { createListTrialsHandler, createStartTrialHandler } from './execution/handlers/trials'
+import {
+  createCancelTrialHandler,
+  createConfirmCompletionHandler,
+  createListTrialsHandler,
+  createStartTrialHandler,
+} from './execution/handlers/trials'
 import { IpcRouter } from './execution/ipc-router'
 import { QuestionBank } from './execution/question-bank'
 import { SessionManager } from './execution/session-manager'
@@ -92,7 +97,7 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
         timing: new TimingService(),
         repository,
         session,
-        timeouts: settings.trialTimeouts,
+        policies: settings.trialPolicies,
         events: router,
       }),
   )
@@ -100,6 +105,8 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   router.register(IpcChannels.getSqliteStatus, createGetSqliteStatusHandler(sqliteStatus))
   router.register(IpcChannels.getSession, createGetSessionHandler(() => sessionReady))
   router.register(IpcChannels.startTrial, createStartTrialHandler(() => controllerReady))
+  router.register(IpcChannels.confirmCompletion, createConfirmCompletionHandler(() => controllerReady))
+  router.register(IpcChannels.cancelTrial, createCancelTrialHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   router.register(IpcChannels.openCopilotSignIn, createOpenCopilotSignInHandler({ pages: browserManager, settings: settings.copilot }))
   return router

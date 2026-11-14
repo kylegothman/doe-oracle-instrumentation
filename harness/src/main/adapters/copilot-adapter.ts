@@ -4,7 +4,14 @@ import type { Question } from '../../shared/questions'
 import { Subject } from '../../shared/subjects'
 import { openSubjectPage, SubjectUnreachableError } from '../browser/navigation'
 import type { CopilotSettings } from '../config/settings'
-import { isChatRequestFrame } from './copilot-frames'
+import {
+  completionError,
+  extractReferences,
+  handshakeStatus,
+  isChatRequestFrame,
+  isCompletionFrame,
+  type CitationReference,
+} from './copilot-frames'
 import { CopilotSignedOutError, probeCopilotPage, safePageUrl } from './copilot-session'
 import { AdapterDisposedError, type AdapterNotice, type CapturedAnswer, type SubjectAdapter } from './subject-adapter'
 
@@ -48,28 +55,50 @@ const DEFAULT_PAGE_OPEN_TIMEOUT_MS = 15_000
 /** How often the in-page watch state is read. The timestamps come from the page's MutationObserver, not from this interval. */
 const WATCH_POLL_MS = 50
 const CANCEL_WATCH_TIMEOUT_MS = 1_000
+/**
+ * Once a finished marker shows (Stop reverting to Send, the actions
+ * toolbar), how long to let a last chunk render before the end is read:
+ * the end is the last text change, which can land a moment after the marker.
+ */
+const FINISHED_SETTLE_MS = 250
+/**
+ * When the ChatHub socket closes before the stream completed, how long the
+ * page gets to show a finished marker anyway before the trial fails as
+ * unreachable. The real socket closes after the answer, not before.
+ */
+const SOCKET_LOSS_GRACE_MS = 1_500
 
 /** Which condition a watch waits for. */
-type WatchMode = 'submit' | 'confirm' | 'first'
+type WatchMode = 'submit' | 'confirm' | 'first' | 'completion'
 
 /** What a watch resolves with: a page-clock timestamp, or what went wrong. */
 type WatchResult =
-  | { at: number }
+  | { at: number; empty?: true }
   | { edited: string }
   | { error: string; at: number }
   | { offline: number }
   | { cancelled: true }
   | { gone: true }
 
+/** How the ChatHub socket let the trial down, and whether the signal already went out. */
+type SocketLoss = ({ httpStatus: number } | { networkError: string } | { errorMessage: string }) & { reported: boolean }
+
 /** Thrown inside the adapter when a watch's own time limit passed; turned into the right error by the caller. */
 class WatchTimeoutError extends Error {
   override readonly name = 'WatchTimeoutError'
 }
 
-/** The ChatHub socket listener of one trial: when the request frame left, plus cleanup. */
+/**
+ * The ChatHub socket listener of one trial: when the request frame left,
+ * the cited sources the final message carried, whether the stream
+ * completed, and how the socket failed if it did. Plus cleanup.
+ */
 interface SocketWatch {
   requestSentAt: number | null
   requestSent: Promise<number>
+  references: CitationReference[]
+  /** Resolves when the socket fails or closes before the stream completed. */
+  lost: Promise<SocketLoss>
   dispose: () => void
 }
 
@@ -77,6 +106,9 @@ interface SocketWatch {
 interface ActiveTrial {
   page: Page | null
   submitted: boolean
+  /** True once the stream is over: socket events after that no longer concern the answer. */
+  finished: boolean
+  before: WatchCounts
   socket: SocketWatch | null
   /** Rejects with AdapterDisposedError when dispose() runs, so pending waits settle at once. */
   disposed: Promise<never>
@@ -99,12 +131,27 @@ interface ActiveTrial {
  *   editor that clears with none of those is the Tester deleting the text,
  *   and the trial is aborted;
  * - first response: the first text in the new answer;
- * - end (#35): the last change to that text before the finished marker.
+ * - end: the last change to that text. The stream is over when a finished
+ *   marker shows (the Stop button reverting to Send, the actions toolbar)
+ *   or, failing that, when the text has been quiet for quietPeriodMs; the
+ *   quiet period itself is never part of the response time, and the
+ *   page's re-render of the finished message changes no text, so it does
+ *   not move the end.
  *
  * Nothing the Tester does before Enter is timed: a slow Tester cannot cause
  * a timeout, only the submit wait, which aborts the trial without saving.
- * The ChatHub socket is read for the request frame and (#35) the citation
- * URLs; its frames are never logged or stored.
+ *
+ * Failures the adapter observes are reported through onFailure():
+ * - the chat page cannot be loaded, the offline screen shows, or the
+ *   ChatHub socket fails or closes before the stream completed with no
+ *   finished marker following: networkError (UNREACHABLE);
+ * - an error shown in place of an answer, or an error completion on the
+ *   socket: errorMessage (ERROR_RESPONSE); a failed socket handshake with
+ *   a status: httpStatus (ERROR_RESPONSE);
+ * - an answer that finishes with no text: answerText '' (EMPTY_ANSWER).
+ *
+ * The ChatHub socket is read for the request frame, the completion record,
+ * and the citation URLs; its frames are never logged or stored.
  */
 export class CopilotAdapter implements SubjectAdapter {
   readonly subject = Subject.COPILOT
@@ -145,6 +192,7 @@ export class CopilotAdapter implements SubjectAdapter {
 
     const { selectors } = this.settings
     const before = await page.evaluate(countBefore, selectors)
+    trial.before = before
     const input = page.locator(selectors.input)
     await input.fill(question.text)
     const typed = stripZeroWidth(await input.innerText())
@@ -152,7 +200,7 @@ export class CopilotAdapter implements SubjectAdapter {
       throw new CopilotAnswerError(`The Copilot input holds "${typed}" instead of the question`)
     }
 
-    trial.socket = this.watchSocket(page)
+    trial.socket = this.watchSocket(page, trial)
     await page.evaluate(installWatch, { ...selectors, ...before, typedText: question.text })
     this.notify({ status: 'awaiting_submit', message: COPILOT_SUBMIT_PROMPT })
     const begin = await this.untilDisposed(trial, this.waitForTesterSubmit(trial, page))
@@ -160,7 +208,11 @@ export class CopilotAdapter implements SubjectAdapter {
     return begin
   }
 
-  /** Resolves when the first text of the answer is on the page, with the page's timestamp. */
+  /**
+   * Resolves when the first text of the answer is on the page, with the
+   * page's timestamp. An answer that finishes with no text at all resolves
+   * at its finished marker and is reported as an empty answer.
+   */
   async waitForFirstResponse(): Promise<number> {
     const { trial, page } = this.submittedTrial()
     const result = await this.untilDisposed(
@@ -172,19 +224,70 @@ export class CopilotAdapter implements SubjectAdapter {
         throw error
       }),
     )
-    return this.timestampOf(result, 'before the answer started')
+    const firstMs = this.timestampOf(result, 'before the answer started')
+    if ('empty' in result && result.empty) {
+      this.report({ answerText: '', timedOut: false })
+    }
+    return firstMs
   }
 
-  /** TODO(#35): stream-end detection. */
+  /**
+   * Resolves when the stream is over, with the page-clock moment of the
+   * last change to the answer text. A socket that fails or closes early
+   * ends the wait as a failure instead, unless the page finishes anyway
+   * within a short grace period.
+   */
   async waitForCompletion(): Promise<number> {
-    this.submittedTrial()
-    throw new CopilotAnswerError('Stream-end detection is not available yet (#35)')
+    const { trial, page } = this.submittedTrial()
+    const fromPage = this.watch(page, 'completion', this.answerTimeoutMs).catch((error: unknown) => {
+      if (error instanceof WatchTimeoutError) {
+        throw new CopilotAnswerError(`The answer did not finish within ${seconds(this.answerTimeoutMs)}`)
+      }
+      throw error
+    })
+    const fromSocket: Promise<never> = trial.socket
+      ? trial.socket.lost.then(async (loss) => {
+          await new Promise((resolve) => setTimeout(resolve, SOCKET_LOSS_GRACE_MS))
+          if (this.trial !== trial || trial.finished) {
+            throw new AdapterDisposedError('The stream had finished before the socket loss mattered')
+          }
+          throw this.socketFailure(loss)
+        })
+      : new Promise<never>(() => {})
+    // Whichever loses the race keeps running until the trial is disposed; its rejection is not an error.
+    fromSocket.catch(() => {})
+    fromPage.catch(() => {})
+    const result = await this.untilDisposed(trial, Promise.race([fromPage, fromSocket]))
+    trial.finished = true
+    const endMs = this.timestampOf(result, 'before the answer finished')
+    if ('empty' in result && result.empty) {
+      this.report({ answerText: '', timedOut: false })
+    }
+    return endMs
   }
 
-  /** TODO(#35): the answer text and citations. */
+  /**
+   * Reads the new answer: its text without the inline citation buttons, and
+   * the citations as `title · url`, the titles from the citation buttons and
+   * the URLs from the final message's references on the socket. A title the
+   * socket gave no URL for is listed on its own; an answer without web
+   * grounding has no citations at all.
+   */
   async captureAnswer(): Promise<CapturedAnswer> {
-    this.submittedTrial()
-    throw new CopilotAnswerError('Reading the answer is not available yet (#35)')
+    const { trial, page } = this.submittedTrial()
+    const { selectors } = this.settings
+    const shown = await page.evaluate(readAnswer, {
+      reply: selectors.reply,
+      botMessage: selectors.botMessage,
+      citation: selectors.citation,
+      repliesBefore: trial.before.repliesBefore,
+      botMessagesBefore: trial.before.botMessagesBefore,
+    })
+    return {
+      text: shown.text,
+      citations: mergeCitations(shown.citationTitles, trial.socket?.references ?? []),
+      sourceUrl: safePageUrl(page),
+    }
   }
 
   /** Registers the handler that receives failure signals. The controller registers one per trial. */
@@ -319,6 +422,7 @@ export class CopilotAdapter implements SubjectAdapter {
       throw new CopilotAnswerError(message)
     }
     if ('error' in result) {
+      this.report({ errorMessage: result.error, timedOut: false })
       throw new CopilotAnswerError(`Copilot showed an error ${when}: ${result.error}`)
     }
     if (!('at' in result)) {
@@ -335,7 +439,11 @@ export class CopilotAdapter implements SubjectAdapter {
   private async watch(page: Page, mode: WatchMode, timeoutMs: number): Promise<WatchResult> {
     let handle
     try {
-      handle = await page.waitForFunction(readWatch, { mode, quietPeriodMs: this.quietPeriodMs }, { polling: WATCH_POLL_MS, timeout: timeoutMs })
+      handle = await page.waitForFunction(
+        readWatch,
+        { mode, quietPeriodMs: this.quietPeriodMs, finishedSettleMs: FINISHED_SETTLE_MS },
+        { polling: WATCH_POLL_MS, timeout: timeoutMs },
+      )
     } catch (error) {
       if (timeoutMs > 0 && isPlaywrightTimeout(error)) {
         throw new WatchTimeoutError(`nothing happened within ${seconds(timeoutMs)}`)
@@ -352,40 +460,121 @@ export class CopilotAdapter implements SubjectAdapter {
     return result
   }
 
+  /** Reports a socket loss as the matching failure signal, unless it already was, and returns the error to throw. */
+  private socketFailure(loss: SocketLoss): CopilotAnswerError {
+    if (!loss.reported) this.signalLoss(loss)
+    const message =
+      'httpStatus' in loss
+        ? `Copilot's connection was refused with HTTP ${loss.httpStatus}`
+        : 'errorMessage' in loss
+          ? `Copilot reported an error instead of finishing the answer: ${loss.errorMessage}`
+          : loss.networkError
+    return new CopilotAnswerError(message)
+  }
+
+  private signalLoss(loss: SocketLoss): void {
+    loss.reported = true
+    if ('httpStatus' in loss) this.report({ httpStatus: loss.httpStatus, timedOut: false })
+    else if ('errorMessage' in loss) this.report({ errorMessage: loss.errorMessage, timedOut: false })
+    else this.report({ networkError: loss.networkError, timedOut: false })
+  }
+
   /**
-   * Listens on the ChatHub socket for the first invocation frame after the
-   * question was typed: the request carrying it. Only its moment is kept;
-   * the frame itself is parsed in memory and dropped.
+   * Listens on the ChatHub socket. Kept from its frames: the moment of the
+   * first invocation after the question was typed (the request carrying
+   * it), the cited sources in what comes back, whether the stream
+   * completed, and how the socket failed if it did. Frames are parsed in
+   * memory and dropped.
    */
-  private watchSocket(page: Page): SocketWatch {
+  private watchSocket(page: Page, trial: ActiveTrial): SocketWatch {
     const hubPath = this.settings.chatHubPath
+    const concernsAnswer = (): boolean => this.trial === trial && !trial.finished
     let resolveRequest: (ms: number) => void = () => {}
     const requestSent = new Promise<number>((resolve) => {
       resolveRequest = resolve
     })
-    const listeners: Array<{ socket: PlaywrightWebSocket; onSent: (frame: { payload: string | Buffer }) => void }> = []
+    let resolveLost: (loss: SocketLoss) => void = () => {}
+    const lost = new Promise<SocketLoss>((resolve) => {
+      resolveLost = resolve
+    })
+    const cleanups: Array<() => void> = []
     const watch: SocketWatch = {
       requestSentAt: null,
       requestSent,
+      references: [],
+      lost,
       dispose: () => {
         page.off('websocket', onSocket)
-        for (const { socket, onSent } of listeners) socket.off('framesent', onSent)
-        listeners.length = 0
+        for (const cleanup of cleanups) cleanup()
+        cleanups.length = 0
       },
     }
     const onSocket = (socket: PlaywrightWebSocket): void => {
       if (!pathnameOf(socket.url()).startsWith(hubPath)) return
+      let carriesRequest = false
+      let completed = false
       const onSent = (frame: { payload: string | Buffer }): void => {
-        if (watch.requestSentAt !== null || !isChatRequestFrame(frame.payload)) return
+        if (!isChatRequestFrame(frame.payload)) return
+        carriesRequest = true
+        if (watch.requestSentAt !== null) return
         watch.requestSentAt = Date.now()
         resolveRequest(watch.requestSentAt)
       }
+      const onReceived = (frame: { payload: string | Buffer }): void => {
+        for (const reference of extractReferences(frame.payload)) {
+          if (!watch.references.some((known) => known.url === reference.url)) watch.references.push(reference)
+        }
+        const error = completionError(frame.payload)
+        if (error) {
+          // The server ended the stream with an error: that is the answer's failure, known at once.
+          completed = true
+          const loss: SocketLoss = { errorMessage: error, reported: false }
+          if (concernsAnswer()) this.signalLoss(loss)
+          resolveLost(loss)
+        } else if (isCompletionFrame(frame.payload)) {
+          completed = true
+        }
+      }
+      const onError = (errorText: string): void => {
+        // A failed handshake is known at once too: with a status it is an error response, otherwise unreachable.
+        const status = handshakeStatus(errorText)
+        const loss: SocketLoss =
+          status === null
+            ? { networkError: `Copilot's connection failed (${errorText})`, reported: false }
+            : { httpStatus: status, reported: false }
+        if (concernsAnswer()) this.signalLoss(loss)
+        resolveLost(loss)
+      }
+      const onClose = (): void => {
+        // A socket closing early is reported only if the page does not finish within the grace period.
+        if (carriesRequest && !completed && concernsAnswer()) {
+          resolveLost({ networkError: "Copilot's connection closed before the answer finished", reported: false })
+        }
+      }
       socket.on('framesent', onSent)
-      listeners.push({ socket, onSent })
+      socket.on('framereceived', onReceived)
+      socket.on('socketerror', onError)
+      socket.on('close', onClose)
+      cleanups.push(() => {
+        socket.off('framesent', onSent)
+        socket.off('framereceived', onReceived)
+        socket.off('socketerror', onError)
+        socket.off('close', onClose)
+      })
     }
     page.on('websocket', onSocket)
     return watch
   }
+}
+
+/** The citations as saved: every reference as `title · url`, then any shown title the socket gave no URL for. */
+export function mergeCitations(shownTitles: readonly string[], references: readonly CitationReference[]): string[] {
+  const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase()
+  const lines = references.map((reference) => `${reference.title} · ${reference.url}`)
+  for (const title of shownTitles) {
+    if (!references.some((reference) => normalize(reference.title) === normalize(title))) lines.push(title)
+  }
+  return lines
 }
 
 function newActiveTrial(): ActiveTrial {
@@ -394,7 +583,15 @@ function newActiveTrial(): ActiveTrial {
     markDisposed = () => reject(new AdapterDisposedError('The trial was disposed before Copilot answered'))
   })
   disposed.catch(() => {})
-  return { page: null, submitted: false, socket: null, disposed, markDisposed }
+  return {
+    page: null,
+    submitted: false,
+    finished: false,
+    before: { messagesBefore: 0, repliesBefore: 0, botMessagesBefore: 0, alertTextsBefore: [] },
+    socket: null,
+    disposed,
+    markDisposed,
+  }
 }
 
 /** Removes the zero-width characters Copilot's editor appends to the typed text. */
@@ -410,6 +607,47 @@ function countBefore(selectors: WatchSelectors): WatchCounts {
     botMessagesBefore: document.querySelectorAll(selectors.botMessage).length,
     alertTextsBefore: Array.from(document.querySelectorAll(selectors.answerError)).map((node) => (node.textContent ?? '').trim()),
   }
+}
+
+/**
+ * Reads the new answer as shown. Runs inside the page. The reply is cloned
+ * into the document, so innerText keeps its line breaks, with the inline
+ * citation buttons removed; the citation titles come from the buttons'
+ * labels, "Citation: <provider> — <title>", with any " plus N more" dropped.
+ */
+function readAnswer(args: {
+  reply: string
+  botMessage: string
+  citation: string
+  repliesBefore: number
+  botMessagesBefore: number
+}): { text: string; citationTitles: string[] } {
+  const reply = document.querySelectorAll(args.reply)[args.repliesBefore]
+  let text = ''
+  if (reply instanceof HTMLElement) {
+    const clone = reply.cloneNode(true) as HTMLElement
+    clone.querySelectorAll(args.citation).forEach((button) => button.remove())
+    clone.style.position = 'absolute'
+    clone.style.left = '-99999px'
+    clone.style.width = `${Math.max(reply.clientWidth, 320)}px`
+    document.body.append(clone)
+    try {
+      text = clone.innerText.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').trim()
+    } finally {
+      clone.remove()
+    }
+  }
+  const scope = document.querySelectorAll(args.botMessage)[args.botMessagesBefore] ?? reply
+  const citationTitles: string[] = []
+  if (scope) {
+    for (const button of Array.from(scope.querySelectorAll(args.citation))) {
+      const label = (button.getAttribute('aria-label') ?? button.textContent ?? '').trim()
+      const match = label.match(/^Citation:\s*(?:.+?\s+[—–-]\s+)?(.+?)(?:\s+plus\s+\d+\s+more)?$/i)
+      const title = (match?.[1] ?? label.replace(/^Citation:\s*/i, '')).trim()
+      if (title !== '' && !citationTitles.includes(title)) citationTitles.push(title)
+    }
+  }
+  return { text, citationTitles }
 }
 
 /**
@@ -496,9 +734,15 @@ function installWatch(args: WatchArgs): void {
 }
 
 /** Reads the watch state for one mode. Runs inside the page on every poll. */
-function readWatch(args: { mode: WatchMode; quietPeriodMs: number }): WatchResult | false {
+function readWatch(args: { mode: WatchMode; quietPeriodMs: number; finishedSettleMs: number }): WatchResult | false {
   const state = window.__copilotWatch
   if (!state) return { gone: true }
+  // The first finished marker seen (the Stop button reverting, the actions toolbar), or null.
+  // Defined here because this function is serialized into the page and cannot use module helpers.
+  const earliestMarker = (watch: CopilotWatchState): number | null => {
+    const markers = [watch.stopGoneAt, watch.actionsAt].filter((value): value is number => value !== null)
+    return markers.length ? Math.min(...markers) : null
+  }
   if (state.cancelled) return { cancelled: true }
   if (state.offlineAt !== null) return { offline: state.offlineAt }
   if (state.errorAt !== null && state.errorText !== null) return { error: state.errorText, at: state.errorAt }
@@ -511,9 +755,26 @@ function readWatch(args: { mode: WatchMode; quietPeriodMs: number }): WatchResul
       if (state.stopSeenAt !== null) return { at: state.stopSeenAt }
       if (state.newMessageAt !== null) return { at: state.newMessageAt }
       return false
-    case 'first':
+    case 'first': {
       if (state.firstTextAt !== null) return { at: state.firstTextAt }
+      // An answer that finishes with no text at all: first response is the finished marker, and it is empty.
+      const finishedAt = earliestMarker(state)
+      if (finishedAt !== null && Date.now() - finishedAt >= args.finishedSettleMs) return { at: finishedAt, empty: true }
       return false
+    }
+    case 'completion': {
+      const now = Date.now()
+      const finishedAt = earliestMarker(state)
+      if (state.firstTextAt !== null && state.lastChangeAt !== null) {
+        if (finishedAt !== null && now - Math.max(finishedAt, state.lastChangeAt) >= args.finishedSettleMs) {
+          return { at: state.lastChangeAt }
+        }
+        if (now - state.lastChangeAt >= args.quietPeriodMs) return { at: state.lastChangeAt }
+        return false
+      }
+      if (finishedAt !== null && now - finishedAt >= args.finishedSettleMs) return { at: finishedAt, empty: true }
+      return false
+    }
   }
 }
 

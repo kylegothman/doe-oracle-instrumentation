@@ -59,6 +59,8 @@
       const send = document.getElementById('send')
       const feed = document.getElementById('feed')
       const ZERO_WIDTH = '\u200B\u200C'
+      // For the tests: when the last chunk was rendered and when the message was marked finished, by the page's clock.
+      window.__fixture = { lastChunkAt: null, finishedAt: null }
       const strip = (text) => text.replace(/[\u200B-\u200D\uFEFF]/g, '').trim()
       let streaming = false
 
@@ -100,6 +102,7 @@
       }
 
       function finish(body) {
+        window.__fixture.finishedAt = Date.now()
         send.setAttribute('aria-label', 'Send')
         send.textContent = 'Send'
         const actions = el('div', { class: 'fai-CopilotMessage__actions' })
@@ -171,6 +174,7 @@
           let index = 0
           const tick = () => {
             reply.append(document.createTextNode(pieces[index++]))
+            window.__fixture.lastChunkAt = Date.now()
             if (index < pieces.length) {
               if (!cfg.stall) setTimeout(tick, cfg.chunkMs)
               return

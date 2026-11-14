@@ -8,12 +8,13 @@ import { Subject } from '../../shared/subjects'
 import { SubjectUnreachableError } from '../browser/navigation'
 import { loadSettings, type CopilotSettings } from '../config/settings'
 import { FailureDetector } from '../execution/failure-detector'
-import { startFakeChatHub, type FakeChatHub } from './__fixtures__/fake-chathub'
+import { startFakeChatHub, type FakeChatHub, type FakeChatHubOptions } from './__fixtures__/fake-chathub'
 import {
   COPILOT_SUBMIT_PROMPT,
   CopilotAdapter,
   CopilotAnswerError,
   CopilotSubmitTimeoutError,
+  mergeCitations,
   stripZeroWidth,
   type CopilotAdapterOptions,
 } from './copilot-adapter'
@@ -25,11 +26,45 @@ const QUESTION: Question = { number: 1, text: 'What is combinatorial testing?' }
 const BASE_SETTINGS = loadSettings({}).copilot
 const detector = new FailureDetector()
 const BROWSER_TEST_TIMEOUT_MS = 30_000
+/** The fixture's default answer, as the page streams it. */
+const ANSWER =
+  'Combinatorial testing selects test cases that cover all t-way interactions among input parameters, so faults triggered by a few parameters together are found with far fewer tests than exhaustive testing needs.'
+const NIST_URL = 'https://csrc.nist.gov/projects/automated-combinatorial-testing-for-software'
+const WIKIPEDIA_URL = 'https://en.wikipedia.org/wiki/All-pairs_testing'
+/** What the real ChatHub sends after the request: an update, the final message with its references, then the completion. */
+const HUB_REPLIES: FakeChatHubOptions['replies'] = [
+  { afterMs: 100, payload: { type: 1, target: 'update', arguments: [{ messages: [{ text: 'Combinatorial' }] }] } },
+  {
+    afterMs: 400,
+    payload: {
+      type: 2,
+      item: {
+        messages: [
+          {
+            text: ANSWER,
+            references: {
+              '1': { targetLink: NIST_URL, Title: 'Combinatorial Testing | NIST', provider: 'nist' },
+              '2': { targetLink: WIKIPEDIA_URL, Title: 'All-pairs testing', provider: 'wikipedia' },
+            },
+          },
+        ],
+      },
+    },
+  },
+  { afterMs: 420, payload: { type: 3, invocationId: '0' } },
+]
 const SIGN_IN_HTML = '<!doctype html><title>Microsoft Copilot | Sign in</title><main><h1>Sign into Copilot</h1><button>Sign in</button></main>'
 const OFFLINE_HTML = '<!doctype html><title>Copilot</title><main><img alt="No network connection" src="data:," /><p>No internet connection.</p></main>'
 
 /** The fixture's query parameters; see the comment at the top of copilot-chat.html. */
 type FixtureParams = Record<string, string | number>
+
+declare global {
+  interface Window {
+    /** Set by the fixture page: when the last chunk was rendered and when the message was marked finished. */
+    __fixture: { lastChunkAt: number | null; finishedAt: number | null }
+  }
+}
 
 describe('CopilotAdapter against the chat fixture', () => {
   let browser: Browser
@@ -57,6 +92,25 @@ describe('CopilotAdapter against the chat fixture', () => {
     await page.close()
     await hub.close()
   })
+
+  /** Replaces the fake hub with one that answers the socket as given; the page is served the same. */
+  async function withHub(options: FakeChatHubOptions): Promise<FakeChatHub> {
+    await hub.close()
+    hub = await startFakeChatHub({ html: FIXTURE_HTML, ...options })
+    return hub
+  }
+
+  /** Runs a trial up to the Tester's Enter and returns begin. */
+  async function submitted(adapter: CopilotAdapter): Promise<number> {
+    const pending = adapter.start(QUESTION)
+    await typed()
+    await pressEnter()
+    return pending
+  }
+
+  function fixtureTimes(): Promise<{ lastChunkAt: number | null; finishedAt: number | null }> {
+    return page.evaluate(() => window.__fixture)
+  }
 
   /** Serves another page, or a refused connection, at the chat URL instead of the fixture. */
   async function serve(options: { html?: string; chatDown?: boolean }): Promise<void> {
@@ -91,9 +145,10 @@ describe('CopilotAdapter against the chat fixture', () => {
     return adapter
   }
 
-  /** Waits until the adapter has typed the question and asked for Enter. */
+  /** Waits until the adapter has typed the question and asked for Enter (the next notice after the ones already seen). */
   async function typed(): Promise<void> {
-    await expect.poll(() => notices.length, { timeout: 10_000 }).toBe(1)
+    const expected = notices.length + 1
+    await expect.poll(() => notices.length, { timeout: 10_000 }).toBe(expected)
   }
 
   /** The Tester pressing Enter in the editor. The adapter itself never does this. */
@@ -273,9 +328,181 @@ describe('CopilotAdapter against the chat fixture', () => {
       await adapter.dispose()
       await expect(adapter.waitForFirstResponse()).rejects.toThrow(/start\(question\) must be called/)
       const again = adapter.start(QUESTION)
-      await expect.poll(() => notices.length, { timeout: 10_000 }).toBe(2)
+      await typed()
       await pressEnter()
       await expect(again).resolves.toBeGreaterThan(0)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'follows the stream to its end: end is the last chunk, before the finished marker and without waiting out the quiet period, and reads the answer with its citations',
+    async () => {
+      await withHub({ replies: HUB_REPLIES })
+      const adapter = adapterWith({ socket: 1, cite: 1, chunks: 6, chunkMs: 50, firstMs: 200, finishMs: 150, rerenderMs: 300 })
+
+      const beginMs = await submitted(adapter)
+      const firstResponseMs = await adapter.waitForFirstResponse()
+      const endMs = await adapter.waitForCompletion()
+      const completedAt = Date.now()
+      const answer = await adapter.captureAnswer()
+      const times = await fixtureTimes()
+
+      expect(beginMs).toBeLessThan(firstResponseMs)
+      expect(firstResponseMs).toBeLessThan(endMs)
+      // end is when the last chunk was rendered, not when the message was marked finished or the quiet period ran out.
+      expect(Math.abs(endMs - times.lastChunkAt!)).toBeLessThanOrEqual(30)
+      expect(endMs).toBeLessThanOrEqual(times.finishedAt!)
+      expect(completedAt - endMs).toBeLessThan(BASE_SETTINGS.quietPeriodMs)
+      expect(answer.text).toBe(ANSWER)
+      expect(answer.citations).toEqual([
+        `Combinatorial Testing | NIST · ${NIST_URL}`,
+        `All-pairs testing · ${WIKIPEDIA_URL}`,
+      ])
+      expect(answer.sourceUrl).toBe(hub.chatUrl)
+      expect(signals).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'falls back to the quiet period when no finished marker ever shows, still ending at the last chunk',
+    async () => {
+      const adapter = adapterWith({ noFinish: 1, chunks: 4, chunkMs: 40, firstMs: 100 }, { quietPeriodMs: 600 })
+
+      await submitted(adapter)
+      const endMs = await adapter.waitForCompletion()
+      const completedAt = Date.now()
+      const times = await fixtureTimes()
+
+      expect(Math.abs(endMs - times.lastChunkAt!)).toBeLessThanOrEqual(30)
+      expect(completedAt - endMs).toBeGreaterThanOrEqual(600)
+      expect(times.finishedAt).toBeNull()
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'lists the shown citation titles alone when the socket gave no references, and nothing for an answer without citations',
+    async () => {
+      const adapter = adapterWith({ cite: 1, chunks: 2, firstMs: 100 })
+      await submitted(adapter)
+      await adapter.waitForCompletion()
+      expect((await adapter.captureAnswer()).citations).toEqual(['Combinatorial Testing | NIST', 'All-pairs testing'])
+      await adapter.dispose()
+
+      const plain = adapterWith({ chunks: 2, firstMs: 100 })
+      await submitted(plain)
+      await plain.waitForCompletion()
+      expect(await plain.captureAnswer()).toEqual({ text: ANSWER, citations: [], sourceUrl: hub.chatUrl })
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports an error shown in place of the answer as an error response',
+    async () => {
+      const adapter = adapterWith({ error: 'Something went wrong. Try again.', firstMs: 100 })
+
+      await submitted(adapter)
+      const failure = adapter.waitForFirstResponse()
+      failure.catch(() => {})
+
+      await expect(failure).rejects.toThrow(CopilotAnswerError)
+      await expect(failure).rejects.toThrow(/showed an error before the answer started: Something went wrong\. Try again\./)
+      expect(signals).toEqual([{ errorMessage: 'Something went wrong. Try again.', timedOut: false }])
+      expect(detector.classify(signals[0]!)).toBe(FailureType.ERROR_RESPONSE)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports an answer that finishes with no text as an empty answer, stamped at its finished marker',
+    async () => {
+      const adapter = adapterWith({ empty: 1, firstMs: 100 })
+
+      const beginMs = await submitted(adapter)
+      const firstResponseMs = await adapter.waitForFirstResponse()
+      const endMs = await adapter.waitForCompletion()
+      const times = await fixtureTimes()
+
+      expect(firstResponseMs).toBeGreaterThan(beginMs)
+      expect(firstResponseMs).toBeGreaterThanOrEqual(times.finishedAt!)
+      expect(firstResponseMs - times.finishedAt!).toBeLessThanOrEqual(30)
+      expect(endMs).toBe(firstResponseMs)
+      expect(signals).toEqual([
+        { answerText: '', timedOut: false },
+        { answerText: '', timedOut: false },
+      ])
+      expect(detector.classify(signals[0]!)).toBe(FailureType.EMPTY_ANSWER)
+      expect(await adapter.captureAnswer()).toMatchObject({ text: '', citations: [] })
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports the socket closing before the stream completed, with the page never finishing, as unreachable',
+    async () => {
+      await withHub({ replies: [], closeAfterMs: 300 })
+      const adapter = adapterWith({ socket: 1, stall: 1, firstMs: 100 }, { quietPeriodMs: 10_000 })
+
+      await submitted(adapter)
+      await adapter.waitForFirstResponse()
+
+      await expect(adapter.waitForCompletion()).rejects.toThrow(/connection closed before the answer finished/)
+      expect(signals).toEqual([{ networkError: "Copilot's connection closed before the answer finished", timedOut: false }])
+      expect(detector.classify(signals[0]!)).toBe(FailureType.UNREACHABLE)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'lets the page finish even though the socket closed early, when a finished marker follows within the grace period',
+    async () => {
+      await withHub({ replies: [], closeAfterMs: 50 })
+      const adapter = adapterWith({ socket: 1, chunks: 2, chunkMs: 30, firstMs: 100, finishMs: 50 })
+
+      await submitted(adapter)
+
+      await expect(adapter.waitForCompletion()).resolves.toBeGreaterThan(0)
+      expect(signals).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports a refused socket handshake as an error response with its status, and an error completion as the error shown',
+    async () => {
+      await withHub({ rejectStatus: 503 })
+      const adapter = adapterWith({ socket: 1, chunks: 2, firstMs: 100 })
+      await submitted(adapter)
+      await expect.poll(() => signals.length, { timeout: 5_000 }).toBe(1)
+      expect(signals[0]).toEqual({ httpStatus: 503, timedOut: false })
+      expect(detector.classify(signals[0]!)).toBe(FailureType.ERROR_RESPONSE)
+      await adapter.dispose()
+
+      signals.length = 0
+      await withHub({ replies: [{ afterMs: 100, payload: { type: 3, error: 'Request blocked by the service.' } }] })
+      const failing = adapterWith({ socket: 1, stall: 1, firstMs: 50 }, { quietPeriodMs: 10_000 })
+      await submitted(failing)
+      await expect(failing.waitForCompletion()).rejects.toThrow(/reported an error instead of finishing the answer: Request blocked by the service\./)
+      expect(signals).toEqual([{ errorMessage: 'Request blocked by the service.', timedOut: false }])
+      expect(detector.classify(signals[0]!)).toBe(FailureType.ERROR_RESPONSE)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'dispose() during the stream settles waitForCompletion at once',
+    async () => {
+      const adapter = adapterWith({ stall: 1, firstMs: 100 })
+      await submitted(adapter)
+      const pending = adapter.waitForCompletion()
+      pending.catch(() => {})
+
+      await adapter.dispose()
+
+      await expect(pending).rejects.toThrow(AdapterDisposedError)
     },
     BROWSER_TEST_TIMEOUT_MS,
   )
@@ -284,5 +511,17 @@ describe('CopilotAdapter against the chat fixture', () => {
     const adapter = adapterWith()
 
     await expect(adapter.waitForFirstResponse()).rejects.toThrow(/start\(question\) must be called/)
+  })
+})
+
+describe('mergeCitations', () => {
+  it('lists every reference as title · url, then shown titles the socket had no URL for, matching titles loosely', () => {
+    expect(
+      mergeCitations(
+        ['Speedtest Global Index', 'A page with no reference', '  speedtest   global index '],
+        [{ title: 'Speedtest Global Index', url: 'https://www.speedtest.net/global-index' }],
+      ),
+    ).toEqual(['Speedtest Global Index · https://www.speedtest.net/global-index', 'A page with no reference'])
+    expect(mergeCitations([], [])).toEqual([])
   })
 })

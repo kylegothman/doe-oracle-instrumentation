@@ -24,6 +24,35 @@ export function createStartTrialHandler(
   }
 }
 
+/** Builds the handler for `trial:confirm`: the Tester confirmed the detected end, or corrected it. */
+export function createConfirmCompletionHandler(
+  controller: () => Promise<Pick<TrialController, 'confirmCompletion'>>,
+): (trialId: string, endMs?: number) => Promise<void> {
+  return async (trialId, endMs) => {
+    requireTrialId(trialId)
+    if (endMs !== undefined && (typeof endMs !== 'number' || !Number.isFinite(endMs))) {
+      throw new Error(`The corrected end must be a number of epoch milliseconds, got ${String(endMs)}`)
+    }
+    await (await controller()).confirmCompletion(trialId, endMs)
+  }
+}
+
+/** Builds the handler for `trial:cancel`: ends the running trial without saving it. */
+export function createCancelTrialHandler(
+  controller: () => Promise<Pick<TrialController, 'cancelTrial'>>,
+): (trialId: string) => Promise<void> {
+  return async (trialId) => {
+    requireTrialId(trialId)
+    await (await controller()).cancelTrial(trialId)
+  }
+}
+
+function requireTrialId(trialId: unknown): void {
+  if (typeof trialId !== 'string' || trialId.trim() === '') {
+    throw new Error(`Trial id must be a non-empty string, got ${String(trialId)}`)
+  }
+}
+
 /** Builds the handler for `trials:list`: the newest trials, for one session or for all. */
 export function createListTrialsHandler(
   repository: () => Promise<Pick<MetricsRepository, 'listTrials'>>,

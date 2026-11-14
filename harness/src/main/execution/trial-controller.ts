@@ -4,7 +4,7 @@ import type { Question } from '../../shared/questions'
 import { SUBJECT_LABELS, type Subject } from '../../shared/subjects'
 import { TrialStatus, type Trial, type TrialEvent, type TrialEventStatus, type TrialFailure } from '../../shared/trials'
 import type { AdapterNotice, CapturedAnswer, SubjectAdapter } from '../adapters/subject-adapter'
-import type { TrialTimeoutPolicy } from '../config/settings'
+import type { TrialPolicy } from '../config/settings'
 import type { MetricsRepository, NewTrial } from '../data/metrics-repository'
 import { FailureDetector } from './failure-detector'
 import type { QuestionBank } from './question-bank'
@@ -18,8 +18,8 @@ export interface TrialControllerDeps {
   timing: TimingService
   repository: Pick<MetricsRepository, 'saveTrial'>
   session: Pick<SessionManager, 'getCurrentSession' | 'buildDataSetName'>
-  /** Each subject's time limit and when its clock starts. */
-  timeouts: Record<Subject, TrialTimeoutPolicy>
+  /** Each subject's time limit, when its clock starts, and whether the Tester confirms the end. */
+  policies: Record<Subject, TrialPolicy>
   /** Where status events go: the IpcRouter. */
   events: { sendTrialEvent(event: TrialEvent): void }
   /** Classifies failure signals; defaults to the standard rules. */
@@ -40,6 +40,8 @@ export class TrialCancelledError extends Error {
 }
 
 const DEFAULT_DISPOSE_TIMEOUT_MS = 3_000
+/** What the Tester is told once a confirmed subject's answer has finished. */
+export const CONFIRM_PROMPT = 'The answer finished. Confirm the end, adjust it, or cancel the trial.'
 
 /** What ended a trial early. */
 type Interruption = { kind: 'failure'; failure: TrialFailure } | { kind: 'cancel' }
@@ -63,6 +65,8 @@ class RunningTrial {
   /** The timed adapter step in flight, so its stamp can still be recorded if the trial is interrupted as it settles. */
   pending: { event: TimingEvent; work: Promise<number> } | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
+  /** Set while the trial waits for the Tester to confirm the end. */
+  private confirmation: { resolve: (endMs: number | undefined) => void } | null = null
   private readonly interrupted: Promise<never>
   private rejectInterrupted: (error: TrialInterruptedError) => void = () => {}
   private resolveClosed: () => void = () => {}
@@ -100,6 +104,23 @@ class RunningTrial {
     return true
   }
 
+  get isAwaitingConfirmation(): boolean {
+    return this.confirmation !== null
+  }
+
+  /** Resolves with the Tester's corrected end, or undefined to keep the detected one. */
+  awaitConfirmation(): Promise<number | undefined> {
+    return new Promise((resolve) => {
+      this.confirmation = { resolve }
+    })
+  }
+
+  confirm(endMs: number | undefined): void {
+    const confirmation = this.confirmation
+    this.confirmation = null
+    confirmation?.resolve(endMs)
+  }
+
   startTimer(ms: number, onExpiry: () => void): void {
     this.stopTimer()
     this.timer = setTimeout(onExpiry, ms)
@@ -123,13 +144,18 @@ class RunningTrial {
  * every trial, for every subject, the same way. One trial at a time:
  *
  * 1. startTrial looks up the adapter and the question, starts the subject's
- *    clock (see TrialTimeoutPolicy for when), and sends `started`.
+ *    clock (see TrialPolicy for when), and sends `started`.
  * 2. It drives the adapter through start, waitForFirstResponse,
  *    waitForCompletion, and captureAnswer, sending `first_response` on the
  *    way, and `awaiting_submit` when an adapter reports that the Tester
  *    must submit the question (Copilot: the clock has not started yet).
- *    Each step is raced against the trial being interrupted by the timer,
- *    by a failure signal from the adapter, or by cancelTrial.
+ *    The clock stops at completion. For a subject whose policy has
+ *    confirmEnd, the controller then sends `awaiting_confirmation` with
+ *    the detected begin and end and waits for confirmCompletion, which may
+ *    replace the end, before the answer is captured; the Tester has as
+ *    long as they like. Each step is raced against the trial being
+ *    interrupted by the timer, by a failure signal from the adapter, or by
+ *    cancelTrial.
  * 3. On a failure (SD-4): the FailureDetector classifies the signal, the
  *    adapter is disposed, the clock stops, and closeTrial saves the trial
  *    as FAILED with a failed_requests row and sends `failed`. The failed
@@ -143,7 +169,6 @@ class RunningTrial {
  * sent, and the error reaches the caller. Either way the controller is
  * ready for the next trial as soon as closeTrial returns.
  *
- * TODO(#35): confirmCompletion(trialId), for Copilot's streamed answer.
  * TODO(#37): markAnswerFound(trialId) and markNoAnswerFound(trialId), for
  * Google, where the Tester reports whether the answer was on the page.
  */
@@ -179,7 +204,7 @@ export class TrialController {
       throw new Error(`No adapter is registered for ${SUBJECT_LABELS[subject]}`)
     }
     const question = this.deps.questions.getByNumber(questionNumber)
-    const policy = this.deps.timeouts[subject]
+    const policy = this.deps.policies[subject]
 
     const trial = new RunningTrial(subject, question, adapter, this.now())
     this.current = trial
@@ -200,6 +225,14 @@ export class TrialController {
       await this.timedStep(trial, 'end', adapter.waitForCompletion())
       // Completion reached: the clock stops here, before the answer is read.
       trial.stopTimer()
+      if (policy.confirmEnd) {
+        const marks = this.deps.timing.getMarks(trial.trialId)
+        this.send(trial, 'awaiting_confirmation', { message: CONFIRM_PROMPT, beginMs: marks.begin, endMs: marks.end })
+        const correctedEnd = await trial.step(trial.awaitConfirmation())
+        if (correctedEnd !== undefined) {
+          this.deps.timing.mark(trial.trialId, 'end', correctedEnd)
+        }
+      }
       trial.answer = await trial.step(adapter.captureAnswer())
       // The subject-independent check: an answer with no text is a failure, whatever the adapter said.
       this.onFailureSignal(trial, { answerText: trial.answer.text, timedOut: false })
@@ -221,6 +254,34 @@ export class TrialController {
       await this.abandonTrial(trial, 'aborted', describe(error))
       throw error
     }
+  }
+
+  /**
+   * The Tester confirmed the end of a trial that is awaiting confirmation:
+   * keeps the detected end, or replaces it with endMs, which must not be
+   * before the question was sent. The trial is then captured and saved;
+   * resolves once that is done and the controller is ready again.
+   */
+  async confirmCompletion(trialId: string, endMs?: number): Promise<void> {
+    const trial = this.current
+    if (!trial || trial.trialId !== trialId) {
+      throw new Error(`Trial ${trialId} is not running`)
+    }
+    if (!trial.isAwaitingConfirmation) {
+      throw new Error('The trial is not waiting for confirmation: its answer has not finished yet')
+    }
+    if (endMs !== undefined) {
+      const { timing } = this.deps
+      if (typeof endMs !== 'number' || !Number.isFinite(endMs)) {
+        throw new Error(`The corrected end must be a number of epoch milliseconds, got ${String(endMs)}`)
+      }
+      const beginMs = timing.getMarks(trialId).begin
+      if (beginMs !== undefined && endMs < beginMs) {
+        throw new Error(`The corrected end (${timing.toIso(endMs)}) is before the question was sent (${timing.toIso(beginMs)})`)
+      }
+    }
+    trial.confirm(endMs)
+    await trial.closed
   }
 
   /** Ends the running trial without saving it. Resolves once the controller is ready again. */
@@ -291,9 +352,11 @@ export class TrialController {
     const label = SUBJECT_LABELS[trial.subject]
     switch (type) {
       case FailureType.TIMEOUT:
-        return `No answer from ${label} within ${seconds(this.deps.timeouts[trial.subject].timeoutMs)}`
+        return `No answer from ${label} within ${seconds(this.deps.policies[trial.subject].timeoutMs)}`
       case FailureType.ERROR_RESPONSE:
-        return `${label} answered with HTTP ${String(signal.httpStatus)}`
+        return signal.httpStatus !== undefined && signal.httpStatus >= 400
+          ? `${label} answered with HTTP ${String(signal.httpStatus)}`
+          : `${label} showed an error instead of an answer: ${signal.errorMessage ?? ''}`
       case FailureType.UNREACHABLE:
         return signal.networkError ?? `${label} could not be reached`
       case FailureType.EMPTY_ANSWER:
@@ -371,7 +434,7 @@ export class TrialController {
   private send(
     trial: RunningTrial,
     status: TrialEventStatus,
-    extra: { message?: string; failureType?: FailureType } = {},
+    extra: { message?: string; failureType?: FailureType; beginMs?: number; endMs?: number } = {},
   ): void {
     try {
       this.deps.events.sendTrialEvent({

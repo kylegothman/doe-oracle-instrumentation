@@ -63,8 +63,11 @@ export interface Trial {
  * channel as the Trial Controller moves through it. How a status maps to
  * the TrialStatus the trial is saved with:
  * - started, awaiting_submit (the question is typed and the subject waits
- *   for the Tester to submit it; its message says what to do), and
- *   first_response are progress; nothing is saved yet;
+ *   for the Tester to submit it; its message says what to do),
+ *   first_response, and awaiting_confirmation (the answer finished and the
+ *   clock stopped; the Tester confirms or corrects the end, carried in
+ *   beginMs and endMs, before anything is saved) are progress; nothing is
+ *   saved yet;
  * - completed means the trial was saved as SUCCESS;
  * - failed means the trial was saved as FAILED, and failureType says why;
  * - cancelled (the Tester cancelled it) and aborted (the harness itself
@@ -74,6 +77,7 @@ export type TrialEventStatus =
   | 'started'
   | 'awaiting_submit'
   | 'first_response'
+  | 'awaiting_confirmation'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -86,8 +90,11 @@ export interface TrialEvent {
   status: TrialEventStatus
   /** Milliseconds since the trial started, by the controller's clock. */
   elapsedMs: number
-  /** What went wrong, for failed and aborted; what the Tester must do, for awaiting_submit. */
+  /** What went wrong, for failed and aborted; what the Tester must do, for awaiting_submit and awaiting_confirmation. */
   message?: string
   /** Set with status failed. */
   failureType?: FailureType
+  /** The detected begin and end, epoch milliseconds, with awaiting_confirmation. */
+  beginMs?: number
+  endMs?: number
 }

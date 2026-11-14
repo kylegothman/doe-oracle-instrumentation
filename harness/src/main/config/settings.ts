@@ -97,10 +97,18 @@ export interface CopilotSettings extends CopilotProductSettings {
  */
 export type TimerStart = 'trial_start' | 'submit'
 
-export interface TrialTimeoutPolicy {
+/** How the Trial Controller runs one subject's trials. */
+export interface TrialPolicy {
   /** How long the subject has to answer, in milliseconds. */
   timeoutMs: number
   startsAt: TimerStart
+  /**
+   * Whether the Tester confirms the detected end before the trial is saved.
+   * Copilot's end is read off a streamed answer, so the Tester, who watched
+   * it, confirms it or corrects it; the clock is already stopped. The
+   * Oracle's end is unambiguous and needs no confirmation.
+   */
+  confirmEnd: boolean
 }
 
 export interface HarnessSettings {
@@ -108,16 +116,16 @@ export interface HarnessSettings {
   /** The Copilot product being driven, resolved from the config's `copilot.product`. */
   copilot: CopilotSettings
   /**
-   * Per-subject time limit (UC-4). The default is 60 seconds for every
-   * subject, from src/shared/harness-config.json.
-   * TODO(#34): Copilot's clock starts at the Tester's Enter, so its adapter
-   * must resolve start() at that moment.
+   * Per-subject time limit (UC-4), when the clock starts, and whether the
+   * Tester confirms the end. The limit is 60 seconds for every subject by
+   * default, from src/shared/harness-config.json. Copilot's clock starts at
+   * the Tester's Enter: its adapter resolves start() at that moment.
    * TODO(#37): Google's clock starts at the Tester's submit. Whether the
    * limit should also cover the Tester finding the answer on the results
    * page is an open question for the sponsor; until it is settled the
    * clock stops when the adapter reports completion.
    */
-  trialTimeouts: Record<Subject, TrialTimeoutPolicy>
+  trialPolicies: Record<Subject, TrialPolicy>
 }
 
 /** Environment variable that overrides the Oracle base URL. */
@@ -143,12 +151,15 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
   const timeoutOverride = env[TRIAL_TIMEOUT_ENV]?.trim()
   const timeoutMs = timeoutOverride ? parseTimeout(timeoutOverride) : null
 
-  const trialTimeouts = {} as Record<Subject, TrialTimeoutPolicy>
+  const trialPolicies = {} as Record<Subject, TrialPolicy>
   for (const subject of SUBJECTS) {
-    const configured = defaults.subjects[subject] as { timerStartsAt: string; timeoutMs?: number } | undefined
-    trialTimeouts[subject] = {
+    const configured = defaults.subjects[subject] as
+      | { timerStartsAt: string; timeoutMs?: number; confirmEnd?: boolean }
+      | undefined
+    trialPolicies[subject] = {
       timeoutMs: timeoutMs ?? configured?.timeoutMs ?? defaults.trialTimeoutMs,
       startsAt: parseTimerStart(subject, configured?.timerStartsAt ?? 'trial_start'),
+      confirmEnd: configured?.confirmEnd ?? false,
     }
   }
 
@@ -159,7 +170,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
       searchEndpointPath: defaults.oracle.searchEndpointPath,
     },
     copilot: loadCopilotSettings(env[COPILOT_PRODUCT_ENV]?.trim()),
-    trialTimeouts,
+    trialPolicies,
   }
 }
 
