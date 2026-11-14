@@ -403,8 +403,9 @@ function CopilotSignInPanel() {
     <section aria-labelledby="copilot-heading">
       <h2 id="copilot-heading">Copilot sign-in</h2>
       <p>
-        Copilot keeps its own browser profile, so signing in once is enough until the session expires. Sign in with the
-        account the trials should run under.
+        Copilot runs in its own browser profile. Sign in here after launching the harness unless the window already
+        shows the chat: with the work account tested, the sign-in lasted only until the harness quit. Use the account the
+        trials should run under.
       </p>
       <button type="button" onClick={open} disabled={state.status === 'opening'} data-testid="open-copilot-sign-in">
         {state.status === 'opening' ? 'Opening Copilot…' : 'Open Copilot to sign in'}

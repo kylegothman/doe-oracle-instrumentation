@@ -18,7 +18,7 @@ Which product the harness drives is the `copilot.product` setting in `src/shared
 | | Microsoft 365 Copilot Chat (work account) | Consumer Copilot (personal account) |
 | --- | --- | --- |
 | Signed-out landing | `copilot.microsoft.com` redirects to `copilot.com`, a sign-in-only page ("Microsoft Copilot \| Sign in") | same page, same redirect |
-| Sign-in | `login.microsoftonline.com` (Microsoft Entra ID plus Duo); persists in the profile folder | `login.live.com`; persists in the profile folder |
+| Sign-in | `login.microsoftonline.com` (Microsoft Entra ID plus Duo). No "Stay signed in?" prompt, and the sign-in lasts only until Chromium quits: each harness launch started at the sign-in page (three restarts on 2026-11-14, one through the normal quit path) | `login.live.com`; not re-tested across a restart |
 | Chat URL after sign-in | `https://copilot.cloud.microsoft/chat`; the first message navigates to `/chat/conversation/<uuid>` | `https://copilot.com/chat`; a "First Run Experience Dialog" (Close button) covers the chat on the first visit; the account button reads "Personal account"; extra "Temporary chat" and model-selector buttons |
 | Input | `getByRole('textbox', { name: 'Message Copilot' })`, a contenteditable `span#m365-chat-editor-target-element`; `locator.fill()` works; readback carries zero-width characters | identical, including the element id and the zero-width characters |
 | Send / Stop | `button[aria-label="Send"]`, replaced by `button[aria-label="Stop generating"]` while streaming | Send identical; Stop never seen because nothing was ever sent |
