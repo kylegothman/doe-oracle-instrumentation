@@ -1,5 +1,6 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { ExportFormat } from '../shared/export'
 import { IpcChannels } from '../shared/ipc'
 import { Subject } from '../shared/subjects'
 import { OracleAdapter } from './adapters/oracle-adapter'
@@ -7,10 +8,13 @@ import type { SubjectAdapter } from './adapters/subject-adapter'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
 import { ErrorLog } from './data/error-log'
+import { EXPORT_EXTENSIONS, ExportService } from './data/export-service'
 import { MetricsRepository } from './data/metrics-repository'
+import { TestLogV3Writer } from './data/testlog-v3-writer'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
 import { createListFailedWritesHandler, createRetryFailedWritesHandler } from './execution/handlers/errors'
+import { createExportHandler } from './execution/handlers/export'
 import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import { createListTrialsHandler, createStartTrialHandler } from './execution/handlers/trials'
@@ -95,7 +99,31 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, errorL
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   router.register(IpcChannels.listFailedWrites, createListFailedWritesHandler(errorLog))
   router.register(IpcChannels.retryFailedWrites, createRetryFailedWritesHandler(errorLog, () => repositoryReady))
+  const exportReady = repositoryReady.then(
+    (repository) =>
+      new ExportService({ repository, writers: new Map([[ExportFormat.TESTLOG_V3_XLSX, new TestLogV3Writer()]]) }),
+  )
+  router.register(IpcChannels.exportLog, createExportHandler(() => exportReady, chooseSavePath))
   return router
+}
+
+/**
+ * The export's save dialog (UC-6): suggests a file name in Documents and
+ * returns the chosen path, or null if the Tester cancelled.
+ */
+async function chooseSavePath(suggestedName: string, format: ExportFormat): Promise<string | null> {
+  const options = {
+    title: 'Export the test log',
+    defaultPath: join(app.getPath('documents'), suggestedName),
+    filters: [
+      format === ExportFormat.CSV
+        ? { name: 'CSV file', extensions: [EXPORT_EXTENSIONS[format]] }
+        : { name: 'Excel workbook', extensions: [EXPORT_EXTENSIONS[format]] },
+    ],
+  }
+  const parent = BrowserWindow.getFocusedWindow()
+  const result = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options)
+  return result.canceled || !result.filePath ? null : result.filePath
 }
 
 function createMainWindow(): BrowserWindow {

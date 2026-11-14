@@ -185,6 +185,18 @@ Trials and expert answers share one Test # sequence (`nextTestNumber()`), so eve
 | `from`, `to` | records from `from` (inclusive) up to `to` (exclusive), as ISO 8601 UTC. A trial is placed by its begin time, or by its session's start if it failed before beginning; an expert answer by when it was entered |
 | `subject` | one subject's trials, or `'EXPERT'` for only the expert's answers |
 
+### Exporting
+
+The Export Page calls `window.harness.exportLog(request)` on the `export:run` channel. An `ExportRequest` (`src/shared/export.ts`) is a `RecordFilter` plus a format: `TESTLOG_V3_XLSX` or `CSV`. `ExportService` (`src/main/data/export-service.ts`) then, following SD-6:
+
+1. reads the matching records with `listExportRecords`;
+2. if there are none, stops with `NOTHING_TO_EXPORT` before asking for a location (UC-6 E1);
+3. opens the save dialog, suggesting `TestLog-<local date>.xlsx` in Documents, and stops with `CANCELLED` if the Tester closes it;
+4. maps the records to rows and hands them to the writer for the format;
+5. returns `EXPORTED` with the files written and the row count, or `WRITE_FAILED` with a message to show when the file cannot be written, for example because it is open in Excel (UC-6 E2). The Tester can export again and choose another location.
+
+An export only reads the database, so no outcome changes a stored record. The `ExportResult` carries `ok`, `status`, `filePaths`, `rowCount`, and `error`.
+
 ### Export rows
 
 `toExportRows(records)` (`src/main/data/export-rows.ts`) turns each record into a row of the TestLogV3 sheet (`TestLogRow`, Tom's 11 columns in order) and a row of the supplementary sheet (`SupplementaryRow`, keyed by the same Test #). An empty cell is `null`.
