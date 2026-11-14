@@ -7,8 +7,10 @@ import { OracleAdapter } from './adapters/oracle-adapter'
 import type { SubjectAdapter } from './adapters/subject-adapter'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
+import { CsvWriter } from './data/csv-writer'
 import { ErrorLog } from './data/error-log'
 import { EXPORT_EXTENSIONS, ExportService } from './data/export-service'
+import type { LogWriter } from './data/log-writer'
 import { MetricsRepository } from './data/metrics-repository'
 import { TestLogV3Writer } from './data/testlog-v3-writer'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
@@ -101,7 +103,13 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, errorL
   router.register(IpcChannels.retryFailedWrites, createRetryFailedWritesHandler(errorLog, () => repositoryReady))
   const exportReady = repositoryReady.then(
     (repository) =>
-      new ExportService({ repository, writers: new Map([[ExportFormat.TESTLOG_V3_XLSX, new TestLogV3Writer()]]) }),
+      new ExportService({
+        repository,
+        writers: new Map<ExportFormat, LogWriter>([
+          [ExportFormat.TESTLOG_V3_XLSX, new TestLogV3Writer()],
+          [ExportFormat.CSV, new CsvWriter()],
+        ]),
+      }),
   )
   router.register(IpcChannels.exportLog, createExportHandler(() => exportReady, chooseSavePath))
   return router

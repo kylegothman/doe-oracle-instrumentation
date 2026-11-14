@@ -191,7 +191,7 @@ The Export Page calls `window.harness.exportLog(request)` on the `export:run` ch
 
 1. reads the matching records with `listExportRecords`;
 2. if there are none, stops with `NOTHING_TO_EXPORT` before asking for a location (UC-6 E1);
-3. opens the save dialog, suggesting `TestLog-<local date>.xlsx` in Documents, and stops with `CANCELLED` if the Tester closes it;
+3. opens the save dialog, suggesting `TestLog-<local date>.xlsx` (or `.csv`) in Documents, and stops with `CANCELLED` if the Tester closes it;
 4. maps the records to rows and hands them to the writer for the format;
 5. returns `EXPORTED` with the files written and the row count, or `WRITE_FAILED` with a message to show when the file cannot be written, for example because it is open in Excel (UC-6 E2). The Tester can export again and choose another location.
 
@@ -225,6 +225,15 @@ Each export format is a `LogWriter` (`src/main/data/log-writer.ts`): `write(main
 - The second sheet, `Supplementary`, uses the same `B2` layout with Test # first.
 
 The headers live in one place, `TESTLOG_V3_HEADERS`, so the workbook and the CSV cannot drift apart.
+
+### The CSV export
+
+`CsvWriter` (`src/main/data/csv-writer.ts`) writes the same 11 columns, in the same order and with the same headers, to the chosen file (for example `TestLog-2026-11-14.csv`), and the supplementary columns to `TestLog-2026-11-14-supplementary.csv` beside it.
+
+- Fields follow RFC 4180: a value with a comma, a double quote, or a line break is wrapped in double quotes, with its quotes doubled, so a long multi-line answer stays in one field. Empty values are empty fields.
+- Files are UTF-8 with a byte order mark, so Excel shows characters such as `·` and `é` correctly, and lines end with CRLF.
+- The header row is the first line. A CSV has no cells, so the workbook's `B2` offset does not apply.
+- Size Kbytes is written with 2 decimals, matching the workbook.
 
 ### Failed saves
 
