@@ -204,6 +204,16 @@ Trials and expert answers share one Test # sequence (`nextTestNumber()`), so eve
 
 The expert's turnaround goes on the row of their **lowest question number** in the export; their other rows leave Response Milliseconds and both timestamps empty. The supplementary row holds what TestLogV3 has no column for: time to first response, Google's page-load time and time to answer, the source URL, the citations joined with `; `, a failed trial's failure type, and the expert's response source (`EMAIL` or `INTERVIEW`).
 
+### The TestLogV3 workbook
+
+Each export format is a `LogWriter` (`src/main/data/log-writer.ts`): `write(main, extra, filePath)` writes the rows and returns the files it wrote. `TestLogV3Writer` (`src/main/data/testlog-v3-writer.ts`) writes an `.xlsx` with ExcelJS that matches Tom's `TestLogV3.xlsx`:
+
+- The first sheet is named `Sheet1`, as in Tom's file. Row 1 and column A are empty, the 11 headers are in `B2:L2` exactly as Tom wrote them (including the trailing spaces in `Question Number ` and `Test Subject `), and data starts in row 3.
+- Numbers stay numbers, timestamps are ISO 8601 UTC text, and empty values leave the cell empty. Size Kbytes is formatted with 2 decimals.
+- The second sheet, `Supplementary`, uses the same `B2` layout with Test # first.
+
+The headers live in one place, `TESTLOG_V3_HEADERS`, so the workbook and the CSV cannot drift apart.
+
 ### Failed saves
 
 If a save fails in the database itself (the disk is full, the file is locked or damaged), the record is not lost. `MetricsRepository` hands it to the `ErrorLog` (`src/main/data/error-log.ts`), which appends it as one JSON line to `pending-writes.jsonl`, next to `harness.db`. It is a file, not a table, because a SQLite write is what just failed. The save still throws, with a message saying the record was kept and can be retried, so the Tester sees it; the startup log also reports how many saves are waiting.
