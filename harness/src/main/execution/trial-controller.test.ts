@@ -4,7 +4,7 @@ import { FailureType } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import { Subject } from '../../shared/subjects'
 import { TrialStatus, type TrialEvent } from '../../shared/trials'
-import type { CapturedAnswer, SubjectAdapter } from '../adapters/subject-adapter'
+import type { AdapterNotice, CapturedAnswer, SubjectAdapter } from '../adapters/subject-adapter'
 import type { TrialTimeoutPolicy } from '../config/settings'
 import { MetricsRepository } from '../data/metrics-repository'
 import { QuestionBank } from './question-bank'
@@ -32,12 +32,15 @@ interface Script {
   errors?: Partial<Record<Step, string>>
   /** Signals reported through onFailure right after a step settles, as the real adapter does. */
   signals?: Partial<Record<Step, FailureSignal>>
+  /** Notices reported through onNotice as a step begins, as the Copilot adapter does once the question is typed. */
+  notices?: Partial<Record<Step, AdapterNotice>>
 }
 
 /** An adapter that follows a script, records its calls, and keeps the failure handler it was given. */
 class FakeAdapter implements SubjectAdapter {
   readonly calls: string[] = []
   handler: ((signal: FailureSignal) => void) | null = null
+  noticeHandler: ((notice: AdapterNotice) => void) | null = null
 
   constructor(
     readonly subject: Subject,
@@ -68,6 +71,10 @@ class FakeAdapter implements SubjectAdapter {
     this.handler = handler
   }
 
+  onNotice(handler: (notice: AdapterNotice) => void): void {
+    this.noticeHandler = handler
+  }
+
   dispose(): Promise<void> {
     this.calls.push('dispose')
     return this.run('dispose', () => undefined)
@@ -82,6 +89,8 @@ class FakeAdapter implements SubjectAdapter {
     const delay = this.script.delays?.[step]
     const error = this.script.errors?.[step]
     const signal = this.script.signals?.[step]
+    const notice = this.script.notices?.[step]
+    if (notice) this.noticeHandler?.(notice)
     const settle = (resolve: (v: T) => void, reject: (e: Error) => void): void => {
       if (error) reject(new Error(error))
       else resolve(value())
@@ -348,6 +357,57 @@ describe('TrialController', () => {
 
     await expect(pending).resolves.toMatchObject({ status: TrialStatus.FAILED, subject: Subject.COPILOT })
     expect(events.at(-1)).toMatchObject({ status: 'failed', failureType: FailureType.TIMEOUT, elapsedMs: 40_000 })
+  })
+
+  it('passes the adapter\'s "press Enter" notice on as an awaiting_submit event, before the clock starts', async () => {
+    const notice: AdapterNotice = { status: 'awaiting_submit', message: 'Press Enter in the Copilot window to send the question' }
+    const adapter = new FakeAdapter(Subject.COPILOT, { delays: { start: 20_000 }, notices: { start: notice } })
+    const controller = controllerWith([adapter], { timeouts: policies({ [Subject.COPILOT]: { timeoutMs: 10_000 } }) })
+
+    const pending = controller.startTrial(Subject.COPILOT, 1)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events).toEqual([
+      expect.objectContaining({ status: 'started', elapsedMs: 0 }),
+      expect.objectContaining({ status: 'awaiting_submit', message: notice.message, elapsedMs: 0 }),
+    ])
+    // Twice the limit passes while the Tester has not pressed Enter: no timeout, the clock has not started.
+    await vi.advanceTimersByTimeAsync(20_000)
+
+    await expect(pending).resolves.toMatchObject({ status: TrialStatus.SUCCESS, subject: Subject.COPILOT })
+    expect(statuses()).toEqual(['started', 'awaiting_submit', 'first_response', 'completed'])
+  })
+
+  it('aborts without saving when the Tester never submits within the submit wait', async () => {
+    const message = 'The question was not sent within 300 s: no Enter in the Copilot window. The trial was aborted; run it again when ready.'
+    const adapter = new FakeAdapter(Subject.COPILOT, { delays: { start: 300_000 }, errors: { start: message } })
+    const controller = controllerWith([adapter])
+
+    const pending = controller.startTrial(Subject.COPILOT, 1)
+    pending.catch(() => {})
+    await vi.advanceTimersByTimeAsync(300_000)
+
+    await expect(pending).rejects.toThrow(/not sent within 300 s/)
+    expect(repository.listTrials()).toEqual([])
+    expect(events.at(-1)).toMatchObject({ status: 'aborted', message, elapsedMs: 300_000 })
+    expect(adapter.calls).toEqual(['start:1', 'dispose'])
+    expect(controller.isReady()).toBe(true)
+  })
+
+  it('cancelTrial while waiting for the Tester\'s submit ends the trial without saving it', async () => {
+    const adapter = new FakeAdapter(Subject.COPILOT, { delays: { start: 'never' } })
+    const controller = controllerWith([adapter])
+
+    const pending = controller.startTrial(Subject.COPILOT, 1)
+    pending.catch(() => {})
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    await controller.cancelTrial(controller.runningTrialId!)
+
+    await expect(pending).rejects.toThrow(TrialCancelledError)
+    expect(repository.listTrials()).toEqual([])
+    expect(adapter.calls).toEqual(['start:1', 'dispose'])
+    expect(events.at(-1)).toMatchObject({ status: 'cancelled', elapsedMs: 2_000 })
+    expect(controller.isReady()).toBe(true)
   })
 
   it('stops the clock when completion is reached, so a slow capture does not time out', async () => {

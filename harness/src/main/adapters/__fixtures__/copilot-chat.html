@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Copilot chat (test fixture)</title>
+    <!--
+      Mimics the Copilot chat page closely enough for the adapter, using the
+      roles, labels, and data-testids the spike found (docs/copilot-spike.md):
+      a contenteditable editor that appends zero-width characters after the
+      typed text, Enter to submit (clearing the editor first, as Copilot does),
+      a Send button that turns into "Stop generating" while streaming, one
+      article per message, a loading state, an answer that streams in chunks
+      on timers, inline citation buttons, and the actions toolbar that marks
+      the message complete. On submit it opens a WebSocket to the ChatHub URL
+      given in the query string and sends a SignalR request frame, so the
+      adapter's submit cross-check and citation reading see real frames.
+
+      Query parameters: firstMs, chunkMs, chunks, finishMs, text, cite=1,
+      error=<text>, empty=1, stall=1, noFinish=1, noClear=1, deleteOnly=1,
+      rerenderMs, hub=<ws url>.
+    -->
+  </head>
+  <body>
+    <main>
+      <div role="feed" aria-label="Chat conversation" id="feed"></div>
+      <div id="composer">
+        <span id="m365-chat-editor-target-element" role="textbox" aria-label="Message Copilot" contenteditable="true"><p><br /></p></span>
+        <button id="send" aria-label="Send">Send</button>
+      </div>
+    </main>
+    <script>
+      const params = new URLSearchParams(location.search)
+      const num = (key, fallback) => (params.has(key) ? Number(params.get(key)) : fallback)
+      const cfg = {
+        firstMs: num('firstMs', 300),
+        chunkMs: num('chunkMs', 60),
+        chunks: num('chunks', 8),
+        finishMs: num('finishMs', 150),
+        rerenderMs: num('rerenderMs', 0),
+        text:
+          params.get('text') ||
+          'Combinatorial testing selects test cases that cover all t-way interactions among input parameters, so faults triggered by a few parameters together are found with far fewer tests than exhaustive testing needs.',
+        citations:
+          params.get('cite') === '1'
+            ? [
+                { provider: 'nist', title: 'Combinatorial Testing | NIST' },
+                { provider: 'wikipedia', title: 'All-pairs testing' },
+              ]
+            : [],
+        error: params.get('error'),
+        empty: params.get('empty') === '1',
+        stall: params.get('stall') === '1',
+        noFinish: params.get('noFinish') === '1',
+        noClear: params.get('noClear') === '1',
+        deleteOnly: params.get('deleteOnly') === '1',
+        hub: params.get('hub'),
+      }
+      const editor = document.getElementById('m365-chat-editor-target-element')
+      const send = document.getElementById('send')
+      const feed = document.getElementById('feed')
+      const ZERO_WIDTH = '\u200B\u200C'
+      const strip = (text) => text.replace(/[\u200B-\u200D\uFEFF]/g, '').trim()
+      let streaming = false
+
+      function el(tag, attrs = {}, text) {
+        const node = document.createElement(tag)
+        for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value)
+        if (text !== undefined) node.textContent = text
+        return node
+      }
+
+      function splitText(text, count) {
+        const size = Math.ceil(text.length / count)
+        const pieces = []
+        for (let i = 0; i < text.length; i += size) pieces.push(text.slice(i, i + size))
+        return pieces
+      }
+
+      // Like Copilot's editor, what is read back carries zero-width characters after the typed text.
+      editor.addEventListener('input', () => {
+        if (strip(editor.innerText) && !editor.innerText.includes(ZERO_WIDTH)) {
+          editor.append(document.createTextNode(ZERO_WIDTH))
+        }
+      })
+
+      editor.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault()
+          submit()
+        }
+      })
+      send.addEventListener('click', submit)
+
+      function clearEditor() {
+        editor.innerHTML = '<p><br /></p>'
+      }
+
+      function showAlert(parent, text) {
+        parent.append(el('div', { role: 'alert' }, text))
+      }
+
+      function finish(body) {
+        send.setAttribute('aria-label', 'Send')
+        send.textContent = 'Send'
+        const actions = el('div', { class: 'fai-CopilotMessage__actions' })
+        actions.append(el('button', { 'aria-label': 'Copy Response' }, 'Copy'), el('button', { 'data-testid': 'feedback-button-testid' }, 'Like'))
+        body.append(actions)
+        streaming = false
+        if (cfg.rerenderMs > 0) {
+          // The real page re-renders the finished message once more, with the same text.
+          setTimeout(() => {
+            const reply = body.querySelector('[data-testid="markdown-reply"]')
+            if (reply) reply.replaceWith(reply.cloneNode(true))
+          }, cfg.rerenderMs)
+        }
+      }
+
+      function openHub(question) {
+        const socket = new WebSocket(cfg.hub)
+        socket.onopen = () => {
+          socket.send('{"protocol":"json","version":1}\u001e')
+          socket.send(JSON.stringify({ arguments: [{ source: 'officeweb', message: { text: question } }], target: 'chat', type: 1 }) + '\u001e')
+        }
+        socket.onmessage = () => {}
+        window.__hub = socket
+      }
+
+      function submit() {
+        const question = strip(editor.innerText)
+        if (!question || streaming) return
+        if (cfg.deleteOnly) {
+          // The Tester deleting the text: the editor clears and nothing else happens.
+          clearEditor()
+          return
+        }
+        if (cfg.noClear) {
+          // A send that is refused: the text stays, and an error shows up later.
+          setTimeout(() => showAlert(document.querySelector('main'), "Your request couldn't be completed. Refresh to try again."), cfg.firstMs)
+          return
+        }
+        clearEditor()
+        streaming = true
+        const user = el('article', { role: 'article', 'aria-label': 'You said:' })
+        user.append(el('h3', {}, 'You said:'), el('div', { 'data-testid': 'chatQuestion' }, question))
+        feed.append(user)
+        const bot = el('article', { role: 'article', 'aria-label': 'Copilot said:' })
+        const last = el('div', { 'data-testid': 'lastChatMessage' })
+        const body = el('div', { 'data-testid': 'chat-response-message' })
+        body.append(el('div', { 'data-testid': 'loading-message' }, 'Putting it together…'))
+        last.append(body)
+        bot.append(el('h3', {}, 'Copilot said:'), last)
+        feed.append(bot)
+        send.setAttribute('aria-label', 'Stop generating')
+        send.textContent = 'Stop'
+        if (cfg.hub) openHub(question)
+
+        setTimeout(() => {
+          body.querySelector('[data-testid="loading-message"]').remove()
+          if (cfg.error) {
+            showAlert(body, cfg.error)
+            finish(body)
+            return
+          }
+          const reply = el('div', { 'data-testid': 'markdown-reply' })
+          body.append(reply)
+          if (cfg.empty) {
+            finish(body)
+            return
+          }
+          const pieces = splitText(cfg.text, cfg.chunks)
+          let index = 0
+          const tick = () => {
+            reply.append(document.createTextNode(pieces[index++]))
+            if (index < pieces.length) {
+              if (!cfg.stall) setTimeout(tick, cfg.chunkMs)
+              return
+            }
+            for (const citation of cfg.citations) {
+              reply.append(' ', el('button', { class: 'fai-BebopCitation', 'aria-label': `Citation: ${citation.provider} — ${citation.title}` }, citation.provider))
+            }
+            if (!cfg.noFinish) setTimeout(() => finish(body), cfg.finishMs)
+          }
+          tick()
+        }, cfg.firstMs)
+      }
+    </script>
+  </body>
+</html>

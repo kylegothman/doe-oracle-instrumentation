@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { IpcChannels } from '../shared/ipc'
 import { Subject } from '../shared/subjects'
+import { CopilotAdapter } from './adapters/copilot-adapter'
 import { OracleAdapter } from './adapters/oracle-adapter'
 import type { SubjectAdapter } from './adapters/subject-adapter'
 import { BrowserManager } from './browser/browser-manager'
@@ -59,10 +60,12 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   void sqliteStatus.then(logSqliteStatus)
 
   const settings = loadSettings()
-  // One adapter per subject, each driving its own page in the shared Chromium.
-  // TODO(#5, #6): register the Copilot and Google adapters here.
+  // One adapter per subject, each driving its own page: the Oracle in the
+  // shared Chromium, Copilot on its persistent profile.
+  // TODO(#6): register the Google adapter here.
   const adapters = new Map<Subject, SubjectAdapter>([
     [Subject.DOE_ORACLE, new OracleAdapter(browserManager, settings.oracle)],
+    [Subject.COPILOT, new CopilotAdapter(browserManager, settings.copilot)],
   ])
   // One session per launch, started as soon as the database is open so it
   // is saved before any trial can reference it.

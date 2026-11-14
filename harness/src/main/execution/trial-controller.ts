@@ -3,7 +3,7 @@ import { FailureType, type FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import { SUBJECT_LABELS, type Subject } from '../../shared/subjects'
 import { TrialStatus, type Trial, type TrialEvent, type TrialEventStatus, type TrialFailure } from '../../shared/trials'
-import type { CapturedAnswer, SubjectAdapter } from '../adapters/subject-adapter'
+import type { AdapterNotice, CapturedAnswer, SubjectAdapter } from '../adapters/subject-adapter'
 import type { TrialTimeoutPolicy } from '../config/settings'
 import type { MetricsRepository, NewTrial } from '../data/metrics-repository'
 import { FailureDetector } from './failure-detector'
@@ -126,8 +126,10 @@ class RunningTrial {
  *    clock (see TrialTimeoutPolicy for when), and sends `started`.
  * 2. It drives the adapter through start, waitForFirstResponse,
  *    waitForCompletion, and captureAnswer, sending `first_response` on the
- *    way. Each step is raced against the trial being interrupted by the
- *    timer, by a failure signal from the adapter, or by cancelTrial.
+ *    way, and `awaiting_submit` when an adapter reports that the Tester
+ *    must submit the question (Copilot: the clock has not started yet).
+ *    Each step is raced against the trial being interrupted by the timer,
+ *    by a failure signal from the adapter, or by cancelTrial.
  * 3. On a failure (SD-4): the FailureDetector classifies the signal, the
  *    adapter is disposed, the clock stops, and closeTrial saves the trial
  *    as FAILED with a failed_requests row and sends `failed`. The failed
@@ -182,6 +184,7 @@ export class TrialController {
     const trial = new RunningTrial(subject, question, adapter, this.now())
     this.current = trial
     adapter.onFailure((signal) => this.onFailureSignal(trial, signal))
+    adapter.onNotice?.((notice) => this.onNotice(trial, notice))
     if (policy.startsAt === 'trial_start') {
       trial.startTimer(policy.timeoutMs, () => this.onTimeout(trial))
     }
@@ -256,6 +259,12 @@ export class TrialController {
     if (typeof value === 'number') {
       this.deps.timing.mark(trial.trialId, pending.event, value)
     }
+  }
+
+  /** The adapter needs the Tester to do something: pass it on as an event. */
+  private onNotice(trial: RunningTrial, notice: AdapterNotice): void {
+    if (this.current !== trial || trial.released) return
+    this.send(trial, notice.status, { message: notice.message })
   }
 
   /** The subject's clock ran out: the trial fails as TIMEOUT. */
