@@ -1,4 +1,6 @@
 import type { CopilotSignInStatus } from './copilot'
+import type { FailedWriteSummary } from './errors'
+import type { ExportRequest, ExportResult } from './export'
 import type { Session } from './session'
 import type { Subject } from './subjects'
 import type { Trial, TrialEvent } from './trials'
@@ -45,6 +47,9 @@ export interface IpcContracts {
   'trial:cancel': { args: [trialId: string]; result: void }
   'trials:list': { args: [sessionId?: string]; result: Trial[] }
   'copilot:open-sign-in': { args: []; result: CopilotSignInStatus }
+  'errors:list': { args: []; result: FailedWriteSummary[] }
+  'errors:retry': { args: []; result: number }
+  'export:run': { args: [request: ExportRequest]; result: ExportResult }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -61,6 +66,9 @@ export const IpcChannels = {
   cancelTrial: 'trial:cancel',
   listTrials: 'trials:list',
   openCopilotSignIn: 'copilot:open-sign-in',
+  listFailedWrites: 'errors:list',
+  retryFailedWrites: 'errors:retry',
+  exportLog: 'export:run',
 } as const satisfies Record<string, IpcChannel>
 
 /**
@@ -110,6 +118,17 @@ export interface HarnessApi {
    * never signs in itself.
    */
   openCopilotSignIn(): Promise<CopilotSignInStatus>
+  /** Lists the saves that failed in the database and are waiting for a retry, oldest first. */
+  listFailedWrites(): Promise<FailedWriteSummary[]>
+  /** Retries every failed save, oldest first, and resolves with how many succeeded. */
+  retryFailedWrites(): Promise<number>
+  /**
+   * Exports the matching records in the chosen format. The main process
+   * asks where to save; the result says whether the file was written, how
+   * many rows it has, or why not (nothing to export, cancelled, or the file
+   * could not be written).
+   */
+  exportLog(request: ExportRequest): Promise<ExportResult>
   /** Receives the running trial's status events. Returns the function that unsubscribes. */
   onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }

@@ -1,5 +1,6 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { ExportFormat } from '../shared/export'
 import { IpcChannels } from '../shared/ipc'
 import { Subject } from '../shared/subjects'
 import { CopilotAdapter } from './adapters/copilot-adapter'
@@ -7,10 +8,17 @@ import { OracleAdapter } from './adapters/oracle-adapter'
 import type { SubjectAdapter } from './adapters/subject-adapter'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
+import { CsvWriter } from './data/csv-writer'
+import { ErrorLog } from './data/error-log'
+import { EXPORT_EXTENSIONS, ExportService } from './data/export-service'
+import type { LogWriter } from './data/log-writer'
 import { MetricsRepository } from './data/metrics-repository'
+import { TestLogV3Writer } from './data/testlog-v3-writer'
 import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
 import { createOpenCopilotSignInHandler } from './execution/handlers/copilot'
+import { createListFailedWritesHandler, createRetryFailedWritesHandler } from './execution/handlers/errors'
+import { createExportHandler } from './execution/handlers/export'
 import { createGetSessionHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import {
@@ -50,15 +58,22 @@ function questionsConfigPath(): string {
   return join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'config', 'questions.json')
 }
 
+/** Saves that fail in the database are kept for retry in pending-writes.jsonl, next to harness.db. */
+function openErrorLog(): ErrorLog {
+  return new ErrorLog(join(app.getPath('userData'), 'pending-writes.jsonl'))
+}
+
 /** Opens harness.db under the per-user app data folder and applies migrations. */
-async function openRepository(): Promise<MetricsRepository> {
+async function openRepository(errorLog: ErrorLog): Promise<MetricsRepository> {
   const filePath = join(app.getPath('userData'), 'harness.db')
-  const repository = await MetricsRepository.open(filePath)
+  const repository = await MetricsRepository.open(filePath, { errorLog })
   console.log(`[data] Opened ${filePath} (schema version ${repository.schemaVersion})`)
+  const pending = errorLog.listPending().length
+  if (pending > 0) console.warn(`[errors] ${pending} failed save(s) waiting for retry in ${errorLog.logPath}`)
   return repository
 }
 
-function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browserManager: BrowserManager): IpcRouter {
+function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browserManager: BrowserManager, errorLog: ErrorLog): IpcRouter {
   // Probe once at startup. The handler reports this same result to the
   // renderer, so a broken native module shows up in the window.
   const sqliteStatus = probeSqlite()
@@ -109,7 +124,39 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   router.register(IpcChannels.cancelTrial, createCancelTrialHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   router.register(IpcChannels.openCopilotSignIn, createOpenCopilotSignInHandler({ pages: browserManager, settings: settings.copilot }))
+  router.register(IpcChannels.listFailedWrites, createListFailedWritesHandler(errorLog))
+  router.register(IpcChannels.retryFailedWrites, createRetryFailedWritesHandler(errorLog, () => repositoryReady))
+  const exportReady = repositoryReady.then(
+    (repository) =>
+      new ExportService({
+        repository,
+        writers: new Map<ExportFormat, LogWriter>([
+          [ExportFormat.TESTLOG_V3_XLSX, new TestLogV3Writer()],
+          [ExportFormat.CSV, new CsvWriter()],
+        ]),
+      }),
+  )
+  router.register(IpcChannels.exportLog, createExportHandler(() => exportReady, chooseSavePath))
   return router
+}
+
+/**
+ * The export's save dialog (UC-6): suggests a file name in Documents and
+ * returns the chosen path, or null if the Tester cancelled.
+ */
+async function chooseSavePath(suggestedName: string, format: ExportFormat): Promise<string | null> {
+  const options = {
+    title: 'Export the test log',
+    defaultPath: join(app.getPath('documents'), suggestedName),
+    filters: [
+      format === ExportFormat.CSV
+        ? { name: 'CSV file', extensions: [EXPORT_EXTENSIONS[format]] }
+        : { name: 'Excel workbook', extensions: [EXPORT_EXTENSIONS[format]] },
+    ],
+  }
+  const parent = BrowserWindow.getFocusedWindow()
+  const result = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options)
+  return result.canceled || !result.filePath ? null : result.filePath
 }
 
 function createMainWindow(): BrowserWindow {
@@ -152,11 +199,12 @@ let repositoryReady: Promise<MetricsRepository> | null = null
 
 void app.whenReady().then(() => {
   browserManager = createBrowserManager()
-  repositoryReady = openRepository()
+  const errorLog = openErrorLog()
+  repositoryReady = openRepository(errorLog)
   repositoryReady.catch((error: unknown) => {
     console.error(`[data] ${error instanceof Error ? error.message : String(error)}`)
   })
-  registerIpcHandlers(repositoryReady, browserManager)
+  registerIpcHandlers(repositoryReady, browserManager, errorLog)
   createMainWindow()
 
   app.on('activate', () => {

@@ -4,6 +4,45 @@ import type { Subject } from '../../shared/subjects'
 import type { FailureType } from '../../shared/failures'
 import { TrialStatus, type Trial, type TrialFailure } from '../../shared/trials'
 import type { Expert, ExpertResponse, ResponseSource } from '../../shared/experts'
+import type { RecordFilter } from '../../shared/export'
+import type { ErrorLog, PendingOperation, PendingWrite, PendingWriteTarget } from './error-log'
+
+/**
+ * Thrown when a save failed in the database and the record was kept in the
+ * ErrorLog for retry. The message says so, so the Tester knows nothing was
+ * lost; pendingWrite.id is what errors:retry retries.
+ */
+export class WriteQueuedError extends Error {
+  constructor(
+    what: string,
+    readonly pendingWrite: PendingWrite,
+    cause: unknown,
+  ) {
+    super(`${what} could not be saved (${pendingWrite.error}). It was kept in the error log and can be retried.`, { cause })
+    this.name = 'WriteQueuedError'
+  }
+}
+
+/**
+ * True for a database failure a retry may get past (disk full, database
+ * busy or locked, I/O error, a missing table), and false for a constraint
+ * violation, which the data itself causes and a retry would repeat.
+ */
+function isRetryableDatabaseError(error: unknown): boolean {
+  if (!(error instanceof Error) || error.name !== 'SqliteError') return false
+  const code = (error as Error & { code?: unknown }).code
+  return typeof code === 'string' && !code.startsWith('SQLITE_CONSTRAINT')
+}
+
+/**
+ * One row of an export, before ExportService maps it to the TestLogV3
+ * columns: a trial (with its failure, if it failed) or an active expert
+ * answer with its expert. testNumber is repeated at the top so records of
+ * both kinds sort and key the same way.
+ */
+export type ExportRecord =
+  | { kind: 'TRIAL'; testNumber: number; trial: Trial }
+  | { kind: 'EXPERT'; testNumber: number; expert: Expert; response: ExpertResponse }
 
 /** Fields only some subjects or later epics fill in. Left out, they are saved as null. */
 type OptionalTrialFields = 'pageLoadMs' | 'timeToAnswerMs' | 'sourceUrl' | 'keywords'
@@ -249,14 +288,19 @@ interface TrialRow {
  * Every write is committed before saveTrial returns, so a trial survives
  * the app closing right after it ends.
  */
-export class MetricsRepository {
+export class MetricsRepository implements PendingWriteTarget {
   private constructor(
     private readonly db: BetterSqlite3.Database,
     readonly filePath: string,
+    private readonly errorLog: ErrorLog | null,
   ) {}
 
-  /** Opens (creating if needed) the database at filePath, or ':memory:', and applies pending migrations. */
-  static async open(filePath: string): Promise<MetricsRepository> {
+  /**
+   * Opens (creating if needed) the database at filePath, or ':memory:', and
+   * applies pending migrations. With an errorLog, a save that fails in the
+   * database is kept there for retry (see guardWrite).
+   */
+  static async open(filePath: string, options: { errorLog?: ErrorLog } = {}): Promise<MetricsRepository> {
     // Loaded lazily so a broken native module surfaces as an error from
     // this call, not a crash at import time.
     const { default: Database } = await import('better-sqlite3')
@@ -272,9 +316,42 @@ export class MetricsRepository {
         applied_at TEXT NOT NULL
       )
     `)
-    const repository = new MetricsRepository(db, filePath)
+    const repository = new MetricsRepository(db, filePath, options.errorLog ?? null)
     repository.migrate()
     return repository
+  }
+
+  /** Runs a save the ErrorLog kept, without keeping it again if it fails. ErrorLog.retry calls this. */
+  applyPendingWrite(write: PendingOperation): void {
+    switch (write.operation) {
+      case 'saveTrial':
+        this.writeTrial(write.payload.trial, write.payload.failure ?? undefined)
+        return
+      case 'saveExpert':
+        this.writeExpert(write.payload.expert)
+        return
+      case 'saveExpertResponse':
+        this.writeExpertResponse(write.payload.response, write.payload.replace)
+        return
+    }
+  }
+
+  /**
+   * Runs a save. If the database itself fails (disk full, file locked or
+   * damaged), the record is kept in the ErrorLog and a WriteQueuedError is
+   * thrown, so the caller still sees the failure and the Tester can retry
+   * it (UC-2 E1). Errors the data causes are not kept, because a retry
+   * would fail the same way: constraint violations such as a duplicate id,
+   * and the repository's own checks such as ActiveAnswerExistsError.
+   */
+  private guardWrite<T>(operation: PendingOperation, what: string, write: () => T): T {
+    try {
+      return write()
+    } catch (error) {
+      if (!this.errorLog || !isRetryableDatabaseError(error)) throw error
+      const pending = this.errorLog.record(operation, error)
+      throw new WriteQueuedError(what, pending, error)
+    }
   }
 
   /** The highest migration version applied, 0 for an empty database. */
@@ -333,6 +410,14 @@ export class MetricsRepository {
           : `Trial ${trial.trialId} is FAILED but no failure was given`,
       )
     }
+    return this.guardWrite(
+      { operation: 'saveTrial', payload: { trial, failure: failure ?? null } },
+      `Trial ${trial.trialId}`,
+      () => this.writeTrial(trial, failure),
+    )
+  }
+
+  private writeTrial(trial: NewTrial, failure?: TrialFailure): Trial {
     const insert = this.db.prepare(`
       INSERT INTO trials (
         trial_id, test_number, session_id, data_set_name, subject, question_number, status,
@@ -432,6 +517,12 @@ export class MetricsRepository {
    * from the two timestamps; nothing else should change it.
    */
   saveExpert(expert: Expert): string {
+    return this.guardWrite({ operation: 'saveExpert', payload: { expert } }, `Expert ${expert.name}`, () =>
+      this.writeExpert(expert),
+    )
+  }
+
+  private writeExpert(expert: Expert): string {
     this.db
       .prepare(
         `INSERT INTO experts (expert_id, name, source, outreach_ts, first_answer_ts, turnaround_ms)
@@ -467,9 +558,18 @@ export class MetricsRepository {
    * pointing at the new one and no test number, in one transaction.
    */
   saveExpertResponse(response: NewExpertResponse, options: { replace?: boolean } = {}): ExpertResponseSaved {
+    const replace = options.replace ?? false
+    return this.guardWrite(
+      { operation: 'saveExpertResponse', payload: { response, replace } },
+      `The answer to question ${response.questionNumber}`,
+      () => this.writeExpertResponse(response, replace),
+    )
+  }
+
+  private writeExpertResponse(response: NewExpertResponse, replace: boolean): ExpertResponseSaved {
     const save = this.db.transaction((input: NewExpertResponse): ExpertResponseSaved => {
       const existing = this.getActiveResponse(input.expertId, input.questionNumber)
-      if (existing && !options.replace) throw new ActiveAnswerExistsError(existing)
+      if (existing && !replace) throw new ActiveAnswerExistsError(existing)
 
       const { nextId } = this.db
         .prepare('SELECT COALESCE(MAX(response_id), 0) + 1 AS nextId FROM expert_responses')
@@ -533,6 +633,88 @@ export class MetricsRepository {
       .prepare(`SELECT * FROM expert_responses WHERE expert_id = ? ${active} ORDER BY question_number, response_id`)
       .all(expertId) as ExpertResponseRow[]
     return rows.map(toExpertResponse)
+  }
+
+  /**
+   * Everything an export with this filter includes, in Test # order: every
+   * matching trial, successful or failed, and every matching active expert
+   * answer. Superseded expert answers are never included (UC-5, UC-6).
+   */
+  listExportRecords(filter: RecordFilter): ExportRecord[] {
+    const records: ExportRecord[] = []
+    if (filter.subject !== 'EXPERT') {
+      for (const trial of this.listExportTrials(filter)) {
+        records.push({ kind: 'TRIAL', testNumber: trial.testNumber, trial })
+      }
+    }
+    if (filter.subject === null || filter.subject === 'EXPERT') {
+      for (const { expert, response } of this.listExportAnswers(filter)) {
+        // Active answers always have a test number; only superseded ones give theirs up.
+        if (response.testNumber === null) continue
+        records.push({ kind: 'EXPERT', testNumber: response.testNumber, expert, response })
+      }
+    }
+    return records.sort((a, b) => a.testNumber - b.testNumber)
+  }
+
+  private listExportTrials(filter: RecordFilter): Trial[] {
+    // A trial that failed before it began has no begin_ts; its session's
+    // start places it in a date range instead, so it is not dropped.
+    const when = 'COALESCE(t.begin_ts, s.started_at)'
+    const conditions: string[] = []
+    const params: string[] = []
+    if (filter.sessionId !== null) {
+      conditions.push('t.session_id = ?')
+      params.push(filter.sessionId)
+    }
+    if (filter.subject !== null && filter.subject !== 'EXPERT') {
+      conditions.push('t.subject = ?')
+      params.push(filter.subject)
+    }
+    if (filter.from !== null) {
+      conditions.push(`${when} >= ?`)
+      params.push(filter.from)
+    }
+    if (filter.to !== null) {
+      conditions.push(`${when} < ?`)
+      params.push(filter.to)
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const rows = this.db
+      .prepare(
+        `SELECT t.*, f.failure_type, f.error_message, f.elapsed_ms
+         FROM trials t
+         LEFT JOIN failed_requests f ON f.trial_id = t.trial_id
+         LEFT JOIN sessions s ON s.session_id = t.session_id
+         ${where} ORDER BY t.test_number`,
+      )
+      .all(...params) as TrialRow[]
+    return rows.map(toTrial)
+  }
+
+  private listExportAnswers(filter: RecordFilter): Array<{ expert: Expert; response: ExpertResponse }> {
+    const conditions = ['r.superseded_by IS NULL']
+    const params: string[] = []
+    if (filter.sessionId !== null) {
+      conditions.push('r.session_id = ?')
+      params.push(filter.sessionId)
+    }
+    if (filter.from !== null) {
+      conditions.push('r.recorded_at >= ?')
+      params.push(filter.from)
+    }
+    if (filter.to !== null) {
+      conditions.push('r.recorded_at < ?')
+      params.push(filter.to)
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT r.*, e.name, e.source, e.outreach_ts, e.first_answer_ts, e.turnaround_ms
+         FROM expert_responses r JOIN experts e ON e.expert_id = r.expert_id
+         WHERE ${conditions.join(' AND ')} ORDER BY r.test_number`,
+      )
+      .all(...params) as Array<ExpertResponseRow & Omit<ExpertRow, 'expert_id'>>
+    return rows.map((row) => ({ expert: toExpert(row), response: toExpertResponse(row) }))
   }
 
   close(): void {

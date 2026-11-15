@@ -81,10 +81,10 @@ harness/
       adapters/             SubjectAdapter interface and one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
       browser/              BrowserManager: launches and owns the Playwright Chromium window
       config/               settings (Oracle URL, per-subject time limits)
-      data/                 MetricsRepository (SQLite, versioned migrations) and the startup probe
+      data/                 MetricsRepository (SQLite, versioned migrations), ErrorLog (failed saves kept for retry), and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
-    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent)
+    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult; FailedWriteSummary)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
 ```
@@ -198,6 +198,77 @@ The schema is versioned in `MetricsRepository` (`src/main/data/metrics-repositor
 | 6 | `experts`: `expert_id`, `name`, `source` (`EMAIL` or `INTERVIEW`), `outreach_ts`, `first_answer_ts`, `turnaround_ms` (stored once per expert). `expert_responses`: `response_id`, `test_number`, `expert_id` (references `experts`), `session_id`, `question_number`, `answer_text`, `size_bytes`, `keywords`, `recorded_at`, `superseded_by` (references `expert_responses`; null for the active answer) |
 
 Trials and expert answers share one Test # sequence (`nextTestNumber()`), so every exported row has a unique Test #. Expert answers are never overwritten: replacing one keeps the old row, points its `superseded_by` at the new row, and moves its Test # to the new row, so a revised answer keeps its number. Only one active answer per expert and question is allowed.
+
+### What an export reads
+
+`listExportRecords(filter)` returns everything an export includes, in Test # order: every matching trial, successful or failed (with its failure), and every matching active expert answer with its expert. Superseded answers are never exported. The `RecordFilter` (`src/shared/export.ts`) narrows it; a null field means no limit:
+
+| Field | Keeps |
+| --- | --- |
+| `sessionId` | trials from that session, and expert answers entered during it |
+| `from`, `to` | records from `from` (inclusive) up to `to` (exclusive), as ISO 8601 UTC. A trial is placed by its begin time, or by its session's start if it failed before beginning; an expert answer by when it was entered |
+| `subject` | one subject's trials, or `'EXPERT'` for only the expert's answers |
+
+### Exporting
+
+The Export Page calls `window.harness.exportLog(request)` on the `export:run` channel. An `ExportRequest` (`src/shared/export.ts`) is a `RecordFilter` plus a format: `TESTLOG_V3_XLSX` or `CSV`. `ExportService` (`src/main/data/export-service.ts`) then, following SD-6:
+
+1. reads the matching records with `listExportRecords`;
+2. if there are none, stops with `NOTHING_TO_EXPORT` before asking for a location (UC-6 E1);
+3. opens the save dialog, suggesting `TestLog-<local date>.xlsx` (or `.csv`) in Documents, and stops with `CANCELLED` if the Tester closes it;
+4. maps the records to rows and hands them to the writer for the format;
+5. returns `EXPORTED` with the files written and the row count, or `WRITE_FAILED` with a message to show when the file cannot be written, for example because it is open in Excel (UC-6 E2). The Tester can export again and choose another location.
+
+An export only reads the database, so no outcome changes a stored record. The `ExportResult` carries `ok`, `status`, `filePaths`, `rowCount`, and `error`.
+
+### Export rows
+
+`toExportRows(records)` (`src/main/data/export-rows.ts`) turns each record into a row of the TestLogV3 sheet (`TestLogRow`, Tom's 11 columns in order) and a row of the supplementary sheet (`SupplementaryRow`, keyed by the same Test #). An empty cell is `null`.
+
+| Column | Trial | Expert answer |
+| --- | --- | --- |
+| Test # | its Test # | its Test # |
+| Question Number | the question | the question |
+| Test Subject | the subject's UI label: `DOE Oracle`, `Microsoft Copilot`, `Google Search` | `Expert` |
+| log data set name | as saved, for example `DOE_ORACLE-2026-11-14` | `EXPERT-` plus the UTC date of the first answer, or `EXPERT` until it is entered |
+| Answer Text | the answer, empty if none | the answer |
+| Response Milliseconds | total response time; **page-load time for Google** | the turnaround, on one row only (below) |
+| User Email | the session ID (NFR-7) | the session the answer was entered in |
+| Begin / End Timestamp | as captured; a failed trial keeps whatever it reached | outreach sent / first answer received, on one row only |
+| Keywords | empty until the questions have keywords | the same |
+| Size Kbytes | bytes / 1024, rounded to 2 decimals | the same |
+
+The expert's turnaround goes on the row of their **lowest question number** in the export; their other rows leave Response Milliseconds and both timestamps empty. The supplementary row holds what TestLogV3 has no column for: time to first response, Google's page-load time and time to answer, the source URL, the citations joined with `; `, a failed trial's failure type, and the expert's response source (`EMAIL` or `INTERVIEW`).
+
+### The TestLogV3 workbook
+
+Each export format is a `LogWriter` (`src/main/data/log-writer.ts`): `write(main, extra, filePath)` writes the rows and returns the files it wrote. `TestLogV3Writer` (`src/main/data/testlog-v3-writer.ts`) writes an `.xlsx` with ExcelJS that matches Tom's `TestLogV3.xlsx`:
+
+- The first sheet is named `Sheet1`, as in Tom's file. Row 1 and column A are empty, the 11 headers are in `B2:L2` exactly as Tom wrote them (including the trailing spaces in `Question Number ` and `Test Subject `), and data starts in row 3.
+- Numbers stay numbers, timestamps are ISO 8601 UTC text, and empty values leave the cell empty. Size Kbytes is formatted with 2 decimals.
+- The second sheet, `Supplementary`, uses the same `B2` layout with Test # first.
+
+The headers live in one place, `TESTLOG_V3_HEADERS`, so the workbook and the CSV cannot drift apart.
+
+### The CSV export
+
+`CsvWriter` (`src/main/data/csv-writer.ts`) writes the same 11 columns, in the same order and with the same headers, to the chosen file (for example `TestLog-2026-11-14.csv`), and the supplementary columns to `TestLog-2026-11-14-supplementary.csv` beside it.
+
+- Fields follow RFC 4180: a value with a comma, a double quote, or a line break is wrapped in double quotes, with its quotes doubled, so a long multi-line answer stays in one field. Empty values are empty fields.
+- Text that starts with `-`, `=`, `+`, or `@` gets a `'` in front, so Excel keeps it as text instead of reading it as a formula (an answer starting with "- " would otherwise show as `#NAME?`). Numbers are never prefixed. The workbook needs no prefix: its cells are stored as text.
+- Files are UTF-8 with a byte order mark, so Excel shows characters such as `·` and `é` correctly, and lines end with CRLF.
+- The header row is the first line. A CSV has no cells, so the workbook's `B2` offset does not apply.
+- Size Kbytes is written with 2 decimals, matching the workbook.
+
+### Failed saves
+
+If a save fails in the database itself (the disk is full, the file is locked or damaged), the record is not lost. `MetricsRepository` hands it to the `ErrorLog` (`src/main/data/error-log.ts`), which appends it as one JSON line to `pending-writes.jsonl`, next to `harness.db`. It is a file, not a table, because a SQLite write is what just failed. The save still throws, with a message saying the record was kept and can be retried, so the Tester sees it; the startup log also reports how many saves are waiting.
+
+Each line is a `PendingWrite`: an `id`, the `operation` (`saveTrial`, `saveExpert`, or `saveExpertResponse`), its `payload`, the `error`, and `failedAt`. `ErrorLog.retry(id, repository)` runs one again and `retryAll(repository)` runs them all, oldest first; a write that succeeds is removed from the file, and one that fails again stays with its new error. Retrying gives a trial or expert answer the next Test # at that time.
+
+The renderer reaches the log through two channels: `errors:list` (`window.harness.listFailedWrites()`) returns a short summary of each waiting save (id, operation, a description such as "DOE Oracle trial, question 3", the error, and when it failed), and `errors:retry` (`window.harness.retryFailedWrites()`) retries them all and resolves with how many succeeded. The Export Page (E6) uses them for its Retry button.
+
+Failures the data itself causes are not kept, because a retry would fail the same way: constraint violations such as a duplicate id, a FAILED trial without its failure, or an answer to a question that already has one (`ActiveAnswerExistsError`).
 
 ### Startup check
 
