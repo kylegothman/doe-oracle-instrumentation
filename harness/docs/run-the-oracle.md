@@ -99,7 +99,16 @@ This is the same command the sponsor's `setup_combinatorial_model.py` runs. You 
 > | `instance/knowledge/CombinatorialExpert_Modelfile` | `llama3.2` (the default tag, the 3-billion-parameter model) | `setup_combinatorial_model.py` |
 > | `CombinatorialExpert.Modelfile` (repository root) | `llama3.2:1b` (the smaller 1-billion-parameter model), with a different system prompt | nothing in the code |
 >
-> This document uses the first, because it is the one the code builds. The root file would give a smaller, faster model and different answers, so the two must not be mixed between runs. Record which base model your `CombinatorialExpert` has in [reference-machine.md](reference-machine.md); `ollama show CombinatorialExpert --modelfile` prints it. Which one the sponsor's own machine uses is being confirmed.
+> This document uses the first, because it is the one the code builds. The root file would give a smaller, faster model and different answers, so the two must not be mixed between runs.
+>
+> The development Mac, where every timing so far was taken, uses the first as well. Checked on 2026-11-16: its `CombinatorialExpert` has the first file's system prompt, and its model data is the same 2.0 GB file as `llama3.2` (ID starting `dde5aa3fc5ff`). What the sponsor's own machine runs has not been checked.
+>
+> To confirm yours matches, after creating it:
+>
+> - `ollama list` shows `CombinatorialExpert` and `llama3.2` at the same size, about 2.0 GB. A size near 1.3 GB means it was built from `llama3.2:1b`.
+> - `ollama show CombinatorialExpert --modelfile` prints a `SYSTEM` text that starts "You are Dr. Wong's Combinatorial Testing Research Expert". If it starts "You are the DOE Oracle", the model was built from the root file: remove it with `ollama rm CombinatorialExpert` and create it again as above.
+>
+> **(check on the reference machine)**, and record the result in [reference-machine.md](reference-machine.md).
 
 ### 6. Set up the Python environment
 
