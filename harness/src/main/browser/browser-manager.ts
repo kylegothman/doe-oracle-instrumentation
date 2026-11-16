@@ -1,5 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type BrowserType, type LaunchOptions, type Page } from 'playwright'
 import { SUBJECT_LABELS, type Subject } from '../../shared/subjects'
+import { describeLaunchFailure, missingBundledBrowserMessage, type BrowserLocation } from './browser-location'
 
 /** Options of chromium.launchPersistentContext. */
 export type PersistentLaunchOptions = NonNullable<Parameters<BrowserType['launchPersistentContext']>[1]>
@@ -21,6 +22,12 @@ export interface BrowserManagerOptions {
    * the Tester signs in once and every later trial finds the session.
    */
   profiles?: Partial<Record<Subject, string>>
+  /**
+   * Which Chromium to launch (see browser-location.ts). Left out, Playwright
+   * finds the browser in its own cache, as in development and in tests. The
+   * packaged app passes the copy the installer shipped.
+   */
+  location?: BrowserLocation
 }
 
 /** Thrown when Chromium cannot be started, with a message the Tester can act on. */
@@ -46,13 +53,15 @@ interface PersistentSession {
  *   so what the Tester signs in to stays signed in across launches. The
  *   harness never reads the folder; it only hands the path to Playwright.
  *
- * TODO(#44): Playwright's Chromium lives in the user's cache (ms-playwright),
- * so the MSI does not include it. E8 must bundle it or install it on first run.
+ * Every launch uses the Chromium named by BrowserManagerOptions.location:
+ * Playwright's cache in development, the copy shipped in the installer in
+ * the packaged app.
  */
 export class BrowserManager {
   private readonly headless: boolean
   private readonly launcher: BrowserLauncher
   private readonly profiles: Partial<Record<Subject, string>>
+  private readonly location: BrowserLocation
   private browser: Browser | null = null
   private readonly pages = new Map<Subject, Page>()
   private readonly persistent = new Map<Subject, PersistentSession>()
@@ -61,6 +70,7 @@ export class BrowserManager {
     this.headless = options.headless ?? false
     this.launcher = options.launcher ?? chromium
     this.profiles = options.profiles ?? {}
+    this.location = options.location ?? { source: 'cache' }
   }
 
   /** True while the shared Chromium (for subjects without a profile) is up. */
@@ -83,9 +93,9 @@ export class BrowserManager {
 
     let browser: Browser
     try {
-      browser = await this.launcher.launch({ headless: this.headless })
+      browser = await this.launcher.launch(this.launchOptions())
     } catch (error) {
-      throw toLaunchError(error)
+      throw this.toLaunchError(error)
     }
     browser.on('disconnected', () => {
       // The Tester closed the window, or Chromium died. Forget it so the
@@ -161,24 +171,32 @@ export class BrowserManager {
 
   private async launchPersistent(subject: Subject, profile: string): Promise<BrowserContext> {
     try {
-      return await this.launcher.launchPersistentContext(profile, { headless: this.headless })
+      return await this.launcher.launchPersistentContext(profile, this.launchOptions())
     } catch (error) {
-      throw toLaunchError(error, `${SUBJECT_LABELS[subject]} profile at ${profile}`)
+      throw this.toLaunchError(error, `${SUBJECT_LABELS[subject]} profile at ${profile}`)
     }
   }
-}
 
-function toLaunchError(error: unknown, what = 'Chromium'): BrowserLaunchError {
-  const message = error instanceof Error ? error.message : String(error)
-  if (/Executable doesn't exist/i.test(message)) {
-    return new BrowserLaunchError(
-      "Playwright's Chromium is not installed. From harness/, run `npm run setup:browser`, then try again.",
-    )
+  /**
+   * The options every launch shares. The executable path is set only for the
+   * bundled browser; without it Playwright uses its own cache. A packaged app
+   * whose bundled browser is unusable fails here, before Playwright can fall
+   * back to anything else.
+   */
+  private launchOptions(): { headless: boolean; executablePath?: string } {
+    if (this.location.source === 'unusable') {
+      throw new BrowserLaunchError(missingBundledBrowserMessage(this.location.problem))
+    }
+    return this.location.source === 'bundled'
+      ? { headless: this.headless, executablePath: this.location.executablePath }
+      : { headless: this.headless }
   }
-  if (/ProcessSingleton|profile .* in use|SingletonLock/i.test(message)) {
-    return new BrowserLaunchError(
-      `Could not open the ${what}: another Chromium is using it. Close that window, then try again.`,
-    )
+
+  private toLaunchError(error: unknown, what?: string): BrowserLaunchError {
+    if (error instanceof BrowserLaunchError) {
+      return error
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    return new BrowserLaunchError(describeLaunchFailure(this.location, message, what))
   }
-  return new BrowserLaunchError(`Could not launch ${what}: ${message}`)
 }

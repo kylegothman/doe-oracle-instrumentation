@@ -34,7 +34,7 @@ const rendererForbiddenImports = {
 }
 
 export default defineConfig([
-  globalIgnores(['node_modules/', 'out/', 'dist/', 'release/']),
+  globalIgnores(['node_modules/', 'out/', 'dist/', 'release/', '.browser-bundle/']),
   {
     files: ['**/*.{js,mjs,cjs,ts,mts,cts,tsx}'],
     extends: [js.configs.recommended, tseslint.configs.recommended],
@@ -43,8 +43,8 @@ export default defineConfig([
     },
   },
   {
-    // Main process, preload, shared code, and project configs run under Node.
-    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', 'src/shared/**/*.ts', '*.{ts,mts,mjs}'],
+    // Main process, preload, shared code, project configs, and build scripts run under Node.
+    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', 'src/shared/**/*.ts', '*.{ts,mts,mjs}', 'scripts/**/*.mjs'],
     languageOptions: {
       globals: globals.node,
     },

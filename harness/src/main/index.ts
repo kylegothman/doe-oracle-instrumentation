@@ -6,6 +6,7 @@ import { Subject } from '../shared/subjects'
 import { CopilotAdapter } from './adapters/copilot-adapter'
 import { OracleAdapter } from './adapters/oracle-adapter'
 import type { SubjectAdapter } from './adapters/subject-adapter'
+import { resolveBrowserLocation, type BrowserLocation } from './browser/browser-location'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
 import { CsvWriter } from './data/csv-writer'
@@ -43,10 +44,19 @@ let browserManager: BrowserManager | null = null
  */
 function createBrowserManager(): BrowserManager {
   return new BrowserManager({
+    location: browserLocation(),
     profiles: {
       [Subject.COPILOT]: join(app.getPath('userData'), 'browser-profiles', 'copilot'),
     },
   })
+}
+
+/**
+ * The Chromium the harness drives: the copy shipped under resources/browser
+ * in the packaged app, Playwright's cache during development.
+ */
+function browserLocation(): BrowserLocation {
+  return resolveBrowserLocation({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath })
 }
 
 /**

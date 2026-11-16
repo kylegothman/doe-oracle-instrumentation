@@ -163,6 +163,53 @@ describe('BrowserManager', () => {
     await expect(new BrowserManager({ launcher }).launch()).rejects.toThrow(/Could not launch Chromium: spawn EACCES/)
   })
 
+  describe('with the browser the installer shipped', () => {
+    const manifest = { playwrightVersion: '1.65.0', revision: '1254', browserVersion: '158.0.8127.18', executable: 'chromium-1254/chrome-win64/chrome.exe' }
+    const bundled = { source: 'bundled', executablePath: 'C:\\app\\resources\\browser\\chromium-1254\\chrome-win64\\chrome.exe', manifest } as const
+    const profiles = { [Subject.COPILOT]: '/userData/browser-profiles/copilot' }
+
+    it('launches that copy, for the shared Chromium and for a profile', async () => {
+      const { launcher } = createFakeLauncher()
+      const manager = new BrowserManager({ launcher, profiles, location: bundled })
+
+      await manager.getPage(Subject.DOE_ORACLE)
+      await manager.getPage(Subject.COPILOT)
+
+      expect(launcher.launch).toHaveBeenCalledWith({ headless: false, executablePath: bundled.executablePath })
+      expect(launcher.launchPersistentContext).toHaveBeenCalledWith('/userData/browser-profiles/copilot', {
+        headless: false,
+        executablePath: bundled.executablePath,
+      })
+    })
+
+    it('passes no executable path in development, so Playwright uses its cache', async () => {
+      const { launcher } = createFakeLauncher()
+      await new BrowserManager({ launcher, location: { source: 'cache' } }).launch()
+
+      const options = vi.mocked(launcher.launch).mock.calls[0]![0]
+      expect(options).toStrictEqual({ headless: false })
+    })
+
+    it('tells an installed user to reinstall when the bundled copy fails to start, without mentioning npm', async () => {
+      const launcher = failingLauncher("browserType.launch: Failed to launch chromium because executable doesn't exist at C:\\app\\chrome.exe")
+      const manager = new BrowserManager({ launcher, location: bundled })
+
+      await expect(manager.launch()).rejects.toThrow(BrowserLaunchError)
+      await expect(manager.launch()).rejects.toThrow(/Reinstall DOE Oracle Test Harness from its installer/)
+      await expect(manager.launch()).rejects.not.toThrow(/npm/)
+    })
+
+    it('never launches anything when the bundled copy is unusable', async () => {
+      const { launcher } = createFakeLauncher()
+      const manager = new BrowserManager({ launcher, profiles, location: { source: 'unusable', problem: 'browser.json could not be read' } })
+
+      await expect(manager.getPage(Subject.DOE_ORACLE)).rejects.toThrow(/missing or damaged \(browser\.json could not be read\)/)
+      await expect(manager.getPage(Subject.COPILOT)).rejects.toThrow(BrowserLaunchError)
+      expect(launcher.launch).not.toHaveBeenCalled()
+      expect(launcher.launchPersistentContext).not.toHaveBeenCalled()
+    })
+  })
+
   describe('a subject with a profile folder', () => {
     const profiles = { [Subject.COPILOT]: '/userData/browser-profiles/copilot' }
 
