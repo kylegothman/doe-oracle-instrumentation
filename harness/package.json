@@ -1,7 +1,7 @@
 {
   "name": "doe-oracle-test-harness",
   "productName": "DOE Oracle Test Harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop test harness that measures the DOE Oracle, Microsoft Copilot, and Google Search on a fixed question set",
   "private": true,
   "license": "UNLICENSED",

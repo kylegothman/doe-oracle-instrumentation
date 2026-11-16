@@ -1,7 +1,17 @@
-# Builds the Windows MSI installer for the harness and uploads it as a
-# workflow artifact. Runs on pushes to main that touch the harness, on
-# manual dispatch, and on pull requests that change the packaging setup
-# (so a packaging change is proven before it merges).
+# Builds the Windows MSI installer for the harness, then proves it on the
+# runner: installs it silently, runs the installed app's self-check, and
+# uninstalls it. The runner is a clean Windows machine with no Playwright
+# cache and no development setup, which is the case the installer has to
+# handle. The MSI is uploaded as a workflow artifact only when every step
+# passed.
+#
+# Runs on pushes to main that touch the harness, on pull requests that
+# change anything that affects packaging or start-up, and on manual dispatch
+# for any branch (Actions tab, or `gh workflow run harness-msi --ref <branch>`).
+#
+# The runner is Windows Server, not Windows 11, and it cannot sign in to
+# Copilot. This does not replace the manual test in
+# harness/docs/install-test.md.
 name: harness-msi
 
 on:
@@ -13,9 +23,20 @@ on:
   pull_request:
     paths:
       - '.github/workflows/harness-msi.yml'
+      # Packaging setup
       - 'harness/electron-builder.yml'
+      - 'harness/electron.vite.config.ts'
       - 'harness/package.json'
       - 'harness/package-lock.json'
+      - 'harness/.nvmrc'
+      - 'harness/scripts/**'
+      # What the installer ships next to the app
+      - 'harness/config/**'
+      - 'harness/build-resources/**'
+      # Start-up code the self-check runs
+      - 'harness/src/main/index.ts'
+      - 'harness/src/main/browser/**'
+      - 'harness/src/main/self-check/**'
   workflow_dispatch:
 
 permissions:
@@ -33,7 +54,7 @@ jobs:
   msi:
     name: harness-msi (windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -46,15 +67,58 @@ jobs:
       - name: Install
         run: npm ci
 
+      # package.json holds major.minor (0.2 until the final build, then 1.0).
+      # The patch is this workflow's run number, so every MSI built here has
+      # its own version: it shows in the app, is saved with each session, and
+      # a later build always installs over an earlier one.
+      - name: Set the build version
+        id: version
+        shell: bash
+        run: |
+          base=$(node -p "require('./package.json').version.split('.').slice(0, 2).join('.')")
+          echo "version=${base}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "playwright=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "Build version: ${base}.${GITHUB_RUN_NUMBER}"
+
+      # The Chromium that ships in the installer (about 215 MB to download),
+      # fetched by `npm run bundle:browser` into harness/.browser-bundle. It
+      # only changes when the pinned Playwright version does.
+      - name: Cache the bundled Chromium
+        uses: actions/cache@v6
+        with:
+          path: harness/.browser-bundle
+          key: browser-bundle-${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.version.outputs.playwright }}
+
       - name: Build and package the MSI
-        run: npm run dist:win
+        shell: bash
+        run: npm run dist:win -- "-c.extraMetadata.version=${VERSION}"
         env:
+          VERSION: ${{ steps.version.outputs.version }}
           # No signing certificate is configured; do not look for one.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: List release output
-        run: Get-ChildItem -Recurse release | Select-Object FullName, Length
+        run: |
+          Get-ChildItem release -File | Select-Object Name, Length
+          Get-ChildItem release/win-unpacked/resources | Select-Object Name, Length
+          Get-Content release/win-unpacked/resources/browser/browser.json
 
+      - name: Install the MSI silently
+        timeout-minutes: 15
+        run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step install -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke')
+
+      - name: Run the installed app's self-check
+        timeout-minutes: 6
+        run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step self-check -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke') -ExpectedVersion $env:VERSION
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Uninstall and check what is left
+        timeout-minutes: 15
+        run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step uninstall -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke')
+
+      # Only an MSI that installed, passed its self-check, and uninstalled
+      # is offered for download.
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v7
         with:
@@ -62,3 +126,13 @@ jobs:
           path: harness/release/*.msi
           if-no-files-found: error
           retention-days: 30
+
+      # msiexec's verbose logs and the self-check report.
+      - name: Upload install logs and self-check report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harness-msi-smoke-logs
+          path: ${{ runner.temp }}/msi-smoke
+          if-no-files-found: warn
+          retention-days: 14
