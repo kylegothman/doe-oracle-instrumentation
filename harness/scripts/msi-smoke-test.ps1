@@ -206,8 +206,13 @@ function Invoke-InstallStep {
   $entries = Get-UninstallEntries
   if ($entries.Count -ne 1) { throw "Expected one Apps entry for $ProductName, found $($entries.Count)." }
   $displayVersion = $entries[0].DisplayVersion
-  $perUser = $entries[0].PSPath -like '*HKEY_CURRENT_USER*'
-  Write-Host "Apps entry: $ProductName $displayVersion (per-user: $perUser)"
+  # A per-user install puts the program under the user's own folder. Where
+  # Windows keeps the Apps entry is printed for the record.
+  $perUser = $installDir.StartsWith($env:LOCALAPPDATA, [StringComparison]::OrdinalIgnoreCase)
+  $entryKey = "$($entries[0].PSPath)" -replace '^.*::', ''
+  Write-Host "Apps entry: $ProductName $displayVersion"
+  Write-Host "Apps entry key: $entryKey"
+  Write-Host "Per-user install: $perUser"
 
   $shortcuts = Get-ShortcutPaths
   $shortcuts | ForEach-Object { Write-Host "Shortcut: $_" }
