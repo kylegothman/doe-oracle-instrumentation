@@ -17,6 +17,7 @@ SE 4485 Team 3 capstone. We are building the DOE Oracle Test Harness, a Windows 
 ## Branches and pull requests
 
 - `main` is protected: one approving review, all review threads resolved, no direct pushes.
-- One branch per story, named `e<N>/<short-name>` (for example `e0/scaffold`). When a story depends on an unmerged one, branch from that branch, set it as the PR base, and say in the description which PR must merge first.
-- Every PR description references the epic issue and the matching story issue, and ends with a short testing section.
-- Keep each PR small and focused on one story. Do not pull in features from later epics.
+- One branch and one pull request per epic, named `e<N>/<short-name>` (for example `e8/packaging`) and branched from an up-to-date `main`. Do not stack a branch on another unmerged branch: stacked pull requests were merged into the wrong base twice.
+- Prefix every commit with the number of the story it belongs to, for example `#44: Ship Chromium in the installer`. A commit that belongs to the epic as a whole uses the epic's issue number.
+- Every PR description references the epic issue and each story issue it covers, and ends with a short testing section. Write "Refs #N", not "Closes #N", for a story that still needs a manual check, and never close an epic from a PR.
+- Keep each PR focused on its epic. Do not pull in features from other epics, and stay out of the files another epic is working on. If that seems unavoidable, stop and say why.
