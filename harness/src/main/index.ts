@@ -33,6 +33,8 @@ import { QuestionBank } from './execution/question-bank'
 import { SessionManager } from './execution/session-manager'
 import { TimingService } from './execution/timing-service'
 import { TrialController } from './execution/trial-controller'
+import { runSelfCheckAndExit } from './self-check/run-self-check'
+import { parseSelfCheckArgs } from './self-check/self-check'
 
 /** The Chromium instances the harness drives. Created once Electron is ready, launched on first use, closed on quit. */
 let browserManager: BrowserManager | null = null
@@ -207,7 +209,15 @@ function createMainWindow(): BrowserWindow {
 
 let repositoryReady: Promise<MetricsRepository> | null = null
 
+// `--self-check` runs the start-up checks and exits instead of opening the
+// harness (see self-check/self-check.ts). Without the flag nothing changes.
+const selfCheck = parseSelfCheckArgs(process.argv)
+
 void app.whenReady().then(() => {
+  if (selfCheck.enabled) {
+    void runSelfCheckAndExit({ app, args: selfCheck, questionsPath: questionsConfigPath(), location: browserLocation() })
+    return
+  }
   browserManager = createBrowserManager()
   const errorLog = openErrorLog()
   repositoryReady = openRepository(errorLog)
