@@ -113,6 +113,15 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
 
+      # The tester runs this script on the reference machine. Running it here,
+      # while the harness is installed, proves it works on a machine without
+      # Ollama, Python, or the Oracle: those rows must read "not found".
+      - name: Run the reference machine script
+        timeout-minutes: 3
+        run: |
+          ./scripts/reference-machine-spec.ps1
+          ./scripts/reference-machine-spec.ps1 -MemorySnapshot
+
       - name: Uninstall and check what is left
         timeout-minutes: 15
         run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step uninstall -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke')
