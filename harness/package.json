@@ -1,7 +1,7 @@
 {
   "name": "doe-oracle-test-harness",
   "productName": "DOE Oracle Test Harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop test harness that measures the DOE Oracle, Microsoft Copilot, and Google Search on a fixed question set",
   "private": true,
   "license": "UNLICENSED",
@@ -14,12 +14,13 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "dist:win": "electron-vite build && electron-builder --win msi --x64 --publish never",
-    "dist:dir": "electron-vite build && electron-builder --dir --publish never",
+    "dist:win": "electron-vite build && npm run bundle:browser && electron-builder --win msi --x64 --publish never",
+    "dist:dir": "electron-vite build && npm run bundle:browser && electron-builder --dir --publish never",
     "lint": "eslint .",
     "typecheck": "tsc -b tsconfig.json",
     "test": "vitest run",
-    "setup:browser": "playwright install chromium"
+    "setup:browser": "playwright install chromium",
+    "bundle:browser": "node scripts/bundle-browser.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

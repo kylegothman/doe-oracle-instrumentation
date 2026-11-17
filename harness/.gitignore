@@ -6,6 +6,9 @@ out/
 dist/
 release/
 
+# Chromium fetched by `npm run bundle:browser` for the installer
+.browser-bundle/
+
 # Local databases (SQLite and its sidecar files)
 *.db
 *.db-journal

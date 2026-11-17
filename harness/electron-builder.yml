@@ -29,6 +29,17 @@ extraResources:
     to: config
     filter:
       - questions.json
+  # The pinned Chromium (Chrome for Testing) the harness drives, fetched into
+  # .browser-bundle/ by `npm run bundle:browser`: resources/browser/ in the
+  # installed app. browser.json tells the app where the executable is. The
+  # whole chromium-<revision> folder ships as downloaded, including its ABOUT
+  # notice file. Playwright's ffmpeg, winldd, and .links are left out: they
+  # are only used to record video and to install browsers.
+  - from: .browser-bundle
+    to: browser
+    filter:
+      - browser.json
+      - 'chromium-*/**'
 
 # Native modules cannot be loaded from inside the asar archive.
 asarUnpack:

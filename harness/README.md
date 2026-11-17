@@ -12,7 +12,9 @@ Stack: Electron, React + TypeScript built by Vite through electron-vite, SQLite 
 
 No C++ build tools are needed. Native modules used by the harness ship prebuilt binaries.
 
-The harness drives the systems under test through Playwright's Chromium, which is downloaded separately from npm (see Setup).
+The harness drives the systems under test through Playwright's Chromium, which is downloaded separately from npm (see Setup). This is for development only: the installed app carries its own copy (see "Packaging the Windows installer").
+
+To test the installer on Windows 11, follow `docs/install-test.md`. To set up the Oracle on the reference machine, follow `docs/run-the-oracle.md`. The reference machine itself is described in `docs/reference-machine.md`.
 
 ### Windows 11
 
@@ -39,7 +41,7 @@ npm run setup:browser
 npm run dev
 ```
 
-`npm run setup:browser` downloads the Chromium build that matches the pinned Playwright version (about 250 MB) into Playwright's browser cache: `~/Library/Caches/ms-playwright` on macOS, `%LOCALAPPDATA%\ms-playwright` on Windows. Run it once per Playwright upgrade. Without it, launching a trial fails with a message that names this script.
+`npm run setup:browser` downloads the Chromium build that matches the pinned Playwright version (about 250 MB) into Playwright's browser cache: `~/Library/Caches/ms-playwright` on macOS, `%LOCALAPPDATA%\ms-playwright` on Windows. Run it once per Playwright upgrade. Without it, launching a trial under `npm run dev` fails with a message that names this script.
 
 `npm run dev` opens the harness window. It reloads the UI as you edit renderer files and restarts the main process when main or preload files change.
 
@@ -57,9 +59,10 @@ Run these from the `harness` folder.
 | `npm run lint` | Runs ESLint over the harness. Fails on any error. |
 | `npm run typecheck` | Runs the TypeScript compiler over the Node-side code (main, preload, shared) and the browser-side code (renderer, shared) without emitting files. |
 | `npm test` | Runs the Vitest unit tests once. The adapter tests drive a real headless Chromium, so run `npm run setup:browser` first. |
-| `npm run setup:browser` | Downloads Playwright's Chromium (headed and headless builds) for this machine. |
-| `npm run dist:win` | Builds and packages the Windows MSI installer into `release/`. Windows only. |
-| `npm run dist:dir` | Builds and packages an unpacked app for the current OS into `release/`, for a quick local check of the packaged app without an installer. |
+| `npm run setup:browser` | Downloads Playwright's Chromium (headed and headless builds) for this machine, for development and tests. |
+| `npm run bundle:browser` | Downloads the pinned headed Chromium into `.browser-bundle/` for the installer and writes its manifest, `browser.json`. `dist:win` and `dist:dir` run it for you. |
+| `npm run dist:win` | Builds the app, bundles Chromium, and packages the Windows MSI installer into `release/`. Windows only. |
+| `npm run dist:dir` | Builds the app, bundles Chromium, and packages an unpacked app for the current OS into `release/`, for a quick local check of the packaged app without an installer. |
 
 Run `lint`, `typecheck`, `test`, and `build` before opening a pull request. Continuous integration runs the same four on Ubuntu and Windows, installing Playwright's Chromium headless shell (cached per Playwright version) before the tests.
 
@@ -68,8 +71,10 @@ Run `lint`, `typecheck`, `test`, and `build` before opening a pull request. Cont
 ```
 harness/
   electron.vite.config.ts   bundling for main, preload, and renderer
-  electron-builder.yml      installer packaging (MSI); ships config/ as an extra resource
+  electron-builder.yml      installer packaging (MSI); ships config/ and the bundled Chromium as extra resources
   config/questions.json     the 12 standard questions, read at startup by QuestionBank
+  scripts/                  bundle-browser.mjs (Chromium for the installer), msi-smoke-test.ps1 (install, self-check, uninstall), reference-machine-spec.ps1
+  docs/                     install-test.md, reference-machine.md, run-the-oracle.md, copilot-spike.md
   eslint.config.mjs         lint rules (the renderer may not import Electron or Node)
   vitest.config.ts          unit test settings
   tsconfig.node.json        TypeScript for main, preload, shared
@@ -79,12 +84,14 @@ harness/
       index.ts              app lifecycle and window creation
       execution/            TrialController, FailureDetector, TimingService, SessionManager, QuestionBank, IpcRouter, IPC handlers
       adapters/             SubjectAdapter interface and one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
-      browser/              BrowserManager: launches and owns the Playwright Chromium window
+      browser/              BrowserManager: launches and owns the Playwright Chromium window; browser-location picks the bundled copy or the cache
+      self-check/           the --self-check mode: start-up checks that write a report and exit
       config/               settings (Oracle URL, per-subject time limits)
       data/                 MetricsRepository (SQLite, versioned migrations), ErrorLog (failed saves kept for retry), and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
     shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult; FailedWriteSummary)
+  .browser-bundle/          Chromium fetched for the installer (ignored by git)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
 ```
@@ -116,11 +123,16 @@ The Oracle runs in a throw-away context of a shared Chromium, gone when the harn
 
 The Oracle's address is a setting. The default, `http://localhost:5173`, is in `src/shared/harness-config.json`; set `HARNESS_ORACLE_URL` to point somewhere else, for example `HARNESS_ORACLE_URL=http://127.0.0.1:4173 npm run dev`. The chat page is `/chat` under that URL. If the Oracle is not running, the harness reports "Could not reach the DOE Oracle at ..." instead of failing silently.
 
-Playwright's Chromium lives in the user's cache, not in the app, so the MSI does not include it yet (tracked in #44).
+Which Chromium is launched depends on how the harness runs (`src/main/browser/browser-location.ts`):
+
+- Under `npm run dev`, Playwright finds the browser in its own cache, where `npm run setup:browser` put it.
+- The packaged app launches the copy the installer shipped in `resources/browser/`, found through `browser.json` in that folder. It never falls back to the cache or to a browser installed on the machine, so every installed harness of the same version drives the same Chromium build.
+
+If the packaged app's browser is missing or does not start, the trial is not run and the message says to reinstall the harness from its installer.
 
 ## Running a trial
 
-1. For the Oracle, start it: its Flask backend and its Vite frontend (see the repository README). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else. For Copilot, sign in with **Open Copilot to sign in** after launching the harness, unless the window already shows the chat (see "Driving Copilot").
+1. For the Oracle, start it: Ollama, its Flask backend, and its Vite frontend (see `docs/run-the-oracle.md`). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else. For Copilot, sign in with **Open Copilot to sign in** after launching the harness, unless the window already shows the chat (see "Driving Copilot").
 2. From `harness/`, run `npm run dev`. The window shows this launch's session ID in the bar at the top; every trial saved during the launch carries it.
 3. Pick the subject and click **Run … trial (Q1)**. For the Oracle, a Chromium window opens on the chat page, the harness types "What is combinatorial testing?", presses Enter, and waits for the answer. For Copilot, the harness types the question in the Copilot window and the status line says **Press Enter in the Copilot window**; you press Enter, and when the answer has finished the status line gives the detected response time with **Confirm**, an end you can adjust (seconds after your Enter) with **Adjust and confirm**, and **Cancel**. Status events (`started`, `awaiting submit`, `first response`, `awaiting confirmation`, `completed`, `failed`, `cancelled`, or `aborted`) appear under the buttons as they happen.
 4. The result panel shows the status, begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. A failed trial shows its failure type and message instead. The saved-trials table below reads back from the database, so a trial from an earlier launch is still listed.
@@ -278,25 +290,115 @@ better-sqlite3 13 uses Node-API and ships prebuilt binaries inside the npm packa
 
 ## Packaging the Windows installer
 
-`npm run dist:win` on Windows builds the app and produces `release/DOE Oracle Test Harness-<version>-x64.msi` with electron-builder. The first run downloads the WiX toolset into electron-builder's cache. The installer is per-user (no administrator rights needed) and shows a short wizard.
+`npm run dist:win` on Windows builds the app and produces `release/DOE Oracle Test Harness-<version>-x64.msi` with electron-builder. The first run downloads the WiX toolset into electron-builder's cache and Chromium into `.browser-bundle/`. The installer is per-user (no administrator rights needed) and shows a short wizard. It installs to `%LOCALAPPDATA%\Programs\DOE Oracle Test Harness`.
+
+The MSI is the only thing a Tester installs for the harness. It contains the app, `config/questions.json`, the SQLite native module, and the browser.
 
 The app icon lives in `build-resources/`: `icon.png` (512 px) is the source and `icon.ico` (16 to 256 px frames) is what Windows uses. The MSI cannot be built without an icon, because electron-builder's installer template always references one for the shortcuts. To rebrand, replace both files.
 
-Continuous integration does the same on `windows-latest` in the `harness-msi` workflow: on every push to `main` that touches the harness, on pull requests that change the packaging setup, and on manual dispatch from the Actions tab. The MSI is attached to the run as the artifact `doe-oracle-test-harness-msi`.
+### The bundled browser
 
-To try a CI build on Windows 11:
+`scripts/bundle-browser.mjs` (`npm run bundle:browser`) runs Playwright's own installer for the Chromium build the installed Playwright version pins, into `harness/.browser-bundle/`, and writes `browser.json` there: the Playwright version, the build's revision and version, and the path of the executable. Only the headed build is fetched, because that is the only one the app launches; the headless shell is used by the unit tests alone. The script never reads or changes Playwright's cache in your user folder.
 
-1. Open the repository's Actions tab, pick the latest `harness-msi` run, and download the `doe-oracle-test-harness-msi` artifact.
+electron-builder ships `browser.json` and the `chromium-<revision>` folder as `resources/browser/`. Playwright's ffmpeg and winldd are left out: they record video and check installs, which the harness does not do.
+
+The build Playwright 1.65 pins is Google's Chrome for Testing 158. It ships exactly as downloaded, with its `ABOUT` notice file; its full credits and terms are inside the browser at `chrome://credits` and `chrome://terms`. **The installer includes Chrome for Testing and is for the team and the sponsor only. Do not publish it.**
+
+With the browser, the MSI is about 300 MB (it was about 135 MB without it) and the installed app about 855 MB.
+
+### Versions
+
+`package.json` holds the major and minor version: `0.2` until the final build, which is `1.0`. The `harness-msi` workflow sets the patch to its run number, so an MSI from CI is, for example, `0.2.57`, and no two CI builds share a version. A local `dist:win` or `dist:dir` build keeps the `.0` from `package.json`.
+
+The version shows in the window under "App info", in the MSI's file name, in Settings, Apps, and in the `app_version` column of the `sessions` table, so every saved session records which build produced it.
+
+### Installing over an older version
+
+Installing a newer MSI over an older one upgrades in place: Windows removes the old program files and installs the new ones, and everything in the per-user data folder stays. The database is migrated forward the first time the new version opens it.
+
+Installing an older MSI over a newer one is refused with "A newer version is already installed". To go back, uninstall first. Do not open a database from a newer version with an older one: the older code does not check for a newer schema. Move or delete the data folder (below) before going back.
+
+### What uninstall leaves behind
+
+Uninstalling from Settings, Apps removes the program folder (the app and its Chromium), the Start menu and desktop shortcuts, and the Apps entry.
+
+It keeps the per-user data folder, `%APPDATA%\DOE Oracle Test Harness`, so results survive a reinstall or an upgrade:
+
+| Kept | What it is |
+| --- | --- |
+| `harness.db` (and `harness.db-wal`, `harness.db-shm`) | every saved session, trial, and expert answer |
+| `pending-writes.jsonl` | saves that failed and wait for a retry, if any |
+| `browser-profiles\copilot` | the Copilot browser profile |
+| `self-check\report.json` | the last self-check report, if one was run |
+| everything else | Electron's own cache and settings |
+
+Exports are wherever the Tester saved them, Documents by default, and are never removed.
+
+For a true clean start, uninstall, then delete the data folder. In PowerShell:
+
+```powershell
+Remove-Item -Recurse -Force "$env:APPDATA\DOE Oracle Test Harness"
+```
+
+This deletes every saved result and the Copilot sign-in. Export first if the data matters.
+
+### The self-check
+
+Running the app with `--self-check` runs three start-up checks without opening the window, writes a report, and exits:
+
+| Check | Passes when |
+| --- | --- |
+| `questions` | `config/questions.json` loads from where the app looks for it, with all 12 questions |
+| `sqlite` | better-sqlite3 loads, and a scratch database (`self-check.db`) opens in the per-user data folder through `MetricsRepository`, migrations included; it is removed afterwards |
+| `browser` | the Chromium a trial would use launches headed through `BrowserManager`, both as the shared browser and on a scratch profile, opens a page, and is the version `browser.json` pins |
+
+The exit code is 0 when every check passed, 1 when one failed, and 2 when the run did not finish within 3 minutes. The report is `self-check\report.json` in the per-user data folder, or the file given with `--self-check-out=<file>`. It is a file because a packaged Electron app on Windows prints nothing to the console that started it.
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\DOE Oracle Test Harness\DOE Oracle Test Harness.exe" --self-check | Out-Null
+Get-Content "$env:APPDATA\DOE Oracle Test Harness\self-check\report.json"
+```
+
+The self-check never opens `harness.db` or the Copilot profile, and it contacts no site: its pages are `about:blank` and one set from a string. Without the flag the app starts exactly as it always does. The code is in `src/main/self-check/`.
+
+### Continuous integration
+
+The `harness-msi` workflow builds the MSI on `windows-latest` and then tests it on that runner, a clean machine with no Playwright cache and no development setup. `scripts/msi-smoke-test.ps1` does the work:
+
+1. Installs the MSI silently (`msiexec /i ... /qn`) and checks the program files, the bundled browser, the shortcuts, and the Apps entry are there.
+2. Runs the installed app with `--self-check`, with a time limit, and fails unless the report shows all three checks passed, from the installed copy, at the expected version.
+3. Uninstalls silently (`msiexec /x ... /qn`) and checks the program folder, shortcuts, and Apps entry are gone and the per-user data folder is still there.
+
+The MSI is attached to the run as the artifact `doe-oracle-test-harness-msi` only when all three steps pass. When one fails, the msiexec logs and the self-check report are attached as `harness-msi-smoke-logs` instead.
+
+The workflow runs:
+
+- on every push to `main` that touches the harness;
+- on pull requests that change the packaging setup (`electron-builder.yml`, `package.json`, the lockfile, `scripts/`), what ships beside the app (`config/`, `build-resources/`), or the start-up code (`src/main/index.ts`, `src/main/browser/`, `src/main/self-check/`);
+- by hand, for any branch: in the Actions tab pick `harness-msi`, click **Run workflow**, and choose the branch, or run `gh workflow run harness-msi --ref <branch>`.
+
+The runner is Windows Server, not Windows 11, and it cannot sign in to Copilot or run a trial. A person still tests each MSI that matters on Windows 11 with `docs/install-test.md`.
+
+The same script runs on any Windows machine that does not have the harness installed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\msi-smoke-test.ps1 -MsiPath "C:\path\to\DOE Oracle Test Harness-0.2.57-x64.msi"
+```
+
+### Trying a CI build on Windows 11
+
+1. Open the repository's Actions tab, pick the `harness-msi` run for the branch or pull request, and download the `doe-oracle-test-harness-msi` artifact.
 2. Extract the zip and run the `.msi` inside. Windows SmartScreen may warn because the installer is unsigned; choose "More info" and "Run anyway".
 3. Launch "DOE Oracle Test Harness" from the Start menu or the desktop shortcut.
 4. Check that the window shows the app name and version under "App info" and a green "SQLite ... loaded" line under "Storage". A red "SQLite failed to load" box means the native module did not survive packaging; copy its text into an issue.
 
-To remove it, uninstall "DOE Oracle Test Harness" from Settings, Apps.
+`docs/install-test.md` is the full checklist. To remove the app, uninstall "DOE Oracle Test Harness" from Settings, Apps.
 
-On macOS, `npm run dist:dir` produces an unpacked `.app` under `release/` for a quick check of the packaged build. It is unsigned and only for local testing.
+On macOS, `npm run dist:dir` produces an unpacked `.app` under `release/` for a quick check of the packaged build, with the macOS build of the same Chromium inside. It is only for local testing. `"release/mac-arm64/DOE Oracle Test Harness.app/Contents/MacOS/DOE Oracle Test Harness" --self-check` runs the self-check against it.
 
 ## Troubleshooting
 
 - `npm run dev` opens no window: check the terminal for a bundling error, then confirm `node -v` matches `.nvmrc`.
 - Electron failed to download during `npm install`: re-run `npm install`; if you are behind a proxy, set `HTTPS_PROXY`.
 - macOS shows a blank window on first launch: wait a moment, the window is shown once the renderer is ready.
+- The installed app says "The browser that ships with the harness is missing or damaged": something removed or blocked files under `resources\browser` in the program folder. Reinstall from the MSI. If it happens again, check whether antivirus quarantined `chrome.exe`.

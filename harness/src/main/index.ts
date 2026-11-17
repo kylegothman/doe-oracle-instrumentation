@@ -6,6 +6,7 @@ import { Subject } from '../shared/subjects'
 import { CopilotAdapter } from './adapters/copilot-adapter'
 import { OracleAdapter } from './adapters/oracle-adapter'
 import type { SubjectAdapter } from './adapters/subject-adapter'
+import { resolveBrowserLocation, type BrowserLocation } from './browser/browser-location'
 import { BrowserManager } from './browser/browser-manager'
 import { loadSettings } from './config/settings'
 import { CsvWriter } from './data/csv-writer'
@@ -32,6 +33,8 @@ import { QuestionBank } from './execution/question-bank'
 import { SessionManager } from './execution/session-manager'
 import { TimingService } from './execution/timing-service'
 import { TrialController } from './execution/trial-controller'
+import { runSelfCheckAndExit } from './self-check/run-self-check'
+import { parseSelfCheckArgs } from './self-check/self-check'
 
 /** The Chromium instances the harness drives. Created once Electron is ready, launched on first use, closed on quit. */
 let browserManager: BrowserManager | null = null
@@ -43,10 +46,19 @@ let browserManager: BrowserManager | null = null
  */
 function createBrowserManager(): BrowserManager {
   return new BrowserManager({
+    location: browserLocation(),
     profiles: {
       [Subject.COPILOT]: join(app.getPath('userData'), 'browser-profiles', 'copilot'),
     },
   })
+}
+
+/**
+ * The Chromium the harness drives: the copy shipped under resources/browser
+ * in the packaged app, Playwright's cache during development.
+ */
+function browserLocation(): BrowserLocation {
+  return resolveBrowserLocation({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath })
 }
 
 /**
@@ -197,7 +209,15 @@ function createMainWindow(): BrowserWindow {
 
 let repositoryReady: Promise<MetricsRepository> | null = null
 
+// `--self-check` runs the start-up checks and exits instead of opening the
+// harness (see self-check/self-check.ts). Without the flag nothing changes.
+const selfCheck = parseSelfCheckArgs(process.argv)
+
 void app.whenReady().then(() => {
+  if (selfCheck.enabled) {
+    void runSelfCheckAndExit({ app, args: selfCheck, questionsPath: questionsConfigPath(), location: browserLocation() })
+    return
+  }
   browserManager = createBrowserManager()
   const errorLog = openErrorLog()
   repositoryReady = openRepository(errorLog)
