@@ -29,19 +29,40 @@ const pass: CheckResult = { name: 'questions', ok: true, detail: '12 questions l
 const fail: CheckResult = { name: 'browser', ok: false, detail: 'did not start', durationMs: 900 }
 
 describe('parseSelfCheckArgs', () => {
+  const off = { enabled: false, outPath: null, browserTimeoutMs: null, deadlineMs: null }
+  const on = { enabled: true, outPath: null, browserTimeoutMs: null, deadlineMs: null }
+
   it('is off for a normal launch, whatever else is on the command line', () => {
-    expect(parseSelfCheckArgs(['C:\\app\\harness.exe'])).toEqual({ enabled: false, outPath: null })
-    expect(parseSelfCheckArgs(['electron', '.', '--inspect', '--self-check-out=report.json'])).toEqual({ enabled: false, outPath: null })
-    expect(parseSelfCheckArgs(['harness.exe', '--self-checks'])).toEqual({ enabled: false, outPath: null })
+    expect(parseSelfCheckArgs(['C:\\app\\harness.exe'])).toEqual(off)
+    expect(parseSelfCheckArgs(['electron', '.', '--inspect', '--self-check-out=report.json'])).toEqual(off)
+    expect(parseSelfCheckArgs(['harness.exe', '--self-checks'])).toEqual(off)
   })
 
   it('is on with --self-check, with the default report path unless one is given', () => {
-    expect(parseSelfCheckArgs(['harness.exe', '--self-check'])).toEqual({ enabled: true, outPath: null })
+    expect(parseSelfCheckArgs(['harness.exe', '--self-check'])).toEqual(on)
     expect(parseSelfCheckArgs(['harness.exe', '--self-check', '--self-check-out=C:\\temp\\my report.json'])).toEqual({
-      enabled: true,
+      ...on,
       outPath: 'C:\\temp\\my report.json',
     })
-    expect(parseSelfCheckArgs(['harness.exe', '--self-check', '--self-check-out='])).toEqual({ enabled: true, outPath: null })
+    expect(parseSelfCheckArgs(['harness.exe', '--self-check', '--self-check-out='])).toEqual(on)
+  })
+
+  it('reads the testing flags that shorten the browser check and the deadline', () => {
+    expect(
+      parseSelfCheckArgs(['harness.exe', '--self-check', '--self-check-browser-timeout-ms=1', '--self-check-deadline-ms=2500']),
+    ).toEqual({ ...on, browserTimeoutMs: 1, deadlineMs: 2500 })
+  })
+
+  it('ignores the testing flags without --self-check, so they cannot change a normal launch', () => {
+    expect(parseSelfCheckArgs(['harness.exe', '--self-check-browser-timeout-ms=1', '--self-check-deadline-ms=1'])).toEqual(off)
+  })
+
+  it('keeps the default for a limit that is not a whole number of milliseconds, 1 or more', () => {
+    for (const value of ['', '0', '-5', '1.5', 'soon', '1e3', ' 20']) {
+      expect(
+        parseSelfCheckArgs(['harness.exe', '--self-check', `--self-check-browser-timeout-ms=${value}`, `--self-check-deadline-ms=${value}`]),
+      ).toEqual(on)
+    }
   })
 })
 

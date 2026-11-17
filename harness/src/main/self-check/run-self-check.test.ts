@@ -41,6 +41,7 @@ const failing: Check = {
     throw new Error('broken')
   },
 }
+const ARGS = { enabled: true, outPath: null, browserTimeoutMs: null, deadlineMs: null }
 const base = { questionsPath: 'unused', location: { source: 'cache' } as const, log: () => undefined }
 
 function readReport(filePath: string): SelfCheckReport {
@@ -51,7 +52,7 @@ describe('runSelfCheckAndExit', () => {
   it('writes the report to self-check/report.json in the data folder and exits 0 when every check passes', async () => {
     const { app, codes } = fakeApp()
 
-    await runSelfCheckAndExit({ ...base, app, args: { enabled: true, outPath: null }, checks: [passing] })
+    await runSelfCheckAndExit({ ...base, app, args: ARGS, checks: [passing] })
 
     expect(codes).toEqual([SelfCheckExit.PASSED])
     const report = readReport(defaultReportPath(userData))
@@ -68,7 +69,7 @@ describe('runSelfCheckAndExit', () => {
     const outPath = join(userData, 'elsewhere', 'result.json')
     const lines: string[] = []
 
-    await runSelfCheckAndExit({ ...base, app, args: { enabled: true, outPath }, checks: [passing, failing], log: (line) => lines.push(line) })
+    await runSelfCheckAndExit({ ...base, app, args: { ...ARGS, outPath }, checks: [passing, failing], log: (line) => lines.push(line) })
 
     expect(codes).toEqual([SelfCheckExit.FAILED])
     expect(readReport(outPath)).toMatchObject({ ok: false, status: 'failed', checks: [{ ok: true }, { name: 'b', ok: false, detail: 'broken' }] })
@@ -79,7 +80,7 @@ describe('runSelfCheckAndExit', () => {
     const { app, exited, codes } = fakeApp()
     const hung: Check = { name: 'hung', timeoutMs: 60_000, run: () => new Promise<string>(() => undefined) }
 
-    void runSelfCheckAndExit({ ...base, app, args: { enabled: true, outPath: null }, checks: [passing, hung], deadlineMs: 30 })
+    void runSelfCheckAndExit({ ...base, app, args: ARGS, checks: [passing, hung], deadlineMs: 30 })
 
     expect(await exited).toBe(SelfCheckExit.TIMED_OUT)
     expect(codes).toEqual([SelfCheckExit.TIMED_OUT])
@@ -92,7 +93,7 @@ describe('runSelfCheckAndExit', () => {
     const blocked = join(userData, 'blocked')
     writeFileSync(blocked, '')
 
-    await runSelfCheckAndExit({ ...base, app, args: { enabled: true, outPath: join(blocked, 'report.json') }, checks: [passing] })
+    await runSelfCheckAndExit({ ...base, app, args: { ...ARGS, outPath: join(blocked, 'report.json') }, checks: [passing] })
 
     expect(codes).toEqual([SelfCheckExit.FAILED])
   })

@@ -21,6 +21,14 @@ import { dirname } from 'node:path'
 export const SELF_CHECK_FLAG = '--self-check'
 /** Optional: where to write the report, `--self-check-out=<file>`. */
 export const SELF_CHECK_OUT_PREFIX = '--self-check-out='
+/**
+ * For testing only: replaces the browser check's time limit, in milliseconds
+ * (`--self-check-browser-timeout-ms=1` makes it time out at once). It exists
+ * so the timeout paths can be exercised on a packaged build.
+ */
+export const SELF_CHECK_BROWSER_TIMEOUT_PREFIX = '--self-check-browser-timeout-ms='
+/** For testing only: replaces the deadline of the whole run, in milliseconds. */
+export const SELF_CHECK_DEADLINE_PREFIX = '--self-check-deadline-ms='
 
 /** Exit codes of a self-check run. */
 export const SelfCheckExit = {
@@ -34,13 +42,36 @@ export interface SelfCheckArgs {
   enabled: boolean
   /** The report path given with --self-check-out=, or null for the default. */
   outPath: string | null
+  /** The browser check's limit given with --self-check-browser-timeout-ms=, or null for the default. */
+  browserTimeoutMs: number | null
+  /** The run's deadline given with --self-check-deadline-ms=, or null for the default. */
+  deadlineMs: number | null
 }
 
-/** Reads the self-check flags from the process arguments. */
+/**
+ * Reads the self-check flags from the process arguments. Every other flag
+ * is ignored unless --self-check itself is there, so none of them can change
+ * a normal launch.
+ */
 export function parseSelfCheckArgs(argv: readonly string[]): SelfCheckArgs {
   const enabled = argv.includes(SELF_CHECK_FLAG)
-  const out = argv.find((arg) => arg.startsWith(SELF_CHECK_OUT_PREFIX))?.slice(SELF_CHECK_OUT_PREFIX.length)
-  return { enabled, outPath: enabled && out ? out : null }
+  if (!enabled) {
+    return { enabled, outPath: null, browserTimeoutMs: null, deadlineMs: null }
+  }
+  const value = (prefix: string): string | undefined => argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length)
+  return {
+    enabled,
+    outPath: value(SELF_CHECK_OUT_PREFIX) || null,
+    browserTimeoutMs: wholeMilliseconds(value(SELF_CHECK_BROWSER_TIMEOUT_PREFIX)),
+    deadlineMs: wholeMilliseconds(value(SELF_CHECK_DEADLINE_PREFIX)),
+  }
+}
+
+/** A whole number of milliseconds, 1 or more. Anything else is ignored and the default stands. */
+function wholeMilliseconds(text: string | undefined): number | null {
+  if (text === undefined || !/^\d+$/.test(text)) return null
+  const value = Number(text)
+  return Number.isSafeInteger(value) && value >= 1 ? value : null
 }
 
 /** One thing the self-check verifies. `run` resolves with a short description of what it found, or throws. */

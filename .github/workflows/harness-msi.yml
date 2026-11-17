@@ -107,8 +107,11 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step install -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke')
 
+      # Two runs: the normal one, then one with the browser check's limit at
+      # 1 ms, which must time out, exit by itself, and leave no chrome.exe
+      # running from the install folder.
       - name: Run the installed app's self-check
-        timeout-minutes: 6
+        timeout-minutes: 12
         run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step self-check -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke') -ExpectedVersion $env:VERSION
         env:
           VERSION: ${{ steps.version.outputs.version }}

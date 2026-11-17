@@ -71,6 +71,7 @@ export async function runSelfCheckAndExit(context: SelfCheckContext): Promise<vo
       location: context.location,
       profileDir: join(userDataDir, SELF_CHECK_DIR, 'profile'),
       packaged: app.isPackaged,
+      ...(context.args.browserTimeoutMs === null ? {} : { timeoutMs: context.args.browserTimeoutMs }),
     }),
   ]
 
@@ -88,7 +89,7 @@ export async function runSelfCheckAndExit(context: SelfCheckContext): Promise<vo
   }
   // A check that hangs past its own limit, or cleanup that never returns,
   // must not leave the app running: CI would wait on it.
-  const deadline = setTimeout(() => finish(true), context.deadlineMs ?? SELF_CHECK_DEADLINE_MS)
+  const deadline = setTimeout(() => finish(true), context.deadlineMs ?? context.args.deadlineMs ?? SELF_CHECK_DEADLINE_MS)
 
   log(`[self-check] ${info.name} ${info.version}, report at ${reportPath}`)
   try {

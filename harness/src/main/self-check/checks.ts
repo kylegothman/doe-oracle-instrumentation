@@ -16,6 +16,9 @@ export const SELF_CHECK_DB_FILE = 'self-check.db'
 /** The folder under the per-user data folder for the report and the scratch browser profile. */
 export const SELF_CHECK_DIR = 'self-check'
 
+/** How long the browser check may take: two launches, two pages, and closing both. */
+export const BROWSER_CHECK_TIMEOUT_MS = 120_000
+
 /** The page the browser check shows. Set from a string: nothing is fetched from anywhere. */
 const LOCAL_PAGE = '<!doctype html><title>DOE Oracle Test Harness self-check</title><p id="status">ok</p>'
 
@@ -85,6 +88,8 @@ export interface BrowserCheckOptions {
   packaged: boolean
   /** Tests pass a fake; the app uses Playwright. */
   launcher?: BrowserLauncher
+  /** Replaces the check's time limit. Only the testing flag sets it. */
+  timeoutMs?: number
 }
 
 /**
@@ -97,7 +102,7 @@ export interface BrowserCheckOptions {
 export function browserCheck(options: BrowserCheckOptions): Check {
   return {
     name: 'browser',
-    timeoutMs: 120_000,
+    timeoutMs: options.timeoutMs ?? BROWSER_CHECK_TIMEOUT_MS,
     run: async () => {
       const { location, profileDir } = options
       if (options.packaged && location.source === 'cache') {

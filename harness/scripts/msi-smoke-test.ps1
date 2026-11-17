@@ -16,6 +16,9 @@
                 Apps entry are there.
     self-check  runs the installed exe with --self-check, with a time limit,
                 and reads its report (questions file, SQLite, bundled Chromium).
+                Then runs it once more with the browser check's limit set to
+                1 ms, so that check always times out, and checks nothing from
+                the install folder is left running.
     uninstall   msiexec /x /qn, then checks the program files, shortcuts, and
                 Apps entry are gone and the per-user data folder is kept.
 
@@ -30,7 +33,7 @@ param(
   # When given, the installed app must report exactly this version.
   [string]$ExpectedVersion = '',
   [int]$InstallTimeoutSeconds = 600,
-  [int]$SelfCheckTimeoutSeconds = 240,
+  [int]$SelfCheckTimeoutSeconds = 300,
   [int]$UninstallTimeoutSeconds = 600
 )
 
@@ -42,6 +45,8 @@ $ExeName = "$ProductName.exe"
 # Electron's per-user data folder: harness.db, the Copilot profile, pending-writes.jsonl.
 $UserDataDir = Join-Path $env:APPDATA $ProductName
 $ReportPath = Join-Path (Join-Path $UserDataDir 'self-check') 'report.json'
+# The scratch browser profile the self-check launches on and removes.
+$ScratchProfileDir = Join-Path (Join-Path $UserDataDir 'self-check') 'profile'
 $StatePath = Join-Path $OutDir 'state.json'
 $RequiredChecks = @('questions', 'sqlite', 'browser')
 
@@ -164,6 +169,37 @@ function Get-InstalledProcesses([string]$InstallDir) {
   return , $found
 }
 
+# Runs the installed app with --self-check and the given extra arguments,
+# with a time limit, and returns its exit code.
+function Invoke-SelfCheckRun([string]$Exe, [string]$InstallDir, [string]$Arguments) {
+  Write-Host "`"$Exe`" $Arguments"
+  $process = Start-Process -FilePath $Exe -ArgumentList $Arguments -PassThru
+  $null = $process.Handle
+  if (-not $process.WaitForExit($SelfCheckTimeoutSeconds * 1000)) {
+    & taskkill.exe /PID $process.Id /T /F | Out-Null
+    foreach ($left in (Get-InstalledProcesses $InstallDir)) { Stop-Process -Id $left.Id -Force -ErrorAction SilentlyContinue }
+    throw "The self-check did not exit within $SelfCheckTimeoutSeconds seconds and was stopped."
+  }
+  return $process.ExitCode
+}
+
+# Nothing from the install folder may keep running after the app exits: it
+# would block the uninstall. Windows can take a moment to end a process tree,
+# so what is still there after 15 seconds counts. Returns the problems found.
+function Test-NothingLeftRunning([string]$InstallDir, [string]$After) {
+  $left = Get-InstalledProcesses $InstallDir
+  Write-Host "Processes from the install folder right after $After exited: $($left.Count)"
+  $deadline = (Get-Date).AddSeconds(15)
+  while ($left.Count -gt 0 -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    $left = Get-InstalledProcesses $InstallDir
+  }
+  if ($left.Count -eq 0) { return , @() }
+  $names = ($left | ForEach-Object { "$($_.ProcessName) ($($_.Id))" }) -join ', '
+  foreach ($process in $left) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  return , @("processes were still running from the install folder 15 seconds after ${After}: $names")
+}
+
 function Invoke-InstallStep {
   Write-Step "Install $MsiPath"
   $existing = Get-UninstallEntries
@@ -240,6 +276,47 @@ function Invoke-InstallStep {
   Write-Host 'PASS: install'
 }
 
+# Runs the self-check with the browser check's limit at 1 ms. Launching a
+# browser always takes longer than that, so the check always times out while
+# its launch is still under way. The run must still exit by itself, report
+# the timeout, and leave no browser running. Returns the problems found.
+function Invoke-TimedOutSelfCheck([string]$Exe, [string]$InstallDir) {
+  Write-Step 'Run the self-check with a browser limit of 1 ms'
+  $timeoutReport = Join-Path $OutDir 'self-check-timeout-report.json'
+  if (Test-Path -LiteralPath $timeoutReport) { Remove-Item -LiteralPath $timeoutReport -Force }
+  $started = Get-Date
+  $exitCode = Invoke-SelfCheckRun $Exe $InstallDir "--self-check --self-check-browser-timeout-ms=1 `"--self-check-out=$timeoutReport`""
+  $seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
+  Write-Host "Exit code: $exitCode after $seconds s (1 expected: a check failed)"
+
+  $problems = @()
+  $problems += Test-NothingLeftRunning $InstallDir 'the timed-out self-check'
+  if (Test-Path -LiteralPath $ScratchProfileDir) { $problems += "the timed-out self-check left its scratch browser profile at $ScratchProfileDir" }
+  if ($exitCode -ne 1) { $problems += "the timed-out self-check exited with code $exitCode, expected 1" }
+
+  $detail = 'no report'
+  if (-not (Test-Path -LiteralPath $timeoutReport)) {
+    $problems += "the timed-out self-check wrote no report at $timeoutReport"
+  }
+  else {
+    $report = Get-Content -LiteralPath $timeoutReport -Raw | ConvertFrom-Json
+    $browser = @($report.checks) | Where-Object { $_.name -eq 'browser' }
+    if (-not $browser) { $problems += "the timed-out self-check's report has no 'browser' check" }
+    else {
+      $detail = $browser.detail
+      Write-Host ("  [browser] ok: {0} ({1} ms): {2}" -f $browser.ok, $browser.durationMs, $browser.detail)
+      if ($browser.ok) { $problems += 'the browser check passed with a limit of 1 ms, so the limit was not applied' }
+      elseif ($browser.detail -notmatch 'did not finish within 1 ms') { $problems += "the browser check failed for another reason than its limit: $($browser.detail)" }
+    }
+    foreach ($name in @('questions', 'sqlite')) {
+      $check = @($report.checks) | Where-Object { $_.name -eq $name }
+      if (-not $check -or -not $check.ok) { $problems += "the '$name' check did not pass in the timed-out run" }
+    }
+  }
+  Add-Summary "### Self-check with the browser check timed out`n`nExit code $exitCode after $seconds s. Browser check: $($detail -replace '\|', '/')`n`nLeft running or left behind: $($problems.Count) problem(s)`n"
+  return , $problems
+}
+
 function Invoke-SelfCheckStep {
   Write-Step 'Run the installed app with --self-check'
   $state = Read-State
@@ -249,15 +326,7 @@ function Invoke-SelfCheckStep {
   $exe = Join-Path $installDir $ExeName
 
   if (Test-Path -LiteralPath $ReportPath) { Remove-Item -LiteralPath $ReportPath -Force }
-  Write-Host "`"$exe`" --self-check"
-  $process = Start-Process -FilePath $exe -ArgumentList '--self-check' -PassThru
-  $null = $process.Handle
-  if (-not $process.WaitForExit($SelfCheckTimeoutSeconds * 1000)) {
-    & taskkill.exe /PID $process.Id /T /F | Out-Null
-    foreach ($left in (Get-InstalledProcesses $installDir)) { Stop-Process -Id $left.Id -Force -ErrorAction SilentlyContinue }
-    throw "The self-check did not exit within $SelfCheckTimeoutSeconds seconds and was stopped."
-  }
-  $exitCode = $process.ExitCode
+  $exitCode = Invoke-SelfCheckRun $exe $installDir '--self-check'
   Write-Host "Self-check exit code: $exitCode (0 passed, 1 failed, 2 timed out)"
 
   if (-not (Test-Path -LiteralPath $ReportPath)) {
@@ -303,18 +372,10 @@ function Invoke-SelfCheckStep {
     $problems += 'the self-check created harness.db; it must not open the real database'
   }
 
-  # Nothing from the install folder may keep running: it would block the uninstall.
-  $deadline = (Get-Date).AddSeconds(15)
-  $left = Get-InstalledProcesses $installDir
-  while ($left.Count -gt 0 -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 500
-    $left = Get-InstalledProcesses $installDir
-  }
-  if ($left.Count -gt 0) {
-    $names = ($left | ForEach-Object { "$($_.ProcessName) ($($_.Id))" }) -join ', '
-    foreach ($process in $left) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
-    $problems += "processes were still running from the install folder after the self-check: $names"
-  }
+  $problems += Test-NothingLeftRunning $installDir 'the self-check'
+  if (Test-Path -LiteralPath $ScratchProfileDir) { $problems += "the scratch browser profile was left behind at $ScratchProfileDir" }
+
+  $problems += Invoke-TimedOutSelfCheck $exe $installDir
 
   if ($null -ne $state) {
     $state.selfCheckRan = $true
