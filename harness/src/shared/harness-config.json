@@ -54,6 +54,16 @@
       }
     }
   },
+  "google": {
+    "searchUrl": "https://google.com",
+    "pageLoadTimeoutMs": 60000,
+    "answerFoundTimeoutMs": 30000,
+    "selectors": {
+      "input": "[role=\"combobox\"][aria-label=\"Search\"]",
+      "searchResults": "#search"
+    }
+  },
+
   "trialTimeoutMs": 60000,
   "subjects": {
     "DOE_ORACLE": { "timerStartsAt": "trial_start", "confirmEnd": false },

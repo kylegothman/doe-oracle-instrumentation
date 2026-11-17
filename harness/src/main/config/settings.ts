@@ -10,6 +10,23 @@ export interface OracleSettings {
   searchEndpointPath: string
 }
 
+export interface GoogleSelectors {
+  /** The combobox search input field. */
+  input: string
+  /** The results container `#search`. */
+  searchResults: string
+}
+
+export interface GoogleSettings{
+  searchUrl: string
+
+  pageLoadTimeoutMs: number
+
+  answerFoundTimeoutMs: number
+
+  selectors: GoogleSelectors
+}
+
 /**
  * Which Copilot the harness drives. "Copilot" on the web is two products
  * behind one sign-in page (docs/copilot-spike.md):
@@ -115,6 +132,8 @@ export interface HarnessSettings {
   oracle: OracleSettings
   /** The Copilot product being driven, resolved from the config's `copilot.product`. */
   copilot: CopilotSettings
+
+  google: GoogleSettings
   /**
    * Per-subject time limit (UC-4), when the clock starts, and whether the
    * Tester confirms the end. The limit is 60 seconds for every subject by
@@ -170,6 +189,8 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
       searchEndpointPath: defaults.oracle.searchEndpointPath,
     },
     copilot: loadCopilotSettings(env[COPILOT_PRODUCT_ENV]?.trim()),
+    google: loadGoogleSettings(),
+
     trialPolicies,
   }
 }
@@ -195,6 +216,16 @@ function loadCopilotSettings(productOverride: string | undefined): CopilotSettin
     quietPeriodMs: positiveMs(defaults.copilot.quietPeriodMs, 'copilot.quietPeriodMs'),
     submitWaitMs: positiveMs(defaults.copilot.submitWaitMs, 'copilot.submitWaitMs'),
     submitConfirmMs: positiveMs(defaults.copilot.submitConfirmMs, 'copilot.submitConfirmMs'),
+  }
+}
+//newly added for proper loading into the return before trialPolicies
+function loadGoogleSettings(): GoogleSettings {
+  const searchUrl = parseHttpUrl(defaults.google.searchUrl, 'harness-config.json: google.searchUrl')
+  return {
+    searchUrl,
+    pageLoadTimeoutMs: positiveMs(defaults.google.pageLoadTimeoutMs, 'google.pageLoadTimeoutMs'),
+    answerFoundTimeoutMs: positiveMs(defaults.google.answerFoundTimeoutMs, 'google.answerFoundTimeoutMs'),
+    selectors: { ...defaults.google.selectors },
   }
 }
 
