@@ -200,6 +200,16 @@ function Test-NothingLeftRunning([string]$InstallDir, [string]$After) {
   return , @("processes were still running from the install folder 15 seconds after ${After}: $names")
 }
 
+# The report's own account of whether the app closed every browser it started
+# before it exited. Returns the problems found.
+function Test-ReportedCleanup($Report, [string]$Run) {
+  $cleanup = $Report.PSObject.Properties['cleanup']
+  if ($null -eq $cleanup) { return , @("the report of $Run does not say whether its browsers were closed (no 'cleanup' field)") }
+  Write-Host "Report of ${Run}: closed everything it started before exiting: $($cleanup.Value.ok)"
+  if (-not $cleanup.Value.ok) { return , @("$Run did not close everything it started: $($cleanup.Value.problem)") }
+  return , @()
+}
+
 function Invoke-InstallStep {
   Write-Step "Install $MsiPath"
   $existing = Get-UninstallEntries
@@ -279,7 +289,13 @@ function Invoke-InstallStep {
 # Runs the self-check with the browser check's limit at 1 ms. Launching a
 # browser always takes longer than that, so the check always times out while
 # its launch is still under way. The run must still exit by itself, report
-# the timeout, and leave no browser running. Returns the problems found.
+# the timeout, say it closed what it started, and leave no browser running.
+# Returns the problems found.
+#
+# Before the app closed its browsers itself (issue #72), this run already
+# left nothing behind on the runner: the browser was gone within a second of
+# the app exiting. So the process check alone cannot tell the two apart; the
+# report's 'cleanup' field can.
 function Invoke-TimedOutSelfCheck([string]$Exe, [string]$InstallDir) {
   Write-Step 'Run the self-check with a browser limit of 1 ms'
   $timeoutReport = Join-Path $OutDir 'self-check-timeout-report.json'
@@ -300,6 +316,7 @@ function Invoke-TimedOutSelfCheck([string]$Exe, [string]$InstallDir) {
   }
   else {
     $report = Get-Content -LiteralPath $timeoutReport -Raw | ConvertFrom-Json
+    $problems += Test-ReportedCleanup $report 'the timed-out self-check'
     $browser = @($report.checks) | Where-Object { $_.name -eq 'browser' }
     if (-not $browser) { $problems += "the timed-out self-check's report has no 'browser' check" }
     else {
@@ -372,6 +389,7 @@ function Invoke-SelfCheckStep {
     $problems += 'the self-check created harness.db; it must not open the real database'
   }
 
+  $problems += Test-ReportedCleanup $report 'the self-check'
   $problems += Test-NothingLeftRunning $installDir 'the self-check'
   if (Test-Path -LiteralPath $ScratchProfileDir) { $problems += "the scratch browser profile was left behind at $ScratchProfileDir" }
 

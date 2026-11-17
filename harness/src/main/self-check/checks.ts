@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { chromium } from 'playwright'
 import { Subject } from '../../shared/subjects'
 import type { BrowserLocation } from '../browser/browser-location'
 import { BrowserManager, type BrowserLauncher } from '../browser/browser-manager'
@@ -7,6 +8,7 @@ import { MetricsRepository } from '../data/metrics-repository'
 import { probeSqlite } from '../data/sqlite'
 import { QuestionBank } from '../execution/question-bank'
 import type { Check } from './self-check'
+import { TrackedLauncher } from './tracked-launcher'
 
 /** How many standard questions the harness ships with. */
 export const EXPECTED_QUESTION_COUNT = 12
@@ -98,24 +100,35 @@ export interface BrowserCheckOptions {
  * Oracle) and a persistent profile (Copilot, here on a scratch folder, never
  * the real profile). Headed, as in a trial. The pages are about:blank and a
  * page set from a string, so nothing outside the machine is contacted.
+ *
+ * Every launch goes through a TrackedLauncher, and `cleanup` closes whatever
+ * it started and removes the scratch profile. `run` ends with it, and the
+ * self-check calls it again when the check passes its limit and before the
+ * app exits, so a check abandoned mid-launch leaves no Chromium behind.
  */
 export function browserCheck(options: BrowserCheckOptions): Check {
+  const { location, profileDir } = options
+  const launcher = new TrackedLauncher(options.launcher ?? chromium)
+  let cleaning: Promise<void> | null = null
+  const cleanup = (): Promise<void> => {
+    cleaning ??= (async () => {
+      await launcher.closeAll()
+      rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    })()
+    return cleaning
+  }
   return {
     name: 'browser',
     timeoutMs: options.timeoutMs ?? BROWSER_CHECK_TIMEOUT_MS,
+    cleanup,
     run: async () => {
-      const { location, profileDir } = options
       if (options.packaged && location.source === 'cache') {
         throw new Error('a packaged app must use its bundled browser, not the Playwright cache')
       }
       rmSync(profileDir, { recursive: true, force: true })
       // The scratch profile stands in for Copilot's so the persistent launch
       // goes through the same code. Copilot itself is never opened.
-      const manager = new BrowserManager({
-        location,
-        profiles: { [Subject.COPILOT]: profileDir },
-        ...(options.launcher ? { launcher: options.launcher } : {}),
-      })
+      const manager = new BrowserManager({ location, profiles: { [Subject.COPILOT]: profileDir }, launcher })
       try {
         const page = await manager.getPage(Subject.DOE_ORACLE)
         await page.goto('about:blank')
@@ -137,10 +150,10 @@ export function browserCheck(options: BrowserCheckOptions): Check {
         }
 
         const from = location.source === 'bundled' ? location.executablePath : "Playwright's cache"
-        return `Chromium ${version} from ${from} opened a page, in the shared browser and on a scratch profile`
+        const times = launcher.launches.map((launch) => `${launch.kind} ${launch.durationMs} ms`).join(', ')
+        return `Chromium ${version} from ${from} opened a page, in the shared browser and on a scratch profile (launches: ${times})`
       } finally {
-        await manager.close().catch(() => undefined)
-        rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+        await cleanup()
       }
     },
   }
