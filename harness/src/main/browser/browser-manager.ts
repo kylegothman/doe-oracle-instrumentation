@@ -1,6 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type BrowserType, type LaunchOptions, type Page } from 'playwright'
 import { SUBJECT_LABELS, type Subject } from '../../shared/subjects'
-import { describeLaunchFailure, missingBundledBrowserMessage, type BrowserLocation } from './browser-location'
+import { describeLaunchFailure, unusableBrowserMessage, type BrowserLocation, type LaunchTarget } from './browser-location'
 
 /** Options of chromium.launchPersistentContext. */
 export type PersistentLaunchOptions = NonNullable<Parameters<BrowserType['launchPersistentContext']>[1]>
@@ -173,7 +173,7 @@ export class BrowserManager {
     try {
       return await this.launcher.launchPersistentContext(profile, this.launchOptions())
     } catch (error) {
-      throw this.toLaunchError(error, `${SUBJECT_LABELS[subject]} profile at ${profile}`)
+      throw this.toLaunchError(error, { kind: 'profile', label: SUBJECT_LABELS[subject], profileDir: profile })
     }
   }
 
@@ -185,18 +185,18 @@ export class BrowserManager {
    */
   private launchOptions(): { headless: boolean; executablePath?: string } {
     if (this.location.source === 'unusable') {
-      throw new BrowserLaunchError(missingBundledBrowserMessage(this.location.problem))
+      throw new BrowserLaunchError(unusableBrowserMessage(this.location))
     }
     return this.location.source === 'bundled'
       ? { headless: this.headless, executablePath: this.location.executablePath }
       : { headless: this.headless }
   }
 
-  private toLaunchError(error: unknown, what?: string): BrowserLaunchError {
+  private toLaunchError(error: unknown, target?: LaunchTarget): BrowserLaunchError {
     if (error instanceof BrowserLaunchError) {
       return error
     }
     const message = error instanceof Error ? error.message : String(error)
-    return new BrowserLaunchError(describeLaunchFailure(this.location, message, what))
+    return new BrowserLaunchError(describeLaunchFailure(this.location, message, target))
   }
 }

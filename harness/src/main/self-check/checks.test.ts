@@ -106,8 +106,15 @@ function fakeLauncher(version: string, overrides: { status?: string | null; hang
 }
 
 describe('browserCheck', () => {
-  const manifest = { playwrightVersion: '1.65.0', revision: '1254', browserVersion: '158.0.8127.18', executable: 'chromium-1254/chrome-win64/chrome.exe' }
-  const bundled: BrowserLocation = { source: 'bundled', executablePath: '/app/resources/browser/chromium-1254/chrome-win64/chrome.exe', manifest }
+  const manifest = {
+    playwrightVersion: '1.65.0',
+    revision: '1254',
+    browserVersion: '158.0.8127.18',
+    executable: 'chromium-1254/chrome-win64/chrome.exe',
+    platform: 'win32',
+    arch: 'x64',
+  }
+  const bundled = { source: 'bundled', executablePath: '/app/resources/browser/chromium-1254/chrome-win64/chrome.exe', manifest } satisfies BrowserLocation
 
   it('launches the bundled browser headed, shared and on the scratch profile, and opens only blank and local pages', async () => {
     const fake = fakeLauncher('158.0.8127.18')
@@ -149,10 +156,21 @@ describe('browserCheck', () => {
 
   it('fails without launching when a packaged app has no usable bundled browser', async () => {
     const fake = fakeLauncher('158.0.8127.18')
-    const unusable: BrowserLocation = { source: 'unusable', problem: 'browser.json could not be read' }
+    const unusable: BrowserLocation = { source: 'unusable', problem: 'browser.json could not be read', remedy: 'reinstall' }
 
     await expect(browserCheck({ location: unusable, profileDir: join(dir, 'p'), packaged: true, launcher: fake.launcher }).run()).rejects.toThrow(
       /missing or damaged \(browser\.json could not be read\)/,
+    )
+    expect(fake.launcher.launch).not.toHaveBeenCalled()
+  })
+
+  it('reports a bundle built for another platform as a mismatch, without launching', async () => {
+    const fake = fakeLauncher('158.0.8127.18')
+    const problem = 'The browser in this installer was built for macOS (arm64), but this harness is the Windows (x64) build.'
+    const mismatch: BrowserLocation = { source: 'unusable', problem, remedy: 'new-installer' }
+
+    await expect(browserCheck({ location: mismatch, profileDir: join(dir, 'p'), packaged: true, launcher: fake.launcher }).run()).rejects.toThrow(
+      `${problem} Reinstalling will not fix it.`,
     )
     expect(fake.launcher.launch).not.toHaveBeenCalled()
   })
