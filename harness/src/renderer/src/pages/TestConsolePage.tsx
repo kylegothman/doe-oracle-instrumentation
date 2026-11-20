@@ -358,7 +358,7 @@ function ActiveTrialCard({
       )}
 
       <div className="actions actions-split">
-        <button type="button" className="button button-ghost" onClick={() => trialId && onCancel(trialId)} disabled={!trialId} data-testid="cancel-trial">
+        <button type="button" className="button button-secondary" onClick={() => trialId && onCancel(trialId)} disabled={!trialId} data-testid="cancel-trial">
           Cancel Trial
         </button>
         {search && (
