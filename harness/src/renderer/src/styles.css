@@ -1,52 +1,572 @@
+/*
+ * The look of the harness, from the Figma "Mockups" page (E6). Every color,
+ * space, radius and text style below is one of the design's variables, so a
+ * change in the design maps to one line here.
+ */
+
 :root {
-  color-scheme: light dark;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
+  color-scheme: dark;
+
+  --bg-app: #0d1117;
+  --bg-surface: #161b22;
+  --bg-raised: #1c2330;
+  --bg-input: #0f141b;
+  --border-default: #2a313c;
+  --border-strong: #3a4250;
+  --border-focus: #4c8dff;
+  --text-primary: #e6edf3;
+  --text-secondary: #9ba6b2;
+  --text-muted: #6b7480;
+  --text-on-accent: #ffffff;
+  --accent: #4c8dff;
+  --accent-text: #79a8ff;
+  --accent-subtle: #4c8dff24;
+  --success-text: #4ac26b;
+  --success-subtle: #3fb95024;
+  --success-border: #3fb95066;
+  --warning-text: #e3b341;
+  --warning-subtle: #d2992224;
+  --warning-border: #d2992273;
+  --danger-text: #ff7b72;
+  --danger-subtle: #f8514924;
+  --danger-border: #f8514973;
+
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 999px;
+
+  --font-sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, ui-monospace, monospace;
+
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-primary);
+  background: var(--bg-app);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  min-height: 100vh;
+  background: var(--bg-app);
 }
 
-.app {
-  max-width: 48rem;
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* Text styles */
+
+.caption {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.1px;
+  color: var(--text-secondary);
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+/* Shell: header, then the page, which scrolls */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-16);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.brand-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+}
+
+.brand-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.tabs {
+  display: flex;
+}
+
+.tab {
+  padding: var(--space-12);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-16);
+}
+
+.content > section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  max-width: 720px;
   margin: 0 auto;
-  padding: 2rem 1.5rem;
 }
 
-h1 {
-  font-size: 1.75rem;
-  margin: 0 0 0.5rem;
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
 }
 
-h2 {
-  font-size: 1.125rem;
-  margin: 1.5rem 0 0.5rem;
+/* Card */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-16);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
+.heading-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+/* Fields */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+fieldset.field > legend {
+  padding: 0;
+  margin-bottom: var(--space-6);
+}
+
+.field-row {
+  display: flex;
+  gap: var(--space-12);
+}
+
+.control {
+  width: 100%;
+  padding: var(--space-6) var(--space-12);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.control:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.control:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.select {
+  appearance: none;
+  padding-right: calc(var(--space-12) + 16px + var(--space-8));
+  background-image: url('./assets/chevron-down.svg');
+  background-repeat: no-repeat;
+  background-position: right var(--space-12) center;
+  background-size: 16px 16px;
+  cursor: pointer;
+}
+
+.select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* The date picker's own icon is dark by default; make it readable on the dark input. */
+.control::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+
+/* Segmented control: a radio group drawn as joined buttons */
+
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.segment {
+  position: relative;
+}
+
+.segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segment span {
+  display: block;
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.segment input:checked + span {
+  background: var(--bg-raised);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.segment input:focus-visible + span {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+/* Radio option with a description */
+
+.radio-option {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-12);
+  padding: var(--space-12);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.radio-option:has(input:checked) {
+  background: var(--accent-subtle);
+  border-color: var(--border-focus);
+}
+
+.radio-option:has(input:focus-visible) {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.radio-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.radio-mark {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-full);
+}
+
+.radio-option input:checked ~ .radio-mark {
+  border: 0;
+  background: url('./assets/radio-selected.svg') no-repeat center / 16px 16px;
+}
+
+.radio-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.radio-label {
+  font-weight: 500;
+}
+
+/* Buttons */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-12);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button-secondary {
+  background: var(--bg-raised);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+/* Banner */
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid;
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}
+
+.banner-title {
+  margin: 0;
+  font-weight: 500;
+}
+
+.banner-message {
+  color: var(--text-secondary);
+}
+
+.banner-message p {
+  margin: 0;
+}
+
+.banner-message ul {
+  margin: 0;
+  padding-left: var(--space-16);
+}
+
+.banner-info {
+  background: var(--accent-subtle);
+  border-color: var(--border-focus);
+}
+
+.banner-info .banner-title {
+  color: var(--accent-text);
+}
+
+.banner-success {
+  background: var(--success-subtle);
+  border-color: var(--success-border);
+}
+
+.banner-success .banner-title {
+  color: var(--success-text);
+}
+
+.banner-warning {
+  background: var(--warning-subtle);
+  border-color: var(--warning-border);
+}
+
+.banner-warning .banner-title {
+  color: var(--warning-text);
+}
+
+.banner-danger {
+  background: var(--danger-subtle);
+  border-color: var(--danger-border);
+}
+
+.banner-danger .banner-title {
+  color: var(--danger-text);
+}
+
+/*
+ * The Test Console as it was before E6. Story #38 replaces it with the
+ * design; until then its old classes use the theme so it stays readable.
+ */
+
+.legacy-console {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.legacy-console h2 {
+  margin: var(--space-16) 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.legacy-console p {
+  margin: 0;
+}
+
+.legacy-console button {
+  padding: var(--space-6) var(--space-12);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.legacy-console button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.legacy-console button.secondary {
+  background: var(--bg-raised);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.legacy-console select,
+.legacy-console input[type='number'] {
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.legacy-console input[type='number'] {
+  width: 7rem;
+}
+
+.legacy-console .actions {
+  justify-content: flex-start;
 }
 
 .session-bar {
-  margin: 0 0 1rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  font-size: 0.875rem;
-}
-
-.session-bar code {
-  font-size: 0.875rem;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
 }
 
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.25rem 1rem;
+  gap: var(--space-4) var(--space-16);
   margin: 0;
 }
 
 .facts dt {
-  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 .facts dd {
@@ -54,23 +574,19 @@ h2 {
 }
 
 .error {
-  color: #b42318;
+  color: var(--danger-text);
 }
 
 .ok {
-  color: #067647;
+  color: var(--success-text);
 }
 
 .error-box {
-  border: 1px solid #b42318;
-  border-left-width: 4px;
-  border-radius: 4px;
-  padding: 0.75rem 1rem;
-  color: #b42318;
-}
-
-.error-box p {
-  margin: 0.25rem 0;
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
+  background: var(--danger-subtle);
+  color: var(--danger-text);
 }
 
 .error-box code {
@@ -78,88 +594,43 @@ h2 {
   word-break: break-word;
 }
 
-button {
-  font: inherit;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #1f3a5f;
-  background: #1f3a5f;
-  color: #fff;
-  cursor: pointer;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-button.secondary {
-  background: transparent;
-  color: inherit;
-  border-color: color-mix(in srgb, currentColor 40%, transparent);
-}
-
-select,
-input[type='number'] {
-  font: inherit;
-  padding: 0.35rem 0.5rem;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
-  background: transparent;
-  color: inherit;
-}
-
-input[type='number'] {
-  width: 7rem;
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-}
-
 .status-line {
   font-weight: 600;
 }
 
-.confirm-box {
-  margin: 0.5rem 0;
-  padding: 0.5rem 0.75rem;
-  border-left: 4px solid #1f3a5f;
-  background: color-mix(in srgb, currentColor 6%, transparent);
-}
-
+.confirm-box,
 .result {
-  margin-top: 1rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  border-radius: 6px;
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
 }
 
 .answer-preview {
   white-space: pre-wrap;
-  margin: 0.75rem 0 0;
+  margin-top: var(--space-12) !important;
 }
 
 .trials {
-  border-collapse: collapse;
   width: 100%;
-  font-size: 0.9rem;
+  border-collapse: collapse;
 }
 
 .trials th,
 .trials td {
+  padding: var(--space-4) var(--space-8);
+  border-bottom: 1px solid var(--border-default);
   text-align: left;
-  padding: 0.25rem 0.5rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.trials th {
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 .events {
-  margin: 0.5rem 0;
-  padding-left: 1.25rem;
-  font-size: 0.875rem;
+  margin: 0;
+  padding-left: var(--space-16);
 }
 
 .event-status {
@@ -169,14 +640,14 @@ input[type='number'] {
 
 .events li[data-status='failed'],
 .events li[data-status='aborted'] {
-  color: #b42318;
+  color: var(--danger-text);
 }
 
 .events li[data-status='completed'] {
-  color: #067647;
+  color: var(--success-text);
 }
 
 .events li[data-status='awaiting_submit'],
 .events li[data-status='awaiting_confirmation'] {
-  color: #8a5a00;
+  color: var(--warning-text);
 }

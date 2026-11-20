@@ -90,11 +90,21 @@ harness/
       data/                 MetricsRepository (SQLite, versioned migrations), ErrorLog (failed saves kept for retry), and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
+      src/App.tsx           the shell: header, tabs, one page per tab
+      src/pages/            one file per page
+      src/components/ui.tsx the design's building blocks (Card, Field, Segmented, RadioOption, Banner)
+      src/styles.css        the design's colors, spacing, and text styles as CSS variables
     shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult; FailedWriteSummary)
   .browser-bundle/          Chromium fetched for the installer (ignored by git)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
 ```
+
+## The window
+
+The window follows the team's Figma mockups (E6): a dark theme, a header with three tabs (Test Console, Expert Responses, Export), and one page per tab. Every color, space, radius, and text style in the design is a CSS variable at the top of `src/renderer/src/styles.css`, named after the design's variable (`color/bg/surface` is `--bg-surface`). The fonts, Inter and JetBrains Mono, ship inside the app (`@fontsource`, OFL license), so the window looks the same with no network.
+
+All three pages stay mounted and only the active one is shown, so switching tabs during a trial does not interrupt it. Export is a placeholder until story #40, and Expert Responses until E7 builds it. The Test Console keeps the panels it had before E6 until story #38 rebuilds it to the design.
 
 ## Security baseline
 
