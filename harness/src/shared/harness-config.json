@@ -8,7 +8,7 @@
     "product": "m365",
     "quietPeriodMs": 2000,
     "submitWaitMs": 300000,
-    "submitConfirmMs": 2000,
+    "submitConfirmMs": 10000,
     "products": {
       "m365": {
         "label": "Microsoft 365 Copilot Chat (work or school account)",
