@@ -11,6 +11,45 @@ export interface OracleSettings {
 }
 
 /**
+ * Where things are on Google's pages. Plain CSS, because every selector but
+ * `input` is used inside the page; see docs/google-spike.md for how each one
+ * was chosen and which have been checked against the live site.
+ */
+export interface GoogleSelectors {
+  /** The search box on the home page. A list: the first match is used. */
+  input: string
+  /** The list of results, tried in order; the first one present is read. */
+  resultContainers: string[]
+  /** The title inside a result's link. Its closest link is the result's URL. */
+  resultTitle: string
+  /** Known AI overview containers, never captured. Empty when none is known; the heading rule below still applies. */
+  aiOverview: string
+  /** Elements that can carry the AI overview's heading (see GoogleSettings.aiOverviewLabels). */
+  aiOverviewHeading: string
+}
+
+export interface GoogleSettings {
+  /** The home page each trial starts from. */
+  searchUrl: string
+  /** Path of the results page a submitted search navigates to. */
+  resultsPath: string
+  /** The URL parameter that carries the search text. */
+  queryParam: string
+  /** Path prefix of the page Google shows instead of its own when it suspects automated traffic. */
+  challengePath: string
+  /** How long the harness waits for the Tester's Enter before the trial is aborted. */
+  submitWaitMs: number
+  /**
+   * How long the Tester has, once the results have loaded, to report whether
+   * the answer is on the page. It becomes Google's TrialPolicy.answerLimitMs.
+   */
+  answerFoundTimeoutMs: number
+  /** Heading texts that mark the AI overview, compared without case. Its block is never captured. */
+  aiOverviewLabels: string[]
+  selectors: GoogleSelectors
+}
+
+/**
  * Which Copilot the harness drives. "Copilot" on the web is two products
  * behind one sign-in page (docs/copilot-spike.md):
  * - m365: Microsoft 365 Copilot Chat, what a work or school account gets.
@@ -109,21 +148,37 @@ export interface TrialPolicy {
    * Oracle's end is unambiguous and needs no confirmation.
    */
   confirmEnd: boolean
+  /**
+   * Whether the Tester reports the answer once the subject has completed
+   * (story #37). On for Google only: completion is the results page
+   * finishing loading, and the Tester then says whether the answer is on
+   * the page. The clock is already stopped. Left out means false.
+   */
+  answerFound?: boolean
+  /**
+   * With answerFound: how long the Tester has, counted from completion, to
+   * report the answer. When it runs out the trial is saved as
+   * NO_ANSWER_FOUND, which is a result and not a failure. Separate from
+   * timeoutMs, which covers only the subject. Left out means no limit.
+   */
+  answerLimitMs?: number
 }
 
 export interface HarnessSettings {
   oracle: OracleSettings
   /** The Copilot product being driven, resolved from the config's `copilot.product`. */
   copilot: CopilotSettings
+  google: GoogleSettings
   /**
-   * Per-subject time limit (UC-4), when the clock starts, and whether the
-   * Tester confirms the end. The limit is 60 seconds for every subject by
-   * default, from src/shared/harness-config.json. Copilot's clock starts at
-   * the Tester's Enter: its adapter resolves start() at that moment.
-   * TODO(#37): Google's clock starts at the Tester's submit. Whether the
-   * limit should also cover the Tester finding the answer on the results
-   * page is an open question for the sponsor; until it is settled the
-   * clock stops when the adapter reports completion.
+   * Per-subject time limit (UC-4), when the clock starts, and what the
+   * Tester does at the end. The limit is 60 seconds for every subject by
+   * default, from src/shared/harness-config.json. Copilot's and Google's
+   * clocks start at the Tester's Enter: their adapters resolve start() at
+   * that moment. For Google the limit covers Enter to the results page
+   * finishing loading, and nothing after it: the time the Tester takes to
+   * find the answer on the page has its own limit, answerLimitMs, 120
+   * seconds from `google.answerFoundTimeoutMs`. HARNESS_TRIAL_TIMEOUT_MS
+   * does not change that one.
    */
   trialPolicies: Record<Subject, TrialPolicy>
 }
@@ -151,15 +206,18 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
   const timeoutOverride = env[TRIAL_TIMEOUT_ENV]?.trim()
   const timeoutMs = timeoutOverride ? parseTimeout(timeoutOverride) : null
 
+  const google = loadGoogleSettings()
   const trialPolicies = {} as Record<Subject, TrialPolicy>
   for (const subject of SUBJECTS) {
     const configured = defaults.subjects[subject] as
-      | { timerStartsAt: string; timeoutMs?: number; confirmEnd?: boolean }
+      | { timerStartsAt: string; timeoutMs?: number; confirmEnd?: boolean; answerFound?: boolean }
       | undefined
     trialPolicies[subject] = {
       timeoutMs: timeoutMs ?? configured?.timeoutMs ?? defaults.trialTimeoutMs,
       startsAt: parseTimerStart(subject, configured?.timerStartsAt ?? 'trial_start'),
       confirmEnd: configured?.confirmEnd ?? false,
+      // Google is the only subject whose answer the Tester reports, so the answer limit lives with its settings.
+      ...(configured?.answerFound ? { answerFound: true, answerLimitMs: google.answerFoundTimeoutMs } : {}),
     }
   }
 
@@ -170,6 +228,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
       searchEndpointPath: defaults.oracle.searchEndpointPath,
     },
     copilot: loadCopilotSettings(env[COPILOT_PRODUCT_ENV]?.trim()),
+    google,
     trialPolicies,
   }
 }
@@ -195,6 +254,19 @@ function loadCopilotSettings(productOverride: string | undefined): CopilotSettin
     quietPeriodMs: positiveMs(defaults.copilot.quietPeriodMs, 'copilot.quietPeriodMs'),
     submitWaitMs: positiveMs(defaults.copilot.submitWaitMs, 'copilot.submitWaitMs'),
     submitConfirmMs: positiveMs(defaults.copilot.submitConfirmMs, 'copilot.submitConfirmMs'),
+  }
+}
+function loadGoogleSettings(): GoogleSettings {
+  const configured = defaults.google
+  return {
+    searchUrl: parseHttpUrl(configured.searchUrl, 'harness-config.json: google.searchUrl'),
+    resultsPath: configured.resultsPath,
+    queryParam: configured.queryParam,
+    challengePath: configured.challengePath,
+    submitWaitMs: positiveMs(configured.submitWaitMs, 'google.submitWaitMs'),
+    answerFoundTimeoutMs: positiveMs(configured.answerFoundTimeoutMs, 'google.answerFoundTimeoutMs'),
+    aiOverviewLabels: [...configured.aiOverviewLabels],
+    selectors: { ...configured.selectors, resultContainers: [...configured.selectors.resultContainers] },
   }
 }
 

@@ -26,13 +26,13 @@ describe('loadSettings', () => {
     expect(() => loadSettings({ HARNESS_ORACLE_URL: 'ftp://oracle.test' })).toThrow(/must use http or https/)
   })
 
-  it('gives every subject a 60-second limit; the Oracle clock starts with the trial, the others at submit; only Copilot confirms the end', () => {
+  it('gives every subject a 60-second limit; the Oracle clock starts with the trial, the others at submit; Copilot confirms the end and Google reports the answer', () => {
     const { trialPolicies } = loadSettings({})
 
     expect(trialPolicies).toEqual({
       [Subject.DOE_ORACLE]: { timeoutMs: 60_000, startsAt: 'trial_start', confirmEnd: false },
       [Subject.COPILOT]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: true },
-      [Subject.GOOGLE]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: false },
+      [Subject.GOOGLE]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: false, answerFound: true, answerLimitMs: 120_000 },
     })
   })
 
@@ -41,6 +41,8 @@ describe('loadSettings', () => {
 
     expect(trialPolicies[Subject.DOE_ORACLE]).toEqual({ timeoutMs: 5_000, startsAt: 'trial_start', confirmEnd: false })
     expect(trialPolicies[Subject.GOOGLE].timeoutMs).toBe(5_000)
+    // The answer limit is the Tester's reading time, not the subject's: the override leaves it alone.
+    expect(trialPolicies[Subject.GOOGLE].answerLimitMs).toBe(120_000)
   })
 
   it('rejects a time limit that is not a positive whole number of milliseconds', () => {
@@ -90,6 +92,41 @@ describe('loadSettings: Copilot', () => {
 
     expect(loadSettings({}).copilot.selectors.input).toBe('[role="textbox"][aria-label="Message Copilot"]')
     expect(loadSettings({}).copilot.signInHosts).not.toContain('example.test')
+  })
+})
+
+describe('loadSettings: Google', () => {
+  it('starts each trial at the home page and knows a submitted search by its path and parameter', () => {
+    const { google } = loadSettings({})
+
+    expect(google.searchUrl).toBe('https://www.google.com/')
+    expect(google.resultsPath).toBe('/search')
+    expect(google.queryParam).toBe('q')
+  })
+
+  it('waits 5 minutes for the Tester\'s Enter and gives 120 seconds to report the answer', () => {
+    const { google } = loadSettings({})
+
+    expect(google.submitWaitMs).toBe(300_000)
+    expect(google.answerFoundTimeoutMs).toBe(120_000)
+  })
+
+  it('reads the results list, knows a result by its title link, and knows the AI overview by its heading', () => {
+    const { google } = loadSettings({})
+
+    expect(google.selectors.resultContainers).toEqual(['#rso', '#search'])
+    expect(google.selectors.resultTitle).toBe('a[href] h3')
+    expect(google.aiOverviewLabels).toEqual(['AI Overview'])
+  })
+
+  it('gives each caller its own settings object, so a caller cannot change the defaults', () => {
+    const first = loadSettings({}).google
+    first.selectors.resultContainers.push('#changed')
+    first.aiOverviewLabels.push('changed')
+
+    const second = loadSettings({}).google
+    expect(second.selectors.resultContainers).toEqual(['#rso', '#search'])
+    expect(second.aiOverviewLabels).toEqual(['AI Overview'])
   })
 })
 

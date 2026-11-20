@@ -74,7 +74,7 @@ harness/
   electron-builder.yml      installer packaging (MSI); ships config/ and the bundled Chromium as extra resources
   config/questions.json     the 12 standard questions, read at startup by QuestionBank
   scripts/                  bundle-browser.mjs (Chromium for the installer), msi-smoke-test.ps1 (install, self-check, uninstall), reference-machine-spec.ps1
-  docs/                     install-test.md, reference-machine.md, run-the-oracle.md, copilot-spike.md
+  docs/                     install-test.md, reference-machine.md, run-the-oracle.md, copilot-spike.md, google-spike.md
   eslint.config.mjs         lint rules (the renderer may not import Electron or Node)
   vitest.config.ts          unit test settings
   tsconfig.node.json        TypeScript for main, preload, shared
@@ -83,7 +83,7 @@ harness/
     main/                   Electron main process (Node)
       index.ts              app lifecycle and window creation
       execution/            TrialController, FailureDetector, TimingService, SessionManager, QuestionBank, IpcRouter, IPC handlers
-      adapters/             SubjectAdapter interface and one adapter per system under test (OracleAdapter, with its chat fixture under __fixtures__)
+      adapters/             SubjectAdapter interface and one adapter per system under test (OracleAdapter, CopilotAdapter, GoogleAdapter), with their saved test pages under __fixtures__
       browser/              BrowserManager: launches and owns the Playwright Chromium window; browser-location picks the bundled copy or the cache
       self-check/           the --self-check mode: start-up checks that write a report and exit
       config/               settings (Oracle URL, per-subject time limits)
@@ -117,7 +117,7 @@ Only plain data that survives `structuredClone` may cross the bridge.
 
 `BrowserManager` (`src/main/browser`) launches headed Chromium through Playwright from the Electron main process, gives each system under test its own browser context and page, and closes everything when the harness quits. The windows are headed on purpose: the Tester watches the trial happen.
 
-The Oracle runs in a throw-away context of a shared Chromium, gone when the harness quits. Copilot runs in its own Chromium on a persistent profile folder, `browser-profiles/copilot` under the per-user app data folder (the same place as `harness.db`, never the repository), so whatever Microsoft lets the browser keep survives a relaunch. How much that is depends on the account's sign-in policy: the work tenant tested never offered "Stay signed in?", and its sign-in lasted only until the harness quit, so the Tester signed in again at each launch (three restarts on 2026-11-14, one through the normal quit path). The harness only hands the folder's path to Playwright; it never reads cookies or tokens from it, and it does nothing to keep a session that the sign-in policy ends. Delete the folder to sign out for good.
+The Oracle and Google each run in a throw-away context of a shared Chromium, gone when the harness quits. Google's context has no profile folder and is never signed in, so no account or earlier history shapes its results (story #36). The context lasts for the launch, not for one trial: cookies Google sets carry from one Google trial to the next until the harness quits. Quit and relaunch for a context with no cookies at all. Copilot runs in its own Chromium on a persistent profile folder, `browser-profiles/copilot` under the per-user app data folder (the same place as `harness.db`, never the repository), so whatever Microsoft lets the browser keep survives a relaunch. How much that is depends on the account's sign-in policy: the work tenant tested never offered "Stay signed in?", and its sign-in lasted only until the harness quit, so the Tester signed in again at each launch (three restarts on 2026-11-14, one through the normal quit path). The harness only hands the folder's path to Playwright; it never reads cookies or tokens from it, and it does nothing to keep a session that the sign-in policy ends. Delete the folder to sign out for good.
 
 **Open Copilot to sign in** in the window brings the Copilot window to the front on the chat page and reports what it shows: signed in (the question input is there), signed out (the sign-in landing page or a sign-in host), offline, or unknown. Signing in, including any second factor, is done by the Tester in that window; the harness never types credentials. A Copilot trial that finds the page signed out is aborted, not saved, with a message saying to sign in first.
 
@@ -143,31 +143,41 @@ When a launch fails, the trial is not run, and the message gives the fix that ca
 
 1. For the Oracle, start it: Ollama, its Flask backend, and its Vite frontend (see `docs/run-the-oracle.md`). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else. For Copilot, sign in with **Open Copilot to sign in** after launching the harness, unless the window already shows the chat (see "Driving Copilot").
 2. From `harness/`, run `npm run dev`. The window shows this launch's session ID in the bar at the top; every trial saved during the launch carries it.
-3. Pick the subject and click **Run … trial (Q1)**. For the Oracle, a Chromium window opens on the chat page, the harness types "What is combinatorial testing?", presses Enter, and waits for the answer. For Copilot, the harness types the question in the Copilot window and the status line says **Press Enter in the Copilot window**; you press Enter, and when the answer has finished the status line gives the detected response time with **Confirm**, an end you can adjust (seconds after your Enter) with **Adjust and confirm**, and **Cancel**. Status events (`started`, `awaiting submit`, `first response`, `awaiting confirmation`, `completed`, `failed`, `cancelled`, or `aborted`) appear under the buttons as they happen.
+3. Pick the subject and click **Run … trial (Q1)**. For the Oracle, a Chromium window opens on the chat page, the harness types "What is combinatorial testing?", presses Enter, and waits for the answer. For Copilot, the harness types the question in the Copilot window and the status line says **Press Enter in the Copilot window**; you press Enter, and when the answer has finished the status line gives the detected response time with **Confirm**, an end you can adjust (seconds after your Enter) with **Adjust and confirm**, and **Cancel**. Google is run by the main process the same way (see "Driving Google"), but this window does not list it yet: the Test Console of E6 adds the subject and its Answer Found and No Answer buttons. Status events (`started`, `awaiting submit`, `first response`, `awaiting confirmation`, `completed`, `failed`, `cancelled`, or `aborted`) appear under the buttons as they happen.
 4. The result panel shows the status, begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. A failed trial shows its failure type and message instead. The saved-trials table below reads back from the database, so a trial from an earlier launch is still listed.
 
 ### What happens underneath
 
 `TrialController` (`src/main/execution/trial-controller.ts`) is the Test Execution core: every subject runs through it the same way. It holds one adapter per subject (`SubjectAdapter`, `src/main/adapters/subject-adapter.ts`), runs one trial at a time, and drives the adapter through `start`, `waitForFirstResponse`, `waitForCompletion`, and `captureAnswer`, recording the three timing marks with `TimingService` and saving the trial through `MetricsRepository`. `SessionManager` starts one session per launch (saved in the `sessions` table) and builds the data set name as subject code plus local date, for example `DOE_ORACLE-2026-11-12`. `QuestionBank` reads the 12 standard questions from `config/questions.json`.
 
-Each subject has a time limit, 60 seconds by default (`trialTimeoutMs` in `src/shared/harness-config.json`, or `HARNESS_TRIAL_TIMEOUT_MS` to override it for a run). When the clock starts is also per subject (`timerStartsAt`): for the Oracle it starts as the trial starts, before the page is opened, so a hang anywhere ends within the limit; for Copilot it starts at the Tester's Enter, so a slow Tester cannot cause a false timeout; Google will work like Copilot. It stops when completion is reached. A trial that runs out of time is saved as a `TIMEOUT` failure.
+Each subject has a time limit, 60 seconds by default (`trialTimeoutMs` in `src/shared/harness-config.json`, or `HARNESS_TRIAL_TIMEOUT_MS` to override it for a run). When the clock starts is also per subject (`timerStartsAt`): for the Oracle it starts as the trial starts, before the page is opened, so a hang anywhere ends within the limit; for Copilot and Google it starts at the Tester's Enter, so a slow Tester cannot cause a false timeout. It stops when completion is reached, which for Google is the results page finishing loading. A trial that runs out of time is saved as a `TIMEOUT` failure.
 
 A subject can also require the Tester to confirm the end (`confirmEnd`, on for Copilot): once the adapter reports completion and the clock has stopped, the controller sends `awaiting_confirmation` with the detected begin and end and waits, for as long as it takes, for `confirmCompletion(trialId, endMs?)` through the `trial:confirm` channel. Without `endMs` the detected end stands; with it the end is replaced and the response time recomputed. Only then is the answer captured and the trial saved. `trial:cancel` (`cancelTrial`) ends a running trial at any point, including while waiting for the Tester's Enter or confirmation, and saves nothing.
+
+A subject can instead have the Tester report the answer (`answerFound`, on for Google). Once the results page has loaded and the clock has stopped, the controller sends `awaiting_confirmation` with the Enter (`beginMs`), the load (`endMs`), and a message saying what to do. From there:
+
+| The Tester | Call | Saved as |
+| --- | --- | --- |
+| clicks Answer Found | `confirmCompletion(trialId)` on `trial:confirm`, without `endMs` (an adjusted end is refused for Google) | `SUCCESS`, with the answer, the time to answer, and the source URL |
+| clicks No Answer | `reportNoAnswer(trialId)` on `trial:no-answer` | `NO_ANSWER_FOUND` |
+| does neither for 120 seconds after the results loaded | none | `NO_ANSWER_FOUND` |
+
+`NO_ANSWER_FOUND` is a result, not a failure: the trial keeps its page-load time, has no answer, no time to answer, no source, and no `failed_requests` row, and the event sent is `completed` with a message saying which of the two it was. The 120 seconds are the answer limit, `google.answerFoundTimeoutMs` in `src/shared/harness-config.json`. It is separate from the 60-second trial limit, which covers only Enter to the results loading, and `HARNESS_TRIAL_TIMEOUT_MS` does not change it.
 
 ### Failures
 
 `FailureDetector` (`src/main/execution/failure-detector.ts`) classifies what the adapter or the clock observed into one of four types, in this order of precedence:
 
-| Type | Rule | How the Oracle adapter sees it | How the Copilot adapter sees it |
-| --- | --- | --- | --- |
-| `TIMEOUT` | the subject's clock ran out | the controller's timer | the controller's timer, running from the Tester's Enter |
-| `ERROR_RESPONSE` | the subject's endpoint answered with HTTP 400 or higher, or the subject showed an error in place of an answer | the `response` event's status for the POST to `/api/search` | an alert shown instead of the answer, an error completion on the ChatHub socket, or a socket handshake refused with a status |
-| `UNREACHABLE` | a connection or navigation error, including the Flask backend being down while the frontend loads | `page.goto` failing, the POST's `requestfailed` event, or the page showing "Error searching for … Failed to fetch" before any request left | `page.goto` failing, the "No internet connection" screen, or the socket failing or closing before the stream completed with no finished marker following |
-| `EMPTY_ANSWER` | the answer is empty or only whitespace | an answer bubble that stays empty once the page is idle; the controller also checks every captured answer | a message marked finished with no answer text |
+| Type | Rule | How the Oracle adapter sees it | How the Copilot adapter sees it | How the Google adapter sees it |
+| --- | --- | --- | --- | --- |
+| `TIMEOUT` | the subject's clock ran out | the controller's timer | the controller's timer, running from the Tester's Enter | the controller's timer: the results page did not finish loading within 60 seconds of the Tester's Enter |
+| `ERROR_RESPONSE` | the subject's endpoint answered with HTTP 400 or higher, or the subject showed an error in place of an answer | the `response` event's status for the POST to `/api/search` | an alert shown instead of the answer, an error completion on the ChatHub socket, or a socket handshake refused with a status | the results page answering with HTTP 400 or higher, except 429 (see "Unusual traffic") |
+| `UNREACHABLE` | a connection or navigation error, including the Flask backend being down while the frontend loads | `page.goto` failing, the POST's `requestfailed` event, or the page showing "Error searching for … Failed to fetch" before any request left | `page.goto` failing, the "No internet connection" screen, or the socket failing or closing before the stream completed with no finished marker following | `page.goto` failing for the home page, or the search request failing before a response |
+| `EMPTY_ANSWER` | the answer is empty or only whitespace | an answer bubble that stays empty once the page is idle; the controller also checks every captured answer | a message marked finished with no answer text | Answer Found clicked when the page gave no text: a results page with no results, or a page opened from a result with nothing highlighted |
 
 A refusal to answer is an answer, not a failure. On a failure the controller disposes the adapter (bounded by 3 seconds), stops the clock, saves the trial as `FAILED` with whichever marks it reached plus a `failed_requests` row (type, message, elapsed milliseconds), sends a `failed` event, and returns the failed trial to the UI. The harness is ready for the next trial as soon as that returns, within 5 seconds of the failure (NFR-3).
 
-Two outcomes are never saved: a trial the Tester cancels (the **Cancel** button, `cancelTrial`) and a trial the harness itself could not run, for example because Playwright's Chromium is missing, the page was closed under the adapter, Copilot is signed out, the typed question was changed before it was sent, or the Tester never pressed Enter within the submit wait (`copilot.submitWaitMs`, 5 minutes). Those report `cancelled` or `aborted` with the reason.
+Two outcomes are never saved: a trial the Tester cancels (the **Cancel** button, `cancelTrial`) and a trial the harness itself could not run, for example because Playwright's Chromium is missing, the page was closed under the adapter, Copilot is signed out, the typed question was changed before it was sent, the Tester never pressed Enter within the submit wait (`copilot.submitWaitMs` and `google.submitWaitMs`, 5 minutes each), or Google showed its "unusual traffic" check. Those report `cancelled` or `aborted` with the reason.
 
 ## Driving the Oracle
 
@@ -202,6 +212,48 @@ The stream is over when the Stop button reverts to Send or the message's actions
 The ChatHub socket is read for three things only: the request frame (the submit cross-check), the completion record (so a socket closing early is told apart from one closing after the answer), and the citation URLs. Its frames are parsed in memory and never logged or stored, and the harness never reads cookies or tokens.
 
 The adapter test serves a fixture page, `src/main/adapters/__fixtures__/copilot-chat.html`, with Copilot's editor, Send/Stop button, message articles, loading state, chunked streaming, citation buttons, and actions toolbar, from a small real WebSocket server (`__fixtures__/fake-chathub.ts`) that stands in for the ChatHub, since Playwright reports frames only for real sockets. The tests press Enter themselves; the adapter never does.
+
+## Driving Google
+
+`GoogleAdapter` (`src/main/adapters/google-adapter.ts`) implements `SubjectAdapter` for Google Search with the Tester in the loop (Architecture decision AD-3: a person submits every search; the harness never presses Enter or clicks Search on Google). `docs/google-spike.md` has what was learned about the site and what is still unchecked.
+
+A trial goes like this. `start()` loads the home page (`google.searchUrl`) in Google's signed-out context, types the question into the search box, checks it read back exactly, and reports `awaiting_submit`: **Press Enter in the Google window**. It then waits. The Tester's Enter navigates the page to `/search?q=…`, and the trial is timed from the browser's events for that navigation, each stamped in the main process as Playwright reports it:
+
+| Event | When |
+| --- | --- |
+| begin | the navigation request to `/search` leaves the page: the Enter sent the search |
+| first response | Google's server answers that request (the first answer, if the search is redirected) |
+| end | the results page fires its load event |
+
+Begin to end is the page-load time (`pageLoadMs`, and the export's Response Milliseconds for Google). Nothing before the Enter is timed. A search that is not the question exactly, because the text was edited or a suggestion was picked, aborts the trial, and so does no Enter within `google.submitWaitMs`.
+
+Once the results have loaded, the Tester looks for the answer and the controller waits for Answer Found or No Answer (see "What happens underneath"). The time to answer (`timeToAnswerMs`) runs from the Enter to the Answer Found call reaching the main process.
+
+### What Answer Found saves
+
+| The Tester | Answer text | Source URL |
+| --- | --- | --- |
+| highlighted a passage in the results | the highlighted text | the link of the result the passage starts in, not the search page |
+| highlighted nothing, or only text outside the results or inside the AI overview | the text of the results list as shown | the results page's own URL |
+| opened a result in the Google window and highlighted a passage there | the highlighted text | that page's URL |
+| opened a result and highlighted nothing | empty, so the trial is saved as an `EMPTY_ANSWER` failure | that page's URL |
+
+The AI overview is never captured: it is cut from the results before they are read, and a passage highlighted inside it does not count as highlighted. It is found by its heading ("AI Overview", `google.aiOverviewLabels`) and by `google.selectors.aiOverview` when a container is known. Google's menus and footer are outside the results list and are not read either. The answer is never replaced with other text: if the page shows nothing, the answer is empty.
+
+"The result a passage starts in" is the nearest block around it that holds a result's title link. For a passage between two results, in "People also ask" for example, it is the result just before it.
+
+A result that opens in a new tab is outside the window the harness reads. Highlight the passage on the results page instead.
+
+### Unusual traffic
+
+Google sometimes shows a check ("Our systems have detected unusual traffic…") in place of a page. The harness never tries to pass it and does nothing to hide that the browser is automated. It tells the Tester in plain words and leaves the check alone:
+
+- In place of the search page, before anything is timed: the status line says so, and the trial waits (up to the submit wait) for the Tester to solve the check by hand in the Google window, or to cancel. Once it is solved the trial goes on as usual.
+- In place of the results, after the Enter: the trial ends at once and nothing is saved, because the time from Enter would include the solving. The message says to solve the check in the Google window and run the trial again. HTTP 429 from the search counts as the check.
+
+### Testing
+
+The adapter test serves saved pages from `src/main/adapters/__fixtures__` through a small real HTTP server (`fake-google.ts`): the home page (`google-search.html`), the results page with an AI overview, three results, and a "People also ask" block (`google-results.html`), and the check (`google-sorry.html`). A real server, so the browser sees real navigations, responses, and load events. The tests press Enter and click the check's button themselves, in the Tester's place; the adapter never does, and no test contacts Google.
 
 ## Storage
 

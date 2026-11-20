@@ -42,6 +42,29 @@ export class TrialCancelledError extends Error {
 const DEFAULT_DISPOSE_TIMEOUT_MS = 3_000
 /** What the Tester is told once a confirmed subject's answer has finished. */
 export const CONFIRM_PROMPT = 'The answer finished. Confirm the end, adjust it, or cancel the trial.'
+/**
+ * What the Tester is told once the results have loaded, for a subject whose
+ * answer the Tester reports. With a limit it also says how long they have.
+ */
+export function answerFoundPrompt(answerLimitMs?: number): string {
+  const prompt =
+    'The results page loaded. In the browser window, highlight the passage that answers the question, then click Answer Found. If the answer is not on the page, click No Answer.'
+  return answerLimitMs === undefined
+    ? prompt
+    : `${prompt} After ${seconds(answerLimitMs)} without either, the trial is saved as no answer found.`
+}
+
+/** What a trial can wait for the Tester to do once the subject has completed. */
+type TesterStep = 'end' | 'answer'
+
+/** Why a trial was saved as NO_ANSWER_FOUND: the Tester said so, or the answer limit ran out. */
+type NoAnswerReason = 'tester' | 'limit'
+
+/**
+ * What ends a wait for the Tester. `confirmed` carries the corrected end
+ * for an 'end' wait and the moment of Answer Found for an 'answer' wait.
+ */
+type TesterReport = { kind: 'confirmed'; atMs?: number } | { kind: 'no_answer'; reason: NoAnswerReason }
 
 /** What ended a trial early. */
 type Interruption = { kind: 'failure'; failure: TrialFailure } | { kind: 'cancel' }
@@ -60,13 +83,17 @@ class RunningTrial {
   readonly trialId = randomUUID()
   interruption: Interruption | null = null
   answer: CapturedAnswer | null = null
+  /** When the Tester reported the answer was on the page, for a subject whose policy has answerFound. */
+  answerFoundAtMs: number | null = null
+  /** Set when the trial ends as NO_ANSWER_FOUND, with why. */
+  noAnswer: NoAnswerReason | null = null
   /** True once the controller has released the trial; nothing more happens to it after that. */
   released = false
   /** The timed adapter step in flight, so its stamp can still be recorded if the trial is interrupted as it settles. */
   pending: { event: TimingEvent; work: Promise<number> } | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
-  /** Set while the trial waits for the Tester to confirm the end. */
-  private confirmation: { resolve: (endMs: number | undefined) => void } | null = null
+  /** Set while the trial waits for the Tester: to confirm the end, or to report the answer. */
+  private confirmation: { waitingFor: TesterStep; resolve: (report: TesterReport) => void } | null = null
   private readonly interrupted: Promise<never>
   private rejectInterrupted: (error: TrialInterruptedError) => void = () => {}
   private resolveClosed: () => void = () => {}
@@ -104,21 +131,23 @@ class RunningTrial {
     return true
   }
 
-  get isAwaitingConfirmation(): boolean {
-    return this.confirmation !== null
+  /** What the trial is waiting for the Tester to do, or null when it waits for nothing. */
+  get waitingFor(): TesterStep | null {
+    return this.confirmation?.waitingFor ?? null
   }
 
-  /** Resolves with the Tester's corrected end, or undefined to keep the detected one. */
-  awaitConfirmation(): Promise<number | undefined> {
+  /** Resolves with what ended the wait: the Tester's report, or the answer limit running out. */
+  awaitConfirmation(waitingFor: TesterStep): Promise<TesterReport> {
     return new Promise((resolve) => {
-      this.confirmation = { resolve }
+      this.confirmation = { waitingFor, resolve }
     })
   }
 
-  confirm(endMs: number | undefined): void {
+  /** Ends the wait. The first report wins; a later one finds nothing waiting and is ignored. */
+  confirm(report: TesterReport): void {
     const confirmation = this.confirmation
     this.confirmation = null
-    confirmation?.resolve(endMs)
+    confirmation?.resolve(report)
   }
 
   startTimer(ms: number, onExpiry: () => void): void {
@@ -153,7 +182,16 @@ class RunningTrial {
  *    confirmEnd, the controller then sends `awaiting_confirmation` with
  *    the detected begin and end and waits for confirmCompletion, which may
  *    replace the end, before the answer is captured; the Tester has as
- *    long as they like. Each step is raced against the trial being
+ *    long as they like. For a subject whose policy has answerFound
+ *    (Google, story #37) completion is the results page finishing loading:
+ *    the controller sends `awaiting_confirmation` with begin and that end,
+ *    and the same confirmCompletion call is the Tester's Answer Found. The
+ *    moment it arrives is stamped, the answer is captured, and the trial is
+ *    saved with its page-load time (begin to end), time to answer (begin to
+ *    Answer Found), and source URL. reportNoAnswer, or the policy's
+ *    answerLimitMs running out with neither call, saves the trial as
+ *    NO_ANSWER_FOUND instead: a result, not a failure, with its page-load
+ *    time and no answer. Each step is raced against the trial being
  *    interrupted by the timer, by a failure signal from the adapter, or by
  *    cancelTrial.
  * 3. On a failure (SD-4): the FailureDetector classifies the signal, the
@@ -162,15 +200,14 @@ class RunningTrial {
  *    trial is returned like a successful one. A captured answer that is
  *    empty fails the same way, as EMPTY_ANSWER, for every subject.
  * 4. On success closeTrial saves the trial as SUCCESS and sends `completed`.
+ *    A NO_ANSWER_FOUND trial is saved and sends `completed` too, with a
+ *    message saying why; the record carries the status.
  *
  * A cancelled trial rejects with TrialCancelledError and saves nothing. An
  * error from the harness itself (Chromium missing, the page closed under
  * the adapter) also saves nothing: the trial is released, `aborted` is
  * sent, and the error reaches the caller. Either way the controller is
  * ready for the next trial as soon as closeTrial returns.
- *
- * TODO(#37): markAnswerFound(trialId) and markNoAnswerFound(trialId), for
- * Google, where the Tester reports whether the answer was on the page.
  */
 export class TrialController {
   private current: RunningTrial | null = null
@@ -228,10 +265,28 @@ export class TrialController {
       if (policy.confirmEnd) {
         const marks = this.deps.timing.getMarks(trial.trialId)
         this.send(trial, 'awaiting_confirmation', { message: CONFIRM_PROMPT, beginMs: marks.begin, endMs: marks.end })
-        const correctedEnd = await trial.step(trial.awaitConfirmation())
-        if (correctedEnd !== undefined) {
-          this.deps.timing.mark(trial.trialId, 'end', correctedEnd)
+        const report = await trial.step(trial.awaitConfirmation('end'))
+        if (report.kind === 'confirmed' && report.atMs !== undefined) {
+          this.deps.timing.mark(trial.trialId, 'end', report.atMs)
         }
+      }
+      if (policy.answerFound) {
+        const marks = this.deps.timing.getMarks(trial.trialId)
+        const limitMs = policy.answerLimitMs
+        this.send(trial, 'awaiting_confirmation', { message: answerFoundPrompt(limitMs), beginMs: marks.begin, endMs: marks.end })
+        if (limitMs !== undefined) {
+          // The answer limit counts from the results loading, not from this line.
+          const remainingMs = Math.max(0, (marks.end ?? this.now()) + limitMs - this.now())
+          trial.startTimer(remainingMs, () => trial.confirm({ kind: 'no_answer', reason: 'limit' }))
+        }
+        const report = await trial.step(trial.awaitConfirmation('answer'))
+        trial.stopTimer()
+        if (report.kind === 'no_answer') {
+          // A result, not a failure: nothing is read from the page and no failure is recorded.
+          trial.noAnswer = report.reason
+          return await this.closeTrial(trial)
+        }
+        trial.answerFoundAtMs = report.atMs ?? null
       }
       trial.answer = await trial.step(adapter.captureAnswer())
       // The subject-independent check: an answer with no text is a failure, whatever the adapter said.
@@ -257,18 +312,35 @@ export class TrialController {
   }
 
   /**
-   * The Tester confirmed the end of a trial that is awaiting confirmation:
-   * keeps the detected end, or replaces it with endMs, which must not be
-   * before the question was sent. The trial is then captured and saved;
-   * resolves once that is done and the controller is ready again.
+   * The Tester confirmed a trial that is awaiting confirmation.
+   *
+   * For a subject whose end the Tester confirms: keeps the detected end, or
+   * replaces it with endMs, which must not be before the question was sent.
+   *
+   * For a subject whose answer the Tester reports (Google), this is Answer
+   * Found: the moment the call arrives is the time to answer, read from the
+   * main process's clock, so endMs is refused.
+   *
+   * The trial is then captured and saved; resolves once that is done and
+   * the controller is ready again.
    */
   async confirmCompletion(trialId: string, endMs?: number): Promise<void> {
     const trial = this.current
     if (!trial || trial.trialId !== trialId) {
       throw new Error(`Trial ${trialId} is not running`)
     }
-    if (!trial.isAwaitingConfirmation) {
+    if (trial.waitingFor === null) {
       throw new Error('The trial is not waiting for confirmation: its answer has not finished yet')
+    }
+    if (trial.waitingFor === 'answer') {
+      if (endMs !== undefined) {
+        throw new Error(
+          `The time to answer for ${SUBJECT_LABELS[trial.subject]} is the moment Answer Found is clicked. It cannot be adjusted.`,
+        )
+      }
+      trial.confirm({ kind: 'confirmed', atMs: this.now() })
+      await trial.closed
+      return
     }
     if (endMs !== undefined) {
       const { timing } = this.deps
@@ -280,7 +352,30 @@ export class TrialController {
         throw new Error(`The corrected end (${timing.toIso(endMs)}) is before the question was sent (${timing.toIso(beginMs)})`)
       }
     }
-    trial.confirm(endMs)
+    trial.confirm(endMs === undefined ? { kind: 'confirmed' } : { kind: 'confirmed', atMs: endMs })
+    await trial.closed
+  }
+
+  /**
+   * The Tester reported that the answer is not on the page, for a trial
+   * that is waiting for them to report it (Google, story #37). The trial is
+   * saved as NO_ANSWER_FOUND; resolves once that is done and the controller
+   * is ready again.
+   */
+  async reportNoAnswer(trialId: string): Promise<void> {
+    const trial = this.current
+    if (!trial || trial.trialId !== trialId) {
+      throw new Error(`Trial ${trialId} is not running`)
+    }
+    if (trial.waitingFor === 'end') {
+      throw new Error(
+        `A ${SUBJECT_LABELS[trial.subject]} trial has no "no answer" result. Confirm the end of the answer, or cancel the trial.`,
+      )
+    }
+    if (trial.waitingFor !== 'answer') {
+      throw new Error('The trial is not waiting for the Tester to report the answer: the results have not loaded yet')
+    }
+    trial.confirm({ kind: 'no_answer', reason: 'tester' })
     await trial.closed
   }
 
@@ -365,8 +460,9 @@ export class TrialController {
   }
 
   /**
-   * Ends the trial and saves it: as SUCCESS with its answer, or as FAILED
-   * with the failure. Sends `completed` or `failed` and returns the record.
+   * Ends the trial and saves it: as SUCCESS with its answer, as
+   * NO_ANSWER_FOUND, or as FAILED with the failure. Sends `completed` or
+   * `failed` and returns the record.
    */
   private async closeTrial(trial: RunningTrial, failure?: TrialFailure): Promise<Trial> {
     const record = this.buildRecord(trial, failure)
@@ -380,10 +476,19 @@ export class TrialController {
     }
     if (failure) {
       this.send(trial, 'failed', { message: failure.message, failureType: failure.type })
+    } else if (trial.noAnswer) {
+      this.send(trial, 'completed', { message: this.noAnswerMessage(trial, trial.noAnswer) })
     } else {
       this.send(trial, 'completed')
     }
     return saved
+  }
+
+  private noAnswerMessage(trial: RunningTrial, reason: NoAnswerReason): string {
+    const limitMs = this.deps.policies[trial.subject].answerLimitMs
+    return reason === 'tester' || limitMs === undefined
+      ? 'Saved as no answer found: the Tester reported that the answer is not on the page.'
+      : `Saved as no answer found: no answer was reported within ${seconds(limitMs)} of the results loading.`
   }
 
   /** Ends a trial that is not saved: cancelled by the Tester, or aborted by a harness error. */
@@ -419,7 +524,7 @@ export class TrialController {
       dataSetName: session.buildDataSetName(trial.subject, new Date(beginMs ?? trial.startedAtMs)),
       subject: trial.subject,
       questionNumber: trial.question.number,
-      status: failure ? TrialStatus.FAILED : TrialStatus.SUCCESS,
+      status: failure ? TrialStatus.FAILED : trial.noAnswer ? TrialStatus.NO_ANSWER_FOUND : TrialStatus.SUCCESS,
       beginTs: beginMs === undefined ? null : timing.toIso(beginMs),
       firstResponseTs: firstResponseMs === undefined ? null : timing.toIso(firstResponseMs),
       endTs: endMs === undefined ? null : timing.toIso(endMs),
@@ -428,6 +533,15 @@ export class TrialController {
         beginMs === undefined || firstResponseMs === undefined ? null : timing.durationMs(beginMs, firstResponseMs),
       answerText: trial.answer?.text ?? null,
       citations: trial.answer?.citations ?? [],
+      // Only a subject whose answer the Tester reports has these three; the others leave them null.
+      ...(this.deps.policies[trial.subject].answerFound
+        ? {
+            pageLoadMs: beginMs === undefined || endMs === undefined ? null : timing.durationMs(beginMs, endMs),
+            timeToAnswerMs:
+              beginMs === undefined || trial.answerFoundAtMs === null ? null : timing.durationMs(beginMs, trial.answerFoundAtMs),
+            sourceUrl: trial.answer?.sourceUrl ?? null,
+          }
+        : {}),
     }
   }
 
