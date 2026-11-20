@@ -95,14 +95,15 @@ describe('trial:cancel handler', () => {
 })
 
 describe('trials:list handler', () => {
-  it('lists all trials when no session is given, and one session when it is', async () => {
+  it('lists the newest 20 trials when no session is given, and a whole session when one is', async () => {
     const listTrials = vi.fn(() => [record])
     const handler = createListTrialsHandler(async () => ({ listTrials }))
 
     await expect(handler()).resolves.toEqual([record])
     expect(listTrials).toHaveBeenLastCalledWith({ limit: 20 })
 
+    // A full session is 36 trials, more than the 20 of the all-sessions list.
     await handler('session-1')
-    expect(listTrials).toHaveBeenLastCalledWith({ sessionId: 'session-1', limit: 20 })
+    expect(listTrials).toHaveBeenLastCalledWith({ sessionId: 'session-1', limit: 200 })
   })
 })

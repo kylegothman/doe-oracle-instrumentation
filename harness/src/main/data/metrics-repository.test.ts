@@ -249,6 +249,17 @@ describe('MetricsRepository', () => {
     expect(repository.getSession('nope')).toBeNull()
   })
 
+  it('lists every session, newest first', () => {
+    const older = { sessionId: 'session-a', startedAt: '2026-11-10T09:00:00.000Z', appVersion: '0.2.0' }
+    const newer = { sessionId: 'session-b', startedAt: '2026-11-12T09:00:00.000Z', appVersion: '0.2.21' }
+    expect(repository.listSessions()).toEqual([])
+
+    repository.saveSession(older)
+    repository.saveSession(newer)
+
+    expect(repository.listSessions()).toEqual([newer, older])
+  })
+
   it('refuses to save the same session id twice', () => {
     const session = { sessionId: 'session-a', startedAt: '2026-11-12T01:02:03.456Z', appVersion: '0.1.0' }
     repository.saveSession(session)

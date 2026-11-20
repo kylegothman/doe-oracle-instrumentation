@@ -90,11 +90,34 @@ harness/
       data/                 MetricsRepository (SQLite, versioned migrations), ErrorLog (failed saves kept for retry), and the startup probe
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
-    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult; FailedWriteSummary)
+      src/App.tsx           the shell: header, tabs, one page per tab
+      src/pages/            Test Console, Expert Responses, Export, with each page's logic in a tested .ts file
+      src/components/       the design's building blocks in ui.tsx (Card, Field, Segmented, RadioOption, Banner, Badge) and the StatusBar
+      src/status-bar.ts     what the status bar shows, worked out from the trial events
+      src/styles.css        the design's colors, spacing, and text styles as CSS variables
+    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult, ExportPreview; FailedWriteSummary)
   .browser-bundle/          Chromium fetched for the installer (ignored by git)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
 ```
+
+## The window
+
+The window follows the team's Figma mockups (E6): a dark theme, a header with three tabs (Test Console, Expert Responses, Export), and one page per tab. Every color, space, radius, and text style in the design is a CSS variable at the top of `src/renderer/src/styles.css`, named after the design's variable (`color/bg/surface` is `--bg-surface`). The fonts, Inter and JetBrains Mono, ship inside the app (`@fontsource`, OFL license), so the window looks the same with no network.
+
+All three pages stay mounted and only the active one is shown, so switching tabs during a trial does not interrupt it. Expert Responses is a placeholder until E7 builds it.
+
+The Test Console (story #38) follows the design's screens 01, 02, and 04:
+
+- **New trial.** The subject (DOE Oracle, Microsoft Copilot, or Google Search) and one of the standard questions, which come from `config/questions.json` through `questions:list`, never from the code. The exact text that will be sent is shown before the trial starts. For Copilot, **Open Copilot to sign in** is in this card.
+- **The running trial.** A timer, a checklist of the trial's steps as its events arrive, and the buttons that apply: **Cancel Trial** always, and for Copilot, once the answer stops changing, **Confirm Completion** or **Adjust** (the end in seconds after your Enter). While the answer streams, the timer counts from the trial start; the bar against the limit is drawn when the limit counts from the same moment (the Oracle). Copilot's limit counts from your Enter, which the harness only learns when the end is detected, so from then on the timer shows the measured response, Enter to end, against the limit. The limits come from `trials:limits`. The step times count from the trial start, as the note above them says, so for Copilot they include the time before your Enter; the Enter itself is shown as the moment it happened.
+- **The result.** A saved trial shows its test number, response and first-response times, begin and end, an answer preview with its citations, and its size. A failed trial shows its failure type, elapsed time, and first response, with **Retry** for the same question. A trial that ended without being saved (aborted, for example Copilot signed out) says why. **New Trial** goes back to the first card, on the next question after a success.
+- **This session.** Every trial of this launch's session, newest first, with its status badge and response time (for a failed trial, the time it failed at). Trials from earlier sessions are on the Export tab.
+- **App info.** The app's name and version and whether SQLite loaded, for install checks and bug reports. If SQLite or the questions file could not be loaded, a red banner at the top says so.
+
+- **Google** (design screen 03). The steps run to "Results page loaded". Then the card shows the page-load time and a "Searching for" time counting from the Enter, with a banner asking for the passage. Answer Found reads a highlight in any tab of the Google window (see "What Answer Found saves"), and when nothing was highlighted the result says the results page's text was saved, under "Results page text" rather than "Selected passage". **Answer Found** is the `trial:confirm` call, and the moment it reaches the harness is the time to answer; **No Answer Found** is `trial:no-answer`. There is no Adjust for Google. The result shows the page load, the time to answer, when Answer Found was clicked, the selected passage, and its source URL; a **No answer found** result (also saved when the answer limit, 120 s from the results loading, runs out) shows its page-load time, and New Trial moves on to the next question as after a success.
+
+The session status bar (story #39) runs along the bottom of every page. It shows the first 8 characters of this launch's session ID (hover for the full ID and start time), the running trial's subject and question, the time since the trial started, and a badge: **Idle** before the first trial, **Running** during one, **Searching** while the Tester looks for Google's answer, **Ready** once it has ended, however it ended. The time counts while the answer streams. Once the answer is complete it shows the measured response, begin to end, and holds still while the harness waits for the Tester to confirm. For Google it keeps counting from the Enter until Answer Found or No Answer Found. The bar follows the `trial:event` stream itself, so it is right whichever tab is open. If the session could not be started, it says so in red, since trials cannot be saved without one.
 
 ## Security baseline
 
@@ -142,9 +165,9 @@ When a launch fails, the trial is not run, and the message gives the fix that ca
 ## Running a trial
 
 1. For the Oracle, start it: Ollama, its Flask backend, and its Vite frontend (see `docs/run-the-oracle.md`). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else. For Copilot, sign in with **Open Copilot to sign in** after launching the harness, unless the window already shows the chat (see "Driving Copilot").
-2. From `harness/`, run `npm run dev`. The window shows this launch's session ID in the bar at the top; every trial saved during the launch carries it.
-3. Pick the subject and click **Run … trial (Q1)**. For the Oracle, a Chromium window opens on the chat page, the harness types "What is combinatorial testing?", presses Enter, and waits for the answer. For Copilot, the harness types the question in the Copilot window and the status line says **Press Enter in the Copilot window**; you press Enter, and when the answer has finished the status line gives the detected response time with **Confirm**, an end you can adjust (seconds after your Enter) with **Adjust and confirm**, and **Cancel**. Google is run by the main process the same way (see "Driving Google"), but this window does not list it yet: the Test Console of E6 adds the subject and its Answer Found and No Answer buttons. Status events (`started`, `awaiting submit`, `first response`, `awaiting confirmation`, `completed`, `failed`, `cancelled`, or `aborted`) appear under the buttons as they happen.
-4. The result panel shows the status, begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. A failed trial shows its failure type and message instead. The saved-trials table below reads back from the database, so a trial from an earlier launch is still listed.
+2. From `harness/`, run `npm run dev`. The status bar at the bottom of the window shows this launch's session ID; every trial saved during the launch carries it.
+3. On the Test Console, pick the subject and the question and click **Start Trial**. For the Oracle, a Chromium window opens on the chat page, the harness types the question, presses Enter, and waits for the answer. For Copilot, the harness types the question in the Copilot window and the console says to press Enter there; you press Enter, and when the answer has finished it gives the detected response time with **Confirm Completion**, **Adjust** (an end in seconds after your Enter), and **Cancel Trial**. For Google (see "Driving Google"), the harness types the question in a signed-out Google window and you press Enter; once the results have loaded, you highlight the passage that answers the question and click **Answer Found**, or click **No Answer Found**. The trial's steps are checked off as its status events (`started`, `awaiting submit`, `first response`, `awaiting confirmation`, then `completed`, `failed`, `cancelled`, or `aborted`) arrive.
+4. The result card shows the test number, the begin and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer; for Google, the page-load time, the time to answer, the captured passage, and its source URL. A failed trial shows its failure type and message instead. "This session" lists every trial of this launch; trials from earlier launches are on the Export tab.
 
 ### What happens underneath
 
@@ -235,8 +258,11 @@ Once the results have loaded, the Tester looks for the answer and the controller
 | --- | --- | --- |
 | highlighted a passage in the results | the highlighted text | the link of the result the passage starts in, not the search page |
 | highlighted nothing, or only text outside the results or inside the AI overview | the text of the results list as shown | the results page's own URL |
-| opened a result in the Google window and highlighted a passage there | the highlighted text | that page's URL |
-| opened a result and highlighted nothing | empty, so the trial is saved as an `EMPTY_ANSWER` failure | that page's URL |
+| opened a result in the Google window's tab and highlighted a passage there | the highlighted text | that page's URL |
+| opened a result in that tab and highlighted nothing | empty, so the trial is saved as an `EMPTY_ANSWER` failure | that page's URL |
+| opened a result in a new tab or window (middle-click, Ctrl-click) and highlighted a passage there | the highlighted text | that page's URL |
+
+Every tab of Google's window is checked for a highlight, since a result opened in a new tab is as common as one opened in place. Found on the first live run on Windows: a result opened in a new tab had its highlight missed and the whole results page saved instead. When more than one tab has a highlight, the tab the Tester is looking at wins; if that is the results tab, its highlight wins over one left in a background tab; otherwise the newest tab with a highlight is used (`choosePassage` in `google-adapter.ts`). Another Google results page in a second tab is not a result and is skipped, and so is every tab that was already open when the trial started: a result left open from an earlier trial, highlight and all, never becomes this trial's answer (also found on the live run). To use a page again, open it again from this trial's results. The Test Console says when the results page's text was saved because nothing was highlighted.
 
 The AI overview is never captured: it is cut from the results before they are read, and a passage highlighted inside it does not count as highlighted. It is found by its heading ("AI Overview", `google.aiOverviewLabels`) and by `google.selectors.aiOverview` when a container is known. Google's menus and footer are outside the results list and are not read either. The answer is never replaced with other text: if the page shows nothing, the answer is empty.
 
@@ -293,6 +319,23 @@ The Export Page calls `window.harness.exportLog(request)` on the `export:run` ch
 5. returns `EXPORTED` with the files written and the row count, or `WRITE_FAILED` with a message to show when the file cannot be written, for example because it is open in Excel (UC-6 E2). The Tester can export again and choose another location.
 
 An export only reads the database, so no outcome changes a stored record. The `ExportResult` carries `ok`, `status`, `filePaths`, `rowCount`, and `error`.
+
+Two more channels serve the Export Page before it exports:
+
+- `sessions:list` (`window.harness.listSessions()`) returns every saved session, newest first, for the Session dropdown.
+- `export:preview` (`window.harness.previewExport(filter)`) returns how many trials and expert answers the filter matches (`ExportPreview`). `ExportService.preview` counts with the same `listExportRecords` query the export runs, so the count on the page always equals the rows written, superseded answers left out.
+
+### The Export Page
+
+The Export tab (story #40) follows the design's "06 Export Page":
+
+- **Records to export.** Filter by **Session** (the running session is chosen until the Tester picks another) or by **Date range** (whole local days, both included), and optionally one subject or only the expert's answers. The line below gives the count from `export:preview`. Export is disabled when nothing matches or the range is backwards.
+- **Format.** The TestLogV3 workbook or CSV. **Export…** opens the save dialog.
+- **Result.** "Exported N rows" with every file written (both files for CSV), or the reason nothing was written. Closing the save dialog shows nothing.
+- **Saves waiting for a retry.** When the error log holds failed saves, a warning above the filters lists them and offers Retry, because those records are not in any export until they reach the database.
+- **A trial under way.** While a trial runs, or waits for the Tester to confirm Copilot's end, a warning says it is not saved yet and so not in the export. Found in the Windows run: a Copilot trial left waiting for Confirm Completion was silently missing from the workbook.
+
+The sessions, the count, and the waiting saves are read again each time the tab is opened, so trials saved since the last visit are included. The count is also read again whenever a trial ends, even while the tab stays open.
 
 ### Export rows
 

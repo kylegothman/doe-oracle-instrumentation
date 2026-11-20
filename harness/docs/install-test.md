@@ -71,40 +71,39 @@ Expected:
 Expected:
 
 - The harness window opens within a few seconds.
-- "App info" shows the name and the same version as the MSI's file name.
-- "Storage" shows a green line saying SQLite loaded. A red "SQLite failed to load" box is a failure: copy its text.
-- The bar at the top shows a session ID.
-- "Saved trials" is empty on a clean machine.
+- At the bottom of the Test Console, "App info" shows the name and the same version as the MSI's file name, and "Storage" shows a green line saying SQLite loaded. A red "SQLite failed to load" banner at the top is a failure: copy its text.
+- The status bar along the bottom of the window shows a session ID and **Idle**.
+- "This session" says there are no trials yet.
 
 ### 3. One Oracle trial
 
 The Oracle must be running and warmed up ([run-the-oracle.md](run-the-oracle.md)).
 
-1. Under "Trial", choose **DOE Oracle** and click **Run DOE Oracle trial (Q1)**.
+1. Under "New trial", choose **DOE Oracle** and **Q1 · What is combinatorial testing?**, and click **Start Trial**.
 
 Expected:
 
 - A Chromium window opens on the Oracle's chat page. It is "Google Chrome for Testing", not your own Chrome or Edge.
 - The harness types "What is combinatorial testing?" and submits it, with no action from you.
-- The status events go from `started` to `first response` to `completed`.
-- The result shows status SUCCESS, begin, first response, and end times, a response time in milliseconds, and the start of the answer.
-- The trial appears under "Saved trials".
+- The trial's steps are checked off, and the status bar shows **Running** with a counting time.
+- The result shows a **Success** badge, the response and first-response times in milliseconds, the begin and end times, and the start of the answer.
+- The trial appears under "This session".
 
 If the result is FAILED with TIMEOUT, the model was probably cold: ask the warm-up question again, then repeat this step once. If the message says the browser that ships with the harness is missing or damaged, that is a failure of this test: copy the full message.
 
 ### 4. One Copilot trial
 
-1. Under "Copilot sign-in", click **Open Copilot to sign in**. A second Chromium window opens.
+1. Click **New Trial**, then under "New trial" choose **Microsoft Copilot**. Click **Open Copilot to sign in**. A second Chromium window opens.
 2. Sign in there with your work or school account, including any second factor. The harness never types your password.
 3. Back in the harness, click **Open Copilot to sign in** again. It should now report that Copilot is signed in.
-4. Choose **Microsoft Copilot** and click **Run Microsoft Copilot trial (Q1)**.
-5. When the status line says to press Enter in the Copilot window, click in the Copilot window's question box and press Enter.
-6. When the answer has finished, click **Confirm** in the harness.
+4. Choose **Q1** and click **Start Trial**.
+5. When the harness says to press Enter in the Microsoft Copilot window, click in the Copilot window's question box and press Enter.
+6. When the answer has finished, click **Confirm Completion** in the harness.
 
 Expected:
 
 - The harness types the question into Copilot but does not send it; you do.
-- After **Confirm**, the result shows status SUCCESS with times and the answer, and the trial appears under "Saved trials".
+- After **Confirm Completion**, the result shows a **Success** badge with the times and the answer, and the trial appears under "This session".
 
 If your account cannot use Copilot Chat, or the page shows a human-verification check, write that down and mark this step "not tested". Do not try to work around it.
 
@@ -148,8 +147,8 @@ Expected:
 Expected:
 
 - It installs and starts as before.
-- The bar at the top shows a new session ID.
-- The trials from steps 3 and 4 are still listed under "Saved trials": uninstalling and reinstalling lost nothing.
+- The status bar shows a new session ID, and "This session" is empty again: it lists only this launch's trials.
+- On the Export tab, the Session list still has the session from steps 3 and 4, and choosing it shows "2 records match: 2 trials and 0 expert answers" (more if you ran more trials then): uninstalling and reinstalling lost nothing.
 - Copilot may ask you to sign in again. On the work account tested so far, the sign-in does not survive closing the harness.
 
 ### 9. Leave the machine as you want it

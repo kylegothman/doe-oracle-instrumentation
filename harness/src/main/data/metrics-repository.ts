@@ -502,7 +502,13 @@ export class MetricsRepository implements PendingWriteTarget {
   /** The session with this id, or null when none was saved. */
   getSession(sessionId: string): Session | null {
     const row = this.db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(sessionId) as SessionRow | undefined
-    return row ? { sessionId: row.session_id, startedAt: row.started_at, appVersion: row.app_version } : null
+    return row ? toSession(row) : null
+  }
+
+  /** Every saved session, newest first. */
+  listSessions(): Session[] {
+    const rows = this.db.prepare('SELECT * FROM sessions ORDER BY started_at DESC, session_id').all() as SessionRow[]
+    return rows.map(toSession)
   }
 
   /**
@@ -746,6 +752,10 @@ function toExpertResponse(row: ExpertResponseRow): ExpertResponse {
     recordedAt: row.recorded_at,
     supersededBy: row.superseded_by,
   }
+}
+
+function toSession(row: SessionRow): Session {
+  return { sessionId: row.session_id, startedAt: row.started_at, appVersion: row.app_version }
 }
 
 function toTrial(row: TrialRow): Trial {

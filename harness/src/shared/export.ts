@@ -60,6 +60,18 @@ export interface ExportResult {
   error: string | null
 }
 
+/**
+ * How many records an export with a filter would include, so the Export
+ * Page can show the count before the Tester exports. Superseded expert
+ * answers are never counted, because they are never exported.
+ */
+export interface ExportPreview {
+  /** Matching trials, successful or failed. */
+  trials: number
+  /** Matching active expert answers. */
+  expertAnswers: number
+}
+
 /** True when value is one of the export formats. Use it on anything that crossed the IPC bridge. */
 export function isExportFormat(value: unknown): value is ExportFormat {
   return value === ExportFormat.TESTLOG_V3_XLSX || value === ExportFormat.CSV
@@ -73,6 +85,14 @@ export function validateExportRequest(value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return 'The export request is missing'
   const { filter, format } = value as Partial<ExportRequest>
   if (!isExportFormat(format)) return `Unknown export format "${String(format)}"`
+  return validateRecordFilter(filter)
+}
+
+/**
+ * Checks a RecordFilter that crossed the IPC bridge. Returns what is wrong
+ * with it, or null when it is valid.
+ */
+export function validateRecordFilter(filter: unknown): string | null {
   if (typeof filter !== 'object' || filter === null) return 'The export filter is missing'
   const { sessionId, from, to, subject } = filter as Partial<RecordFilter>
   if (sessionId !== null && typeof sessionId !== 'string') return 'The session filter must be a session ID or null'

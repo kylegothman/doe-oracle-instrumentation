@@ -25,6 +25,9 @@ const harnessApi: HarnessApi = {
   getAppInfo: () => invoke(IpcChannels.getAppInfo),
   getSqliteStatus: () => invoke(IpcChannels.getSqliteStatus),
   getSession: () => invoke(IpcChannels.getSession),
+  listSessions: () => invoke(IpcChannels.listSessions),
+  listQuestions: () => invoke(IpcChannels.listQuestions),
+  getTrialLimits: () => invoke(IpcChannels.getTrialLimits),
   startTrial: (subject, questionNumber) => invoke(IpcChannels.startTrial, subject, questionNumber),
   confirmCompletion: (trialId, endMs) =>
     endMs === undefined ? invoke(IpcChannels.confirmCompletion, trialId) : invoke(IpcChannels.confirmCompletion, trialId, endMs),
@@ -36,6 +39,7 @@ const harnessApi: HarnessApi = {
   listFailedWrites: () => invoke(IpcChannels.listFailedWrites),
   retryFailedWrites: () => invoke(IpcChannels.retryFailedWrites),
   exportLog: (request) => invoke(IpcChannels.exportLog, request),
+  previewExport: (filter) => invoke(IpcChannels.previewExport, filter),
   onTrialEvent: (callback) => {
     // Only the payload reaches the page; the Electron event object stays in the preload.
     const listener = (_event: IpcRendererEvent, event: TrialEvent): void => callback(event)

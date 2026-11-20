@@ -1,4 +1,11 @@
-import { validateExportRequest, type ExportRequest, type ExportResult } from '../../../shared/export'
+import {
+  validateExportRequest,
+  validateRecordFilter,
+  type ExportPreview,
+  type ExportRequest,
+  type ExportResult,
+  type RecordFilter,
+} from '../../../shared/export'
 import type { ChooseSavePath, ExportService } from '../../data/export-service'
 
 /**
@@ -15,5 +22,20 @@ export function createExportHandler(
     const problem = validateExportRequest(request)
     if (problem) throw new Error(problem)
     return (await service()).export(request, chooseSavePath)
+  }
+}
+
+/**
+ * Builds the handler for `export:preview`: how many trials and expert
+ * answers the Export Page's filter matches. The filter is checked first,
+ * since it crossed the IPC bridge.
+ */
+export function createExportPreviewHandler(
+  service: () => Promise<Pick<ExportService, 'preview'>>,
+): (filter: RecordFilter) => Promise<ExportPreview> {
+  return async (filter) => {
+    const problem = validateRecordFilter(filter)
+    if (problem) throw new Error(problem)
+    return (await service()).preview(filter)
   }
 }

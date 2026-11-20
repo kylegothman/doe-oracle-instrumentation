@@ -1,6 +1,7 @@
 import type { CopilotSignInStatus } from './copilot'
 import type { FailedWriteSummary } from './errors'
-import type { ExportRequest, ExportResult } from './export'
+import type { ExportPreview, ExportRequest, ExportResult, RecordFilter } from './export'
+import type { Question } from './questions'
 import type { Session } from './session'
 import type { Subject } from './subjects'
 import type { Trial, TrialEvent } from './trials'
@@ -35,6 +36,23 @@ export type SqliteStatus =
   | { ok: false; error: string }
 
 /**
+ * One subject's time limit, as the Test Console shows it: how long the
+ * subject has to answer, when that clock starts (`trial_start`, or `submit`
+ * for subjects where the Tester presses Enter), whether the Tester confirms
+ * the end before the trial is saved, and whether the Tester reports the
+ * answer once the subject has completed (Google: Answer Found or No Answer
+ * Found), with how long they have for that.
+ */
+export interface TrialLimit {
+  timeoutMs: number
+  startsAt: 'trial_start' | 'submit'
+  confirmEnd: boolean
+  answerFound: boolean
+  /** With answerFound: how long the Tester has to report, from completion. Null when there is no limit. */
+  answerLimitMs: number | null
+}
+
+/**
  * Request and response shape for every IPC channel. Add a new channel here
  * first; the compiler then points at the handler and the bridge to update.
  */
@@ -42,6 +60,9 @@ export interface IpcContracts {
   'app:get-info': { args: []; result: AppInfo }
   'diagnostics:get-sqlite-status': { args: []; result: SqliteStatus }
   'session:get': { args: []; result: Session }
+  'sessions:list': { args: []; result: Session[] }
+  'questions:list': { args: []; result: Question[] }
+  'trials:limits': { args: []; result: Record<Subject, TrialLimit> }
   'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
   'trial:confirm': { args: [trialId: string, endMs?: number]; result: void }
   'trial:cancel': { args: [trialId: string]; result: void }
@@ -51,6 +72,7 @@ export interface IpcContracts {
   'errors:list': { args: []; result: FailedWriteSummary[] }
   'errors:retry': { args: []; result: number }
   'export:run': { args: [request: ExportRequest]; result: ExportResult }
+  'export:preview': { args: [filter: RecordFilter]; result: ExportPreview }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -62,6 +84,9 @@ export const IpcChannels = {
   getAppInfo: 'app:get-info',
   getSqliteStatus: 'diagnostics:get-sqlite-status',
   getSession: 'session:get',
+  listSessions: 'sessions:list',
+  listQuestions: 'questions:list',
+  getTrialLimits: 'trials:limits',
   startTrial: 'trial:start',
   confirmCompletion: 'trial:confirm',
   cancelTrial: 'trial:cancel',
@@ -71,6 +96,7 @@ export const IpcChannels = {
   listFailedWrites: 'errors:list',
   retryFailedWrites: 'errors:retry',
   exportLog: 'export:run',
+  previewExport: 'export:preview',
 } as const satisfies Record<string, IpcChannel>
 
 /**
@@ -102,6 +128,12 @@ export interface HarnessApi {
   getSqliteStatus(): Promise<SqliteStatus>
   /** Returns this launch's session: its ID, start time, and the harness version. */
   getSession(): Promise<Session>
+  /** Lists every saved session, newest first, for the Export Page's session filter. */
+  listSessions(): Promise<Session[]>
+  /** The standard questions, in order, from config/questions.json. Rejects when the file is unusable. */
+  listQuestions(): Promise<Question[]>
+  /** Each subject's time limit, when its clock starts, and whether the Tester confirms the end. */
+  getTrialLimits(): Promise<Record<Subject, TrialLimit>>
   /** Runs one trial of a question against a subject and resolves with the saved trial. */
   startTrial(subject: Subject, questionNumber: number): Promise<Trial>
   /**
@@ -138,6 +170,11 @@ export interface HarnessApi {
    * could not be written).
    */
   exportLog(request: ExportRequest): Promise<ExportResult>
+  /**
+   * Counts the trials and expert answers an export with this filter would
+   * include. Reads only; writes no file and asks for no location.
+   */
+  previewExport(filter: RecordFilter): Promise<ExportPreview>
   /** Receives the running trial's status events. Returns the function that unsubscribes. */
   onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }
