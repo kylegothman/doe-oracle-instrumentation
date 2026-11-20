@@ -35,6 +35,13 @@ export class BrowserLaunchError extends Error {
   override readonly name = 'BrowserLaunchError'
 }
 
+/**
+ * No fixed viewport: the page is as large as its window and follows it when
+ * the Tester resizes it. Left out, Playwright pins every page at 1280 by 720
+ * whatever the window's size.
+ */
+const WINDOW_SIZED = { viewport: null } as const
+
 /** A subject's persistent context and the page it drives. */
 interface PersistentSession {
   context: BrowserContext
@@ -126,7 +133,7 @@ export class BrowserManager {
       return existing
     }
 
-    const context = await browser.newContext()
+    const context = await browser.newContext(WINDOW_SIZED)
     const page = await context.newPage()
     this.pages.set(subject, page)
     return page
@@ -171,7 +178,7 @@ export class BrowserManager {
 
   private async launchPersistent(subject: Subject, profile: string): Promise<BrowserContext> {
     try {
-      return await this.launcher.launchPersistentContext(profile, this.launchOptions())
+      return await this.launcher.launchPersistentContext(profile, { ...this.launchOptions(), ...WINDOW_SIZED })
     } catch (error) {
       throw this.toLaunchError(error, { kind: 'profile', label: SUBJECT_LABELS[subject], profileDir: profile })
     }
