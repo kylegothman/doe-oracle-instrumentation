@@ -1,6 +1,7 @@
 import { ExportFormat, type ExportPreview, type ExportResult, type RecordFilter } from '../../../shared/export'
 import type { Session } from '../../../shared/session'
 import { SUBJECTS, SUBJECT_LABELS, type Subject } from '../../../shared/subjects'
+import type { TrialEvent } from '../../../shared/trials'
 
 /**
  * What the Export Page (story #40, UC-6) works out without the bridge: the
@@ -122,6 +123,41 @@ export function describeRetry(waiting: number, saved: number): { tone: 'success'
   if (saved === waiting) return { tone: 'success', title: saved === 1 ? 'The waiting save went through.' : `All ${saved} waiting saves went through.` }
   if (saved === 0) return { tone: 'danger', title: 'No waiting save went through. The database still refuses them.' }
   return { tone: 'danger', title: `${saved} of ${waiting} waiting saves went through. The rest are still waiting.` }
+}
+
+/**
+ * The warning shown while a trial is under way, from the latest trial
+ * event. A trial is saved only when it ends (for Copilot, after the Tester
+ * confirms the end), so until then it is in no export. Null when no trial
+ * is under way.
+ */
+export function runningTrialWarning(latest: TrialEvent | undefined): { title: string; message: string } | null {
+  if (!latest) return null
+  const subject = SUBJECT_LABELS[latest.subject]
+  switch (latest.status) {
+    case 'started':
+    case 'awaiting_submit':
+    case 'first_response':
+      return {
+        title: `A ${subject} trial is running`,
+        message: `Q${latest.questionNumber} is saved when it ends, so it is not in this export yet. Wait for it on the Test Console, then export.`,
+      }
+    case 'awaiting_confirmation':
+      return {
+        title: `A ${subject} trial is waiting for you to confirm it`,
+        message: `Q${latest.questionNumber} is not saved until you click Confirm Completion on the Test Console, so it is not in this export yet.`,
+      }
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'aborted':
+      return null
+  }
+}
+
+/** True when the event ends a trial: one was saved (completed, failed) or none will be (cancelled, aborted). */
+export function endsTrial(event: TrialEvent): boolean {
+  return event.status === 'completed' || event.status === 'failed' || event.status === 'cancelled' || event.status === 'aborted'
 }
 
 /** What the banner under the format card says after an export. Null when there is nothing to say. */

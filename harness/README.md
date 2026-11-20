@@ -278,8 +278,9 @@ The Export tab (story #40) follows the design's "06 Export Page":
 - **Format.** The TestLogV3 workbook or CSV. **Export…** opens the save dialog.
 - **Result.** "Exported N rows" with every file written (both files for CSV), or the reason nothing was written. Closing the save dialog shows nothing.
 - **Saves waiting for a retry.** When the error log holds failed saves, a warning above the filters lists them and offers Retry, because those records are not in any export until they reach the database.
+- **A trial under way.** While a trial runs, or waits for the Tester to confirm Copilot's end, a warning says it is not saved yet and so not in the export. Found in the Windows run: a Copilot trial left waiting for Confirm Completion was silently missing from the workbook.
 
-The sessions, the count, and the waiting saves are read again each time the tab is opened, so trials saved since the last visit are included.
+The sessions, the count, and the waiting saves are read again each time the tab is opened, so trials saved since the last visit are included. The count is also read again whenever a trial ends, even while the tab stays open.
 
 ### Export rows
 

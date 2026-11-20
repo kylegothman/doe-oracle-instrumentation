@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { ExportResult } from '../../../shared/export'
 import { Subject } from '../../../shared/subjects'
+import type { TrialEvent } from '../../../shared/trials'
 import {
   buildFilter,
   describeExport,
   describeMatches,
   describePendingSaves,
   describeRetry,
+  endsTrial,
+  runningTrialWarning,
   sessionLabel,
   SUBJECT_CHOICES,
   toDayValue,
@@ -160,6 +163,35 @@ describe('describePendingSaves and describeRetry', () => {
     expect(describeRetry(3, 3)).toEqual({ tone: 'success', title: 'All 3 waiting saves went through.' })
     expect(describeRetry(3, 0)).toEqual({ tone: 'danger', title: 'No waiting save went through. The database still refuses them.' })
     expect(describeRetry(3, 1)).toEqual({ tone: 'danger', title: '1 of 3 waiting saves went through. The rest are still waiting.' })
+  })
+})
+
+describe('runningTrialWarning and endsTrial', () => {
+  const event = (status: TrialEvent['status']): TrialEvent => ({ trialId: 't', subject: Subject.COPILOT, questionNumber: 2, status, elapsedMs: 1 })
+
+  it('warns that a running trial is not in the export yet', () => {
+    for (const status of ['started', 'awaiting_submit', 'first_response'] as const) {
+      expect(runningTrialWarning(event(status))).toEqual({
+        title: 'A Microsoft Copilot trial is running',
+        message: 'Q2 is saved when it ends, so it is not in this export yet. Wait for it on the Test Console, then export.',
+      })
+    }
+  })
+
+  it('says a trial waiting for confirmation is not saved until it is confirmed', () => {
+    expect(runningTrialWarning(event('awaiting_confirmation'))).toEqual({
+      title: 'A Microsoft Copilot trial is waiting for you to confirm it',
+      message: 'Q2 is not saved until you click Confirm Completion on the Test Console, so it is not in this export yet.',
+    })
+  })
+
+  it('warns of nothing once the trial has ended, or before any trial', () => {
+    for (const status of ['completed', 'failed', 'cancelled', 'aborted'] as const) {
+      expect(runningTrialWarning(event(status))).toBeNull()
+      expect(endsTrial(event(status))).toBe(true)
+    }
+    expect(runningTrialWarning(undefined)).toBeNull()
+    expect(endsTrial(event('awaiting_confirmation'))).toBe(false)
   })
 })
 

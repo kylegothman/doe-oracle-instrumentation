@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ExportFormat, type ExportPreview } from '../../../shared/export'
+import type { TrialEvent } from '../../../shared/trials'
 import { describeError, useBridgeCall, type Loadable } from '../bridge'
 import { Banner, Card, Field, RadioOption, Segmented, SelectField } from '../components/ui'
 import {
@@ -8,7 +9,9 @@ import {
   describeMatches,
   describePendingSaves,
   describeRetry,
+  endsTrial,
   FORMAT_CHOICES,
+  runningTrialWarning,
   sessionLabel,
   SUBJECT_CHOICES,
   toDayValue,
@@ -40,8 +43,21 @@ export function ExportPage({ refreshKey }: { refreshKey: number }) {
   const [format, setFormat] = useState<ExportFormat>(ExportFormat.TESTLOG_V3_XLSX)
   const [exporting, setExporting] = useState(false)
   const [outcome, setOutcome] = useState<ExportOutcome>(null)
-  // Bumped after every export, so the count is read again.
+  // Bumped after every export, and when a trial ends, so the count is read again.
   const [exportCount, setExportCount] = useState(0)
+  // The latest trial event, for the warning while a trial is not saved yet.
+  const [latestTrialEvent, setLatestTrialEvent] = useState<TrialEvent | undefined>(undefined)
+
+  useEffect(
+    () =>
+      window.harness.onTrialEvent((event) => {
+        setLatestTrialEvent(event)
+        // A trial that ended may have been saved: count again, even while this tab stays open.
+        if (endsTrial(event)) setExportCount((count) => count + 1)
+      }),
+    [],
+  )
+  const trialWarning = runningTrialWarning(latestTrialEvent)
 
   const current = useBridgeCall(() => window.harness.getSession())
   const sessions = useBridgeCall(() => window.harness.listSessions(), refreshKey)
@@ -82,6 +98,11 @@ export function ExportPage({ refreshKey }: { refreshKey: number }) {
 
   return (
     <>
+      {trialWarning && (
+        <Banner tone="warning" title={trialWarning.title} testId="export-trial-warning">
+          <p>{trialWarning.message}</p>
+        </Banner>
+      )}
       <PendingSaves refreshKey={refreshKey} onRetried={() => setExportCount((count) => count + 1)} />
       <Card title="Records to export" subtitle="Superseded expert answers are always left out.">
         <Segmented label="Filter by" value={mode} choices={FILTER_MODES} onChange={setMode} testId="export-filter-mode" />
