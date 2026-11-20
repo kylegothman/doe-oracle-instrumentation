@@ -297,6 +297,8 @@ function ActiveTrialCard({
         )}
       </div>
 
+      {/* The step times and the response time count from different moments; say which. */}
+      <p className="caption steps-note">Step times: since the trial started</p>
       <ol className="steps" data-testid="trial-steps">
         {trialSteps(run.subject, run.events).map((step) => (
           <li key={step.label} className={`step step-${step.state}`} data-state={step.state}>
