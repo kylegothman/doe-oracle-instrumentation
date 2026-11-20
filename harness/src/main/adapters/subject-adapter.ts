@@ -13,8 +13,13 @@ export class AdapterDisposedError extends Error {
  * trial event with the same status.
  */
 export interface AdapterNotice {
-  /** The question is typed and the subject waits for the Tester to submit it. */
+  /**
+   * The subject waits for the Tester to act in its window, before anything
+   * is timed. Usually the question is typed and they must submit it; Google
+   * also uses it when its "unusual traffic" check must be solved first.
+   */
   status: 'awaiting_submit'
+  /** What the Tester must do, in plain words. The window shows it as it is. */
   message: string
 }
 

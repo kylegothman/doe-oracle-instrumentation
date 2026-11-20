@@ -1,4 +1,4 @@
-import type { Page, Request, Response } from 'playwright'
+import type { Locator, Page, Request, Response } from 'playwright'
 import type { FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import { Subject } from '../../shared/subjects'
@@ -9,6 +9,14 @@ import { AdapterDisposedError, type AdapterNotice, type CapturedAnswer, type Sub
 /** What the Tester is told once the search query is typed. */
 export const GOOGLE_SUBMIT_PROMPT = 'Press Enter in the Google window to submit the search query'
 
+/** What the Tester is told when Google's check stands in front of the search page, before anything is timed. */
+export const GOOGLE_CHALLENGE_PROMPT =
+  'Google is showing its "unusual traffic" check instead of the search page. Solve it yourself in the Google window, or cancel the trial. The harness will not try to pass it. Nothing is timed until you press Enter on the search.'
+
+/** Why a trial ends unsaved when Google's check comes up in place of the results. */
+export const GOOGLE_CHALLENGE_AFTER_SUBMIT =
+  'Google showed its "unusual traffic" check instead of the results, so this trial was not saved. Solve the check yourself in the Google window, then run the trial again. The harness will not try to pass it.'
+
 /** Thrown when the Google page does not behave as expected. The trial is aborted, not saved. */
 export class GoogleAnswerError extends Error {
   override readonly name = 'GoogleAnswerError'
@@ -17,6 +25,16 @@ export class GoogleAnswerError extends Error {
 /** Thrown when the Tester did not submit the query within the submit wait time. The trial is aborted, not saved. */
 export class GoogleSubmitTimeoutError extends Error {
   override readonly name = 'GoogleSubmitTimeoutError'
+}
+
+/**
+ * Thrown when Google's "unusual traffic" check stands where the search page
+ * or the results should be. The trial is aborted, not saved: the check says
+ * nothing about how Google answers a person. The harness never tries to
+ * pass it.
+ */
+export class GoogleChallengeError extends Error {
+  override readonly name = 'GoogleChallengeError'
 }
 
 /** Where the adapter gets Google's page from the BrowserManager. */
@@ -44,8 +62,6 @@ interface SearchWatch {
   firstResponse: Promise<number>
   /** The results page fired its load event. */
   loaded: Promise<number>
-  /** Rejects whichever of the three is still pending. */
-  fail: (error: Error) => void
   dispose: () => void
 }
 
@@ -92,6 +108,14 @@ interface ActiveTrial {
  * The results page not finishing loading in time is the controller's
  * timer (TIMEOUT).
  *
+ * Google may show its "unusual traffic" check instead of a page. The
+ * adapter tells the Tester in plain words and touches nothing on it:
+ * - in place of the search page, before anything is timed, it waits for
+ *   the Tester to solve the check by hand (or cancel), then goes on;
+ * - in place of the results, the trial ends unsaved, because the time from
+ *   Enter would include the solving. HTTP 429 from the search counts as
+ *   the check.
+ *
  * The harness reads only the request URL, the response status, and the
  * results as shown. It never reads cookies, and it does nothing to hide
  * that the browser is automated.
@@ -136,14 +160,7 @@ export class GoogleAdapter implements SubjectAdapter {
     }
 
     const input = page.locator(this.settings.selectors.input).first()
-    try {
-      await this.untilDisposed(trial, input.waitFor({ state: 'visible', timeout: this.pageOpenTimeoutMs }))
-    } catch (error) {
-      if (!isPlaywrightTimeout(error)) throw error
-      throw new GoogleAnswerError(
-        `The page at ${safeUrl(page)} loaded but its search box did not appear within ${seconds(this.pageOpenTimeoutMs)}. Look at the Google window.`,
-      )
-    }
+    await this.untilDisposed(trial, this.waitForSearchBox(page, input))
     await this.untilDisposed(trial, input.fill(question.text))
     const typed = await this.untilDisposed(trial, input.inputValue())
     if (typed !== question.text) {
@@ -256,6 +273,43 @@ export class GoogleAdapter implements SubjectAdapter {
     return pathnameOf(url) === this.settings.resultsPath
   }
 
+  private isChallengeUrl(url: string): boolean {
+    return pathnameOf(url).startsWith(this.settings.challengePath)
+  }
+
+  /**
+   * Waits for the home page's search box. If Google's check is showing
+   * instead, the Tester is told once, and the wait becomes the submit wait:
+   * they solve it by hand in the window, Google sends the page on to the
+   * search page, and the trial goes on from there. The adapter does not
+   * touch the check.
+   */
+  private async waitForSearchBox(page: Page, input: Locator): Promise<void> {
+    let challenged = false
+    for (;;) {
+      if (!challenged && this.isChallengeUrl(safeUrl(page))) {
+        challenged = true
+        this.notify({ status: 'awaiting_submit', message: GOOGLE_CHALLENGE_PROMPT })
+      }
+      const timeoutMs = challenged ? this.submitWaitMs : this.pageOpenTimeoutMs
+      try {
+        await input.waitFor({ state: 'visible', timeout: timeoutMs })
+        return
+      } catch (error) {
+        if (!isPlaywrightTimeout(error)) throw error
+        // The check can come up a moment after the page opened: look again before giving up.
+        if (!challenged && this.isChallengeUrl(safeUrl(page))) continue
+        throw challenged
+          ? new GoogleChallengeError(
+              `Google's "unusual traffic" check was still showing after ${seconds(timeoutMs)}. The trial was aborted and nothing was saved; solve the check in the Google window, then run the trial again.`,
+            )
+          : new GoogleAnswerError(
+              `The page at ${safeUrl(page)} loaded but its search box did not appear within ${seconds(timeoutMs)}. Look at the Google window.`,
+            )
+      }
+    }
+  }
+
   /**
    * Follows the search through the page's main-frame events. The first
    * navigation request to the results path that carries a search text is
@@ -304,6 +358,11 @@ export class GoogleAdapter implements SubjectAdapter {
       firstResponse.resolve(Date.now())
       const status = response.status()
       if (status >= 300 && status < 400) return
+      if (status === 429 || this.isChallengeUrl(response.url())) {
+        // Google's check instead of results: not a failure of the search, and not a trial worth saving.
+        fail(new GoogleChallengeError(GOOGLE_CHALLENGE_AFTER_SUBMIT))
+        return
+      }
       if (status >= 400) {
         this.report({ httpStatus: status, timedOut: false })
         return
@@ -350,7 +409,6 @@ export class GoogleAdapter implements SubjectAdapter {
       begin: begin.promise,
       firstResponse: firstResponse.promise,
       loaded: loaded.promise,
-      fail,
       dispose: () => {
         finished = true
         clearTimeout(submitTimer)

@@ -10,9 +10,12 @@ import { loadSettings, type GoogleSettings } from '../config/settings'
 import { FailureDetector } from '../execution/failure-detector'
 import { startFakeGoogle, type FakeGoogle } from './__fixtures__/fake-google'
 import {
+  GOOGLE_CHALLENGE_AFTER_SUBMIT,
+  GOOGLE_CHALLENGE_PROMPT,
   GOOGLE_SUBMIT_PROMPT,
   GoogleAdapter,
   GoogleAnswerError,
+  GoogleChallengeError,
   GoogleSubmitTimeoutError,
   type GoogleAdapterOptions,
 } from './google-adapter'
@@ -482,6 +485,134 @@ describe('GoogleAdapter against the saved search and results pages', () => {
         // With nothing highlighted there, nothing is made up.
         await page.evaluate(() => window.getSelection()?.removeAllRanges())
         expect((await created.captureAnswer()).text).toBe('')
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+  })
+
+  describe("Google's unusual-traffic check", () => {
+    it(
+      'in place of the search page: tells the Tester in plain words, waits for them to solve it, then runs the trial with nothing timed before Enter',
+      async () => {
+        google.options.challenge = 'home'
+        const created = adapterWith()
+        let settled = false
+        const pending = created.start(QUESTION)
+        void pending.then(
+          () => (settled = true),
+          () => (settled = true),
+        )
+
+        await expect.poll(() => notices.length, { timeout: 10_000 }).toBe(1)
+        expect(notices).toEqual([{ status: 'awaiting_submit', message: GOOGLE_CHALLENGE_PROMPT }])
+        expect(GOOGLE_CHALLENGE_PROMPT).toMatch(/unusual traffic/)
+        expect(GOOGLE_CHALLENGE_PROMPT).toMatch(/Solve it yourself in the Google window, or cancel/)
+
+        // The harness waits and touches nothing on the check.
+        await page.waitForTimeout(400)
+        expect(settled).toBe(false)
+        expect(google.challengesSolved).toBe(0)
+        expect(new URL(page.url()).pathname).toBe('/sorry/index')
+
+        // The Tester solves it by hand; Google sends the page on to the search page.
+        await page.locator('#solve').click()
+        await expect.poll(() => notices.length, { timeout: 10_000 }).toBe(2)
+        expect(notices[1]).toEqual({ status: 'awaiting_submit', message: GOOGLE_SUBMIT_PROMPT })
+        expect(await page.locator(BASE_SETTINGS.selectors.input).first().inputValue()).toBe(QUESTION.text)
+        expect(google.challengesSolved).toBe(1)
+        expect(settled).toBe(false)
+
+        const enterAt = await pressEnter()
+        const beginMs = await pending
+        expect(beginMs).toBeGreaterThanOrEqual(enterAt)
+        await created.waitForFirstResponse()
+        await created.waitForCompletion()
+        expect((await created.captureAnswer()).text).toContain('Combinatorial testing | CSRC')
+        expect(signals).toEqual([])
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'in place of the search page and never solved: the trial is aborted, nothing is reported, and the check is left alone',
+      async () => {
+        google.options.challenge = 'home'
+        const created = adapterWith(settingsFor(), { submitWaitMs: 500 })
+        const pending = created.start(QUESTION)
+        pending.catch(() => {})
+
+        await expect(pending).rejects.toThrow(GoogleChallengeError)
+        await expect(pending).rejects.toThrow(/still showing after 0\.5 s.*nothing was saved/)
+
+        expect(notices).toEqual([{ status: 'awaiting_submit', message: GOOGLE_CHALLENGE_PROMPT }])
+        expect(signals).toEqual([])
+        expect(google.challengesSolved).toBe(0)
+        expect(google.searches).toHaveLength(0)
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'in place of the results: the trial ends unsaved with the message to solve it and run again, and no failure is reported',
+      async () => {
+        const created = adapterWith()
+        const { pending } = await typed(created)
+        google.options.challenge = 'search'
+        await pressEnter()
+        const beginMs = await pending
+        const firstResponseMs = await created.waitForFirstResponse()
+        expect(firstResponseMs).toBeGreaterThanOrEqual(beginMs)
+
+        const completion = created.waitForCompletion()
+        await expect(completion).rejects.toThrow(GoogleChallengeError)
+        await expect(completion).rejects.toThrow(GOOGLE_CHALLENGE_AFTER_SUBMIT)
+        expect(GOOGLE_CHALLENGE_AFTER_SUBMIT).toMatch(/this trial was not saved.*run the trial again/)
+
+        // Not ERROR_RESPONSE for the 429, not anything else: the controller aborts the trial without saving it.
+        expect(signals).toEqual([])
+        expect(google.challengesSolved).toBe(0)
+        expect(new URL(page.url()).pathname).toBe('/sorry/index')
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'treats HTTP 429 from the search itself the same way',
+      async () => {
+        google.options.searchStatus = 429
+        const created = adapterWith()
+        const { pending } = await typed(created)
+        await pressEnter()
+        await pending
+        await created.waitForFirstResponse()
+
+        await expect(created.waitForCompletion()).rejects.toThrow(GoogleChallengeError)
+        expect(signals).toEqual([])
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'runs the next trial once the Tester has solved a check that ended the last one',
+      async () => {
+        const created = adapterWith()
+        const first = await typed(created)
+        google.options.challenge = 'search'
+        await pressEnter()
+        await first.pending
+        await expect(created.waitForCompletion()).rejects.toThrow(GoogleChallengeError)
+        await created.dispose()
+
+        // The Tester solves it in the window, with no trial running, then starts the trial again.
+        await page.locator('#solve').click()
+        await page.waitForURL('**/search?**')
+        google.searches.length = 0
+        notices = []
+
+        const again = await loadedResults(created)
+        expect(again.endMs).toBeGreaterThanOrEqual(again.beginMs)
+        expect(google.searches.map((search) => search.query)).toEqual([QUESTION.text])
+        expect(notices).toEqual([{ status: 'awaiting_submit', message: GOOGLE_SUBMIT_PROMPT }])
       },
       BROWSER_TEST_TIMEOUT_MS,
     )

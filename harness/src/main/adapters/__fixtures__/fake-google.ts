@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const HOME_HTML = readFileSync(fileURLToPath(new URL('./google-search.html', import.meta.url)), 'utf8')
 const RESULTS_HTML = readFileSync(fileURLToPath(new URL('./google-results.html', import.meta.url)), 'utf8')
+const SORRY_HTML = readFileSync(fileURLToPath(new URL('./google-sorry.html', import.meta.url)), 'utf8')
 /** A 1x1 transparent GIF, for the image that holds the results page's load event back. */
 const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
 
@@ -21,6 +22,13 @@ export interface FakeGoogleOptions {
   /** Drops the connection on /search without answering. */
   dropSearch: boolean
   /**
+   * Where the "unusual traffic" check stands: in front of the home page, or
+   * in front of the results. The request is redirected to /sorry/index,
+   * which answers 429 with the check, as Google does. It is lifted, back to
+   * 'none', only by the button on that page being clicked.
+   */
+  challenge: 'none' | 'home' | 'search'
+  /**
    * Which results page is served:
    * - standard: an AI overview under its heading, three organic results, a "People also ask" block;
    * - ai-without-heading: the same, but the AI overview has no heading, so only a selector finds it;
@@ -36,6 +44,7 @@ const DEFAULTS: FakeGoogleOptions = {
   searchStatus: 200,
   redirectSearch: false,
   dropSearch: false,
+  challenge: 'none',
   results: 'standard',
 }
 
@@ -45,6 +54,8 @@ export interface FakeGoogle {
   options: FakeGoogleOptions
   /** Every /search request received, in order. */
   searches: Array<{ query: string | null; receivedAt: number }>
+  /** How many times the check's button was clicked. Only a test, standing in for the Tester, may click it. */
+  challengesSolved: number
   /** Puts the options back to their defaults and forgets the searches. */
   reset(): void
   close(): Promise<void>
@@ -52,8 +63,8 @@ export interface FakeGoogle {
 
 /**
  * A small real HTTP server standing in for Google in google-adapter.test.ts:
- * the home page at /, the results page at /search, and a page a result
- * links to at /result/one. A real server, not page.route, so the browser
+ * the home page at /, the results page at /search, a page a result links
+ * to at /result/one, and the "unusual traffic" check at /sorry/index. A real server, not page.route, so the browser
  * sees real navigations, responses, and load events.
  */
 export async function startFakeGoogle(): Promise<FakeGoogle> {
@@ -61,9 +72,11 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     origin: '',
     options: { ...DEFAULTS },
     searches: [],
+    challengesSolved: 0,
     reset: () => {
       fake.options = { ...DEFAULTS }
       fake.searches.length = 0
+      fake.challengesSolved = 0
     },
     close: () =>
       new Promise((resolve) => {
@@ -85,7 +98,20 @@ async function handle(fake: FakeGoogle, request: IncomingMessage, response: Serv
   const options = fake.options
   switch (url.pathname) {
     case '/':
+      if (options.challenge === 'home') {
+        challengeRedirect(response, url)
+        return
+      }
       html(response, 200, HOME_HTML)
+      return
+    case '/sorry/index':
+      html(response, 429, SORRY_HTML.replace('__CONTINUE__', escapeAttribute(url.searchParams.get('continue') ?? '/')))
+      return
+    case '/sorry/solve':
+      fake.challengesSolved += 1
+      fake.options.challenge = 'none'
+      response.writeHead(302, { Location: url.searchParams.get('continue') ?? '/' })
+      response.end()
       return
     case '/search': {
       fake.searches.push({ query: url.searchParams.get('q'), receivedAt: Date.now() })
@@ -94,6 +120,10 @@ async function handle(fake: FakeGoogle, request: IncomingMessage, response: Serv
         return
       }
       await delay(options.searchDelayMs)
+      if (options.challenge === 'search') {
+        challengeRedirect(response, url)
+        return
+      }
       if (options.redirectSearch && !url.searchParams.has('redirected')) {
         url.searchParams.set('redirected', '1')
         response.writeHead(302, { Location: `${url.pathname}${url.search}` })
@@ -136,6 +166,16 @@ function resultsPage(variant: FakeGoogleOptions['results']): string {
     case 'empty':
       return cut(RESULTS_HTML, 'RESULTS')
   }
+}
+
+/** Sends the request on to the check, which goes back to this URL once lifted. */
+function challengeRedirect(response: ServerResponse, url: URL): void {
+  response.writeHead(302, { Location: `/sorry/index?continue=${encodeURIComponent(`${url.pathname}${url.search}`)}` })
+  response.end()
+}
+
+function escapeAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
 /** Removes everything between <!--NAME--> and <!--/NAME-->. */
