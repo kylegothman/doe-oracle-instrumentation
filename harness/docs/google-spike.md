@@ -45,6 +45,7 @@ The results container appearing is not used as a signal. A load event that fires
 - One signed-out context per launch, shared by that launch's Google trials. A context per trial would start every search with no cookies, at the price of more consent screens and checks; it was not needed for the stories.
 - Time to answer is measured in the harness: from begin to the Tester's Answer Found reaching the main process. The Tester has `answerFoundTimeoutMs` (120 seconds) from the results loading, after which the trial is saved as no answer found.
 - Answer Found saves the passage the Tester highlighted and the link of the result it came from. The AI overview is never saved.
+- A highlight inside a PDF cannot be read: Chromium's PDF viewer gives the page an empty selection (practice run of 2026-11-20, issue #76, where two trials on a NIST PDF were saved as `EMPTY_ANSWER`). Answer Found on such a page saves nothing and asks the Tester to copy the highlighted text and click Use Copied Text; the harness reads the clipboard, shows the text, and saves it once the Tester confirms, with the time to answer of the Answer Found click. See "When the highlight cannot be read" in the README.
 
 ## Not yet checked against the live site
 

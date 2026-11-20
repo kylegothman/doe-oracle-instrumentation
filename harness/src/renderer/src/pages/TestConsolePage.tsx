@@ -13,6 +13,8 @@ import {
   adjustedEndMs,
   answerFoundTime,
   answerPreview,
+  copyStep,
+  EMPTY_CLIPBOARD_NOTE,
   noAnswerMessage,
   savedResultsText,
   searchTimes,
@@ -143,6 +145,7 @@ export function TestConsolePage() {
           actionError={actionError}
           onConfirm={(trialId, endMs) => act(window.harness.confirmCompletion(trialId, endMs))}
           onNoAnswer={(trialId) => act(window.harness.reportNoAnswer(trialId))}
+          onReadCopiedText={(trialId) => window.harness.readCopiedText(trialId)}
           onCancel={(trialId) => act(window.harness.cancelTrial(trialId))}
         />
       )}
@@ -235,6 +238,7 @@ function ActiveTrialCard({
   actionError,
   onConfirm,
   onNoAnswer,
+  onReadCopiedText,
   onCancel,
 }: {
   run: Extract<Run, { phase: 'running' }>
@@ -243,9 +247,13 @@ function ActiveTrialCard({
   actionError: string | null
   onConfirm: (trialId: string, endMs?: number) => void
   onNoAnswer: (trialId: string) => void
+  onReadCopiedText: (trialId: string) => Promise<string>
   onCancel: (trialId: string) => void
 }) {
   const [now, setNow] = useState(() => Date.now())
+  // The copy step: the clipboard text the harness read, shown before it is saved, or why there is none.
+  const [copied, setCopied] = useState<string | null>(null)
+  const [copyNote, setCopyNote] = useState<string | null>(null)
   const [adjusting, setAdjusting] = useState(false)
   const [adjustSeconds, setAdjustSeconds] = useState('')
   const [adjustError, setAdjustError] = useState<string | null>(null)
@@ -255,6 +263,8 @@ function ActiveTrialCard({
   const clock = latest ? nextBarState(latest, run.latestAt) : IDLE
   // Google waiting for Answer Found (design screen 03): the page-load time and a counting "Searching for".
   const search = searchTimes(latest, limit, now)
+  // Google after an Answer Found whose highlight could not be read: the Tester copies the text instead.
+  const copy = copyStep(latest)
   const ticking = clock.anchorAt !== null || search !== null
   useEffect(() => {
     if (!ticking) return
@@ -276,6 +286,16 @@ function ActiveTrialCard({
     setAdjustError(null)
     setAdjusting(true)
   }
+  const readCopiedText = () => {
+    if (!trialId) return
+    setCopyNote(null)
+    onReadCopiedText(trialId)
+      .then((text) => {
+        if (text === '') setCopyNote(EMPTY_CLIPBOARD_NOTE)
+        else setCopied(text)
+      })
+      .catch((error: unknown) => setCopyNote(describeError(error)))
+  }
   const confirmAdjusted = () => {
     if (!trialId || beginMs === undefined) return
     const endMs = adjustedEndMs(beginMs, adjustSeconds)
@@ -290,9 +310,14 @@ function ActiveTrialCard({
     <Card
       title={`${SUBJECT_LABELS[run.subject]} trial`}
       subtitle={questionLine(run.questionNumber, questions)}
-      aside={<Badge tone="accent" label={search ? 'Searching' : 'Running'} testId="trial-badge" />}
+      aside={<Badge tone="accent" label={search ? 'Searching' : copy ? 'Copying' : 'Running'} testId="trial-badge" />}
     >
-      {search ? (
+      {copy ? (
+        <div className="metric-row" data-testid="trial-copy">
+          <Metric label="Page load" value={formatMs(copy.pageLoadMs)} testId="trial-page-load" />
+          <Metric label="Time to answer" value={formatMs(copy.timeToAnswerMs)} testId="trial-time-to-answer" />
+        </div>
+      ) : search ? (
         <div className="metric-row" data-testid="trial-search">
           <Metric label="Page load" value={formatMs(search.pageLoadMs)} testId="trial-page-load" />
           <Metric label="Searching for" value={formatElapsed(search.searchingMs)} testId="trial-searching" />
@@ -333,6 +358,23 @@ function ActiveTrialCard({
         </Banner>
       )}
 
+      {copy && (
+        <>
+          <Panel label="Source">
+            <p className="panel-text mono" data-testid="trial-copy-source">
+              {copy.sourceUrl ?? '—'}
+            </p>
+          </Panel>
+          {copied !== null && (
+            <Panel label="Copied text, saved as the answer when you confirm">
+              <p className="panel-text answer-text" data-testid="trial-copied-text">
+                {copied}
+              </p>
+            </Panel>
+          )}
+        </>
+      )}
+
       {confirming && adjusting && (
         <div className="adjust-row">
           <Field label="End, in seconds after your Enter">
@@ -351,9 +393,9 @@ function ActiveTrialCard({
           </Field>
         </div>
       )}
-      {(adjustError ?? actionError) && (
+      {(adjustError ?? copyNote ?? actionError) && (
         <p role="alert" className="caption match-count-problem" data-testid="trial-action-error">
-          {adjustError ?? actionError}
+          {adjustError ?? copyNote ?? actionError}
         </p>
       )}
 
@@ -370,6 +412,27 @@ function ActiveTrialCard({
             <button type="button" className="button" onClick={() => trialId && onConfirm(trialId)} data-testid="answer-found">
               Answer Found
             </button>
+          </span>
+        )}
+        {copy && (
+          <span className="actions">
+            <button type="button" className="button button-secondary" onClick={() => trialId && onNoAnswer(trialId)} data-testid="no-answer">
+              No Answer Found
+            </button>
+            <button
+              type="button"
+              className={copied === null ? 'button' : 'button button-secondary'}
+              onClick={readCopiedText}
+              data-testid="use-copied-text"
+            >
+              {copied === null ? 'Use Copied Text' : 'Read Clipboard Again'}
+            </button>
+            {/* The confirm call saves the text the harness last read, with the time to answer of the Answer Found click. */}
+            {copied !== null && (
+              <button type="button" className="button" onClick={() => trialId && onConfirm(trialId)} data-testid="confirm-copied-text">
+                Save This Text
+              </button>
+            )}
           </span>
         )}
         {confirming && !search && !adjusting && (

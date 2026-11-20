@@ -6,6 +6,7 @@ import {
   adjustedEndMs,
   answerFoundTime,
   answerPreview,
+  copyStep,
   noAnswerMessage,
   savedResultsText,
   searchTimes,
@@ -220,6 +221,52 @@ describe('timerCaption', () => {
 
   it('draws no bar before the limits are known', () => {
     expect(timerCaption(undefined, false)).toEqual({ text: 'since the trial started', showProgress: false })
+  })
+})
+
+describe('the copy step, after an Answer Found whose highlight could not be read', () => {
+  const beginMs = 1_000_000
+  const copying = event(Subject.GOOGLE, 'awaiting_copied_text', 40_000, {
+    beginMs,
+    endMs: beginMs + 812,
+    answerFoundMs: beginMs + 38_400,
+    sourceUrl: 'https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=50944',
+  })
+
+  it('shows the page load, the time to answer of the Answer Found click, and the page the text comes from', () => {
+    expect(copyStep(copying)).toEqual({
+      pageLoadMs: 812,
+      timeToAnswerMs: 38_400,
+      sourceUrl: 'https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=50944',
+    })
+  })
+
+  it('is not shown for any other status, and stops the searching time', () => {
+    expect(copyStep(event(Subject.GOOGLE, 'awaiting_confirmation', 1, { beginMs, endMs: beginMs + 812 }))).toBeNull()
+    expect(copyStep(undefined)).toBeNull()
+    expect(searchTimes(copying, googleLimit, beginMs + 90_000)).toBeNull()
+  })
+
+  it('shows dashes for times the event does not carry', () => {
+    expect(copyStep(event(Subject.GOOGLE, 'awaiting_copied_text', 1))).toEqual({ pageLoadMs: null, timeToAnswerMs: null, sourceUrl: null })
+  })
+
+  it('tells the Tester to copy the text and that nothing is timed', () => {
+    const banner = waitingBanner(copying, googleLimit)
+    expect(banner?.title).toBe('The highlighted text could not be read')
+    expect(banner?.message).toMatch(/copy the highlighted text \(Ctrl\+C, or Cmd\+C on a Mac\), then click Use Copied Text/)
+    expect(banner?.message).toMatch(/no time limit on this step/)
+  })
+
+  it("keeps Google's four steps checked off", () => {
+    const events = [
+      event(Subject.GOOGLE, 'started', 0),
+      event(Subject.GOOGLE, 'awaiting_submit', 900),
+      event(Subject.GOOGLE, 'first_response', 1_200),
+      event(Subject.GOOGLE, 'awaiting_confirmation', 1_900, { beginMs, endMs: beginMs + 812 }),
+      copying,
+    ]
+    expect(trialSteps(Subject.GOOGLE, events).map((step) => step.state)).toEqual(['done', 'done', 'done', 'done'])
   })
 })
 

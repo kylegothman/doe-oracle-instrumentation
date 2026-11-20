@@ -11,6 +11,8 @@ import { FailureDetector } from '../execution/failure-detector'
 import { startFakeGoogle, type FakeGoogle } from './__fixtures__/fake-google'
 import {
   choosePassage,
+  readTab,
+  unreadTabInFront,
   GOOGLE_CHALLENGE_AFTER_SUBMIT,
   GOOGLE_CHALLENGE_PROMPT,
   GOOGLE_SUBMIT_PROMPT,
@@ -486,9 +488,26 @@ describe('GoogleAdapter against the saved search and results pages', () => {
         expect(answer.text).toBe('Most failures are triggered by one or two parameters interacting.')
         expect(answer.sourceUrl).toBe(`${google.origin}/result/one`)
 
-        // With nothing highlighted there, nothing is made up.
-        await page.evaluate(() => window.getSelection()?.removeAllRanges())
-        expect((await created.captureAnswer()).text).toBe('')
+        // The highlighted passage is read as it was before the copy step existed: no flag on it.
+        expect(answer.unreadable).toBeUndefined()
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'on a page the Tester opened from a result, reports the highlight as unreadable when the page gives none, as a PDF does',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+
+        // Chromium's PDF viewer gives the harness an empty selection whatever is highlighted in it (tests #58
+        // and #59 of the practice run). Headless Chromium has no PDF viewer, so a page with no selection stands in.
+        await page.locator('#result-1 a').click()
+        await page.waitForURL('**/result/one')
+        const answer = await created.captureAnswer()
+
+        // Nothing is made up, and it is not an answer to save: the Tester is asked to copy the text.
+        expect(answer).toEqual({ text: '', citations: [], sourceUrl: `${google.origin}/result/one`, unreadable: true })
       },
       BROWSER_TEST_TIMEOUT_MS,
     )
@@ -551,18 +570,70 @@ describe('GoogleAdapter against the saved search and results pages', () => {
     )
 
     it(
-      'reads the results as before when the other tab has nothing highlighted',
+      'reports the highlight as unreadable, with the new tab as the source, when a PDF opened in a new tab is in front',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+        // A result opened in a new tab whose highlight cannot be read: before, the whole results page was
+        // saved as a success under Google's own URL.
+        const tab = await resultInNewTab()
+        await tab.evaluate(() => window.getSelection()?.removeAllRanges())
+        const tabInFront = await tab.evaluate(() => document.visibilityState === 'visible')
+
+        const answer = await created.captureAnswer()
+
+        // Headless Chromium reports every tab as in front, which is the case under test. Should a browser
+        // report the new tab as hidden, the Tester is on the results tab and it is read as before.
+        // unreadTabInFront's tests below pin down both rules without depending on the browser.
+        if (tabInFront) {
+          expect(answer).toEqual({ text: '', citations: [], sourceUrl: `${google.origin}/result/one`, unreadable: true })
+        } else {
+          expect(answer.unreadable).toBeUndefined()
+          expect(answer.text).toContain('Combinatorial testing | CSRC')
+          expect(answer.sourceUrl).toBe(page.url())
+        }
+        await tab.close()
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'still reads a highlight on the results page when a tab with no readable highlight is open',
       async () => {
         const created = adapterWith()
         await loadedResults(created)
         const tab = await resultInNewTab()
         await tab.evaluate(() => window.getSelection()?.removeAllRanges())
+        await highlight('#snippet-3')
 
         const answer = await created.captureAnswer()
 
+        expect(answer.unreadable).toBeUndefined()
+        expect(answer.text).toBe('Pairwise testing is the 2-way case of combinatorial testing.')
+        expect(answer.sourceUrl).toBe('https://example.net/pairwise')
+        await tab.close()
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'never takes a tab left open from an earlier trial for the page the Tester is on',
+      async () => {
+        const first = adapterWith()
+        await loadedResults(first)
+        const leftOver = await resultInNewTab()
+        await leftOver.evaluate(() => window.getSelection()?.removeAllRanges())
+        await first.dispose()
+        notices = []
+
+        const second = adapterWith()
+        await loadedResults(second)
+        const answer = await second.captureAnswer()
+
+        expect(answer.unreadable).toBeUndefined()
         expect(answer.text).toContain('Combinatorial testing | CSRC')
         expect(answer.sourceUrl).toBe(page.url())
-        await tab.close()
+        await leftOver.close()
       },
       BROWSER_TEST_TIMEOUT_MS,
     )
@@ -757,6 +828,59 @@ describe('choosePassage: which tab Answer Found reads', () => {
 
   it('takes nothing when no other tab has a highlight', () => {
     expect(choosePassage([], false)).toBeNull()
+  })
+})
+
+describe('unreadTabInFront: which page the Tester is asked to copy from', () => {
+  const pdf = { url: 'https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=50944', text: '', visible: true }
+  const older = { url: 'https://a.example/older', text: '', visible: true }
+  const background = { url: 'https://b.example/background', text: '', visible: false }
+  const hung = { url: 'https://c.example/hung', text: null, visible: null }
+
+  it('takes the tab that says it is in front', () => {
+    expect(unreadTabInFront([background, pdf], false)).toBe(pdf.url)
+  })
+
+  it('takes the newest when more than one tab is in front, as with two windows side by side', () => {
+    expect(unreadTabInFront([pdf, older], true)).toBe(pdf.url)
+  })
+
+  it("takes none when the opened tabs are in the background: the Tester is on the trial's own tab", () => {
+    expect(unreadTabInFront([background], true)).toBeNull()
+    expect(unreadTabInFront([], true)).toBeNull()
+  })
+
+  it("takes a tab that could not be read at all only when the trial's own tab is not in front", () => {
+    expect(unreadTabInFront([hung, background], false)).toBe(hung.url)
+    expect(unreadTabInFront([hung, background], true)).toBeNull()
+    expect(unreadTabInFront([hung, background], null)).toBeNull()
+  })
+})
+
+describe('readTab: reading one tab on Answer Found', () => {
+  it('gives up after its time limit on a tab that never answers, so a PDF tab cannot hang the trial', async () => {
+    const stuck = { url: () => 'https://a.example/paper.pdf', evaluate: () => new Promise<never>(() => {}) }
+    const startedAt = Date.now()
+
+    const reading = await readTab(stuck as unknown as Page, 100)
+
+    expect(reading).toEqual({ url: 'https://a.example/paper.pdf', text: null, visible: null })
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
+
+  it('comes back unread, not with an error, for a tab that cannot be read', async () => {
+    const broken = {
+      url: () => 'https://a.example/closed',
+      evaluate: () => Promise.reject(new Error('Target page, context or browser has been closed')),
+    }
+
+    await expect(readTab(broken as unknown as Page, 100)).resolves.toEqual({ url: 'https://a.example/closed', text: null, visible: null })
+  })
+
+  it('returns the trimmed highlight and whether the tab is in front', async () => {
+    const tab = { url: () => 'https://a.example/page', evaluate: async () => ({ text: 'A passage.', visible: true }) }
+
+    await expect(readTab(tab as unknown as Page, 100)).resolves.toEqual({ url: 'https://a.example/page', text: 'A passage.', visible: true })
   })
 })
 

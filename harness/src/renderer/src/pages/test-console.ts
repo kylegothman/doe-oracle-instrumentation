@@ -48,7 +48,7 @@ export function startHelp(subject: Subject): string {
     case Subject.COPILOT:
       return 'The harness fills the question in on Copilot and you press Enter in the browser. When the answer stops changing, you confirm the end.'
     case Subject.GOOGLE:
-      return 'The harness fills the question in on Google, signed out, and you press Enter in the browser. When the results have loaded, you highlight the passage that answers the question and click Answer Found, or No Answer Found.'
+      return 'The harness fills the question in on Google, signed out, and you press Enter in the browser. When the results have loaded, you highlight the passage that answers the question and click Answer Found, or No Answer Found. If the passage is in a PDF, you are then asked to copy it.'
   }
 }
 
@@ -109,6 +109,21 @@ export function searchTimes(latest: TrialEvent | undefined, limit: TrialLimit | 
   return { pageLoadMs: latest.endMs - latest.beginMs, searchingMs: Math.max(0, now - latest.beginMs) }
 }
 
+/**
+ * While Google waits for the Tester to copy the highlighted text, after an
+ * Answer Found whose highlight could not be read (inside a PDF, for
+ * example): the page-load time, the time to answer, which stays the Answer
+ * Found click, and the page the text is taken from. Null outside that wait.
+ */
+export function copyStep(latest: TrialEvent | undefined): { pageLoadMs: number | null; timeToAnswerMs: number | null; sourceUrl: string | null } | null {
+  if (latest?.status !== 'awaiting_copied_text') return null
+  const since = (ms: number | undefined) => (latest.beginMs === undefined || ms === undefined ? null : ms - latest.beginMs)
+  return { pageLoadMs: since(latest.endMs), timeToAnswerMs: since(latest.answerFoundMs), sourceUrl: latest.sourceUrl ?? null }
+}
+
+/** What the copy step says when the clipboard held no text. */
+export const EMPTY_CLIPBOARD_NOTE = 'The clipboard has no text. Copy the highlighted text in the Google window, then click Use Copied Text again.'
+
 function withStates(steps: ReadonlyArray<Omit<Step, 'state'>>, done: number): Step[] {
   return steps.map((step, index) => ({ ...step, state: index < done ? 'done' : index === done ? 'current' : 'pending' }))
 }
@@ -137,6 +152,15 @@ export function timerCaption(limit: TrialLimit | undefined, measured: boolean): 
 export function waitingBanner(latest: TrialEvent | undefined, limit?: TrialLimit): { title: string; message: string } | null {
   if (latest?.status === 'awaiting_submit') {
     return { title: `Your turn in the ${SUBJECT_LABELS[latest.subject]} window`, message: latest.message ?? 'The question is filled in. Press Enter there to send it.' }
+  }
+  if (latest?.status === 'awaiting_copied_text') {
+    return {
+      title: 'The highlighted text could not be read',
+      message:
+        'The page you opened does not let the harness read a highlight (a PDF, for example). ' +
+        'In the Google window, copy the highlighted text (Ctrl+C, or Cmd+C on a Mac), then click Use Copied Text. ' +
+        'You will see the text before it is saved. Your time to answer is already recorded and there is no time limit on this step.',
+    }
   }
   if (latest?.status === 'awaiting_confirmation' && limit?.answerFound) {
     const deadline =

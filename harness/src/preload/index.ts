@@ -33,6 +33,7 @@ const harnessApi: HarnessApi = {
     endMs === undefined ? invoke(IpcChannels.confirmCompletion, trialId) : invoke(IpcChannels.confirmCompletion, trialId, endMs),
   cancelTrial: (trialId) => invoke(IpcChannels.cancelTrial, trialId),
   reportNoAnswer: (trialId) => invoke(IpcChannels.reportNoAnswer, trialId),
+  readCopiedText: (trialId) => invoke(IpcChannels.readCopiedText, trialId),
   listTrials: (sessionId) =>
     sessionId === undefined ? invoke(IpcChannels.listTrials) : invoke(IpcChannels.listTrials, sessionId),
   openCopilotSignIn: () => invoke(IpcChannels.openCopilotSignIn),

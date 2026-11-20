@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron'
 import { ExportFormat } from '../shared/export'
 import { IpcChannels } from '../shared/ipc'
 import { Subject } from '../shared/subjects'
@@ -28,6 +28,7 @@ import {
   createCancelTrialHandler,
   createConfirmCompletionHandler,
   createListTrialsHandler,
+  createReadCopiedTextHandler,
   createReportNoAnswerHandler,
   createStartTrialHandler,
 } from './execution/handlers/trials'
@@ -131,6 +132,8 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
         session,
         policies: settings.trialPolicies,
         events: router,
+        // Read only when the Tester clicks Use Copied Text on Google's copy step.
+        clipboard,
       }),
   )
   router.register(IpcChannels.getAppInfo, createGetAppInfoHandler(app))
@@ -140,6 +143,7 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   router.register(IpcChannels.confirmCompletion, createConfirmCompletionHandler(() => controllerReady))
   router.register(IpcChannels.cancelTrial, createCancelTrialHandler(() => controllerReady))
   router.register(IpcChannels.reportNoAnswer, createReportNoAnswerHandler(() => controllerReady))
+  router.register(IpcChannels.readCopiedText, createReadCopiedTextHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   router.register(IpcChannels.openCopilotSignIn, createOpenCopilotSignInHandler({ pages: browserManager, settings: settings.copilot }))
   router.register(IpcChannels.listFailedWrites, createListFailedWritesHandler(errorLog))
