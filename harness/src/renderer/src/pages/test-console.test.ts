@@ -142,6 +142,32 @@ describe('questionLabel and questionLine', () => {
   it('falls back to the number when the text is not known', () => {
     expect(questionLine(5, questions)).toBe('Q5')
   })
+
+  it('cuts a long question at a word in the dropdown, and keeps it whole on the trial cards', () => {
+    const long = {
+      number: 9,
+      text: 'If a system has 4 parameters with 3 values each, how many tests does exhaustive testing need, compared to pairwise testing?',
+    }
+
+    expect(questionLabel(long)).toBe('Q9 · If a system has 4 parameters with 3 values each, how many tests does…')
+    expect(questionLine(9, [long])).toBe(`Q9 · ${long.text}`)
+  })
+
+  it('keeps a word that ends exactly at the limit, and drops punctuation left before the ellipsis', () => {
+    const seventy = `${'word '.repeat(13)}words`
+    expect(seventy).toHaveLength(70)
+    expect(questionLabel({ number: 2, text: `${seventy} and more` })).toBe(`Q2 · ${seventy}…`)
+    expect(questionLabel({ number: 3, text: `${'word '.repeat(13)}word, and then some more text` })).toBe(`Q3 · ${'word '.repeat(13)}word…`)
+  })
+
+  it('leaves a question of 70 characters or fewer as it is', () => {
+    const text = 'Why does combinatorial testing guarantee that all faults are found?'
+    expect(questionLabel({ number: 10, text })).toBe(`Q10 · ${text}`)
+  })
+
+  it('cuts a single word longer than the limit at the limit', () => {
+    expect(questionLabel({ number: 1, text: 'x'.repeat(80) })).toBe(`Q1 · ${'x'.repeat(70)}…`)
+  })
 })
 
 describe('trialSteps', () => {

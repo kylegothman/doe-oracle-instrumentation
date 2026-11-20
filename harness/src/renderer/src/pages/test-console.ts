@@ -18,9 +18,26 @@ export const SUBJECT_CHOICES: ReadonlyArray<{ value: Subject; label: string; dis
   disabled: false,
 }))
 
-/** How a question is listed: "Q1 · What is combinatorial testing?" */
+/** How much of a question's text the Question list shows before cutting it. */
+const LABEL_TEXT_CHARS = 70
+
+/**
+ * How a question is listed in the Question dropdown: "Q1 · What is
+ * combinatorial testing?". A long question is cut at a word, with an
+ * ellipsis, so the open list is never wider than the window; the whole
+ * text is shown under "Exact text sent" once the question is picked.
+ */
 export function questionLabel(question: Question): string {
-  return `Q${question.number} · ${question.text}`
+  return `Q${question.number} · ${cutAtWord(question.text, LABEL_TEXT_CHARS)}`
+}
+
+/** The text itself when it fits in maxChars, otherwise its leading whole words and an ellipsis. */
+function cutAtWord(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  // One character past the limit, so a word that ends exactly at the limit is kept.
+  const lastSpace = text.slice(0, maxChars + 1).lastIndexOf(' ')
+  const kept = lastSpace > 0 ? text.slice(0, lastSpace) : text.slice(0, maxChars)
+  return `${kept.replace(/[\s,;:.]+$/, '')}…`
 }
 
 /** What happens once the Tester clicks Start Trial, per subject. */
@@ -189,10 +206,10 @@ export function trialTitle(trial: Pick<Trial, 'testNumber' | 'subject'>): string
   return `Trial #${trial.testNumber} · ${SUBJECT_LABELS[trial.subject]}`
 }
 
-/** "Q4 · What is the difference…", or just "Q4" when the question text is not known. */
+/** The number and the whole question, "Q4 · What is the difference between…?", or just "Q4" when the text is not known. */
 export function questionLine(questionNumber: number, questions: readonly Question[]): string {
   const question = questions.find((candidate) => candidate.number === questionNumber)
-  return question ? questionLabel(question) : `Q${questionNumber}`
+  return question ? `Q${question.number} · ${question.text}` : `Q${questionNumber}`
 }
 
 /**
