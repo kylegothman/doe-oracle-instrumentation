@@ -72,6 +72,13 @@ interface ActiveTrial {
   watch: SearchWatch | null
   /** The results page's URL once it has loaded, so capture knows whether the Tester is still on it. */
   resultsUrl: string | null
+  /**
+   * The tabs already open in Google's window when this trial started, such
+   * as a result opened in an earlier trial. Their highlights belong to that
+   * trial, so Answer Found never reads them.
+   */
+  earlierTabs: ReadonlySet<Page>
+
   /** Rejects with AdapterDisposedError when dispose() runs, so pending waits settle at once. */
   disposed: Promise<never>
   markDisposed: () => void
@@ -149,6 +156,7 @@ export class GoogleAdapter implements SubjectAdapter {
 
     const page = await this.untilDisposed(trial, this.pages.getPage(this.subject))
     trial.page = page
+    trial.earlierTabs = new Set(tabsOf(page))
 
     try {
       await this.untilDisposed(trial, openSubjectPage(page, this.subject, this.settings.searchUrl))
@@ -201,12 +209,23 @@ export class GoogleAdapter implements SubjectAdapter {
    *   and outside the AI overview, with the URL of the result it came from;
    * - with nothing highlighted, the text of the results as shown, without
    *   the AI overview, and the results page's own URL.
-   * If the Tester has opened a result in the Google window, the highlighted
-   * passage on that page is read with that page's URL. The text is never
+   * If the Tester has opened a result in the Google window, in the same tab
+   * or in a new one, the highlighted passage on that page is read with that
+   * page's URL (see passageInOtherTab for which tab wins). The text is never
    * replaced: a page with no results gives an empty answer.
    */
   async captureAnswer(): Promise<CapturedAnswer> {
     const { trial, page } = this.submittedTrial()
+
+    // A result opened in another tab (middle-click, Ctrl-click, or a link
+    // that opens one): the passage highlighted there is the answer. Found
+    // on the first live run, where the highlight was otherwise missed and
+    // the whole results page was saved instead.
+    const fromOtherTab = await this.passageInOtherTab(page, trial.earlierTabs)
+    if (fromOtherTab) {
+      return { text: fromOtherTab.text, citations: [], sourceUrl: fromOtherTab.url }
+    }
+
     const pageUrl = safeUrl(page)
     if (trial.resultsUrl !== null && pageUrl !== trial.resultsUrl && !this.isResultsUrl(pageUrl)) {
       const text = await page.evaluate(() => (window.getSelection()?.toString() ?? '').trim())
@@ -245,6 +264,35 @@ export class GoogleAdapter implements SubjectAdapter {
     trial.watch?.dispose()
     trial.watch = null
     trial.markDisposed()
+  }
+
+  /**
+   * A passage highlighted in a tab other than the trial's own, in Google's
+   * browser context, which holds only the trial's tab and what was opened
+   * from it. The tab the Tester is looking at (the visible one) wins; if
+   * that is the trial's own tab and it has a highlight too, the trial's tab
+   * is read as before, so a highlight left behind in another tab never
+   * overrides the one the Tester just made. Otherwise the newest tab with a
+   * highlight is used. Other Google results or check pages are not results
+   * and are skipped, and so is every tab that was already open when the
+   * trial started (`earlierTabs`): a highlight left in a result from an
+   * earlier trial must never become this trial's answer. Null when no tab
+   * opened during this trial has a highlight.
+   */
+  private async passageInOtherTab(page: Page, earlierTabs: ReadonlySet<Page>): Promise<{ text: string; url: string } | null> {
+    const others = tabsOf(page)
+      .filter((other) => other !== page && !earlierTabs.has(other) && !other.isClosed())
+      .reverse()
+    const found: TabPassage[] = []
+    for (const other of others) {
+      const url = safeUrl(other)
+      if (url === '' || this.isResultsUrl(url) || this.isChallengeUrl(url)) continue
+      const selection = await readSelection(other)
+      if (selection && selection.text !== '') found.push({ ...selection, url })
+    }
+    if (found.length === 0) return null
+    const own = await readSelection(page)
+    return choosePassage(found, own !== null && own.text !== '')
   }
 
   /** The current trial once the Tester has submitted the search; throws otherwise. */
@@ -433,6 +481,7 @@ function newActiveTrial(): ActiveTrial {
     submitted: false,
     watch: null,
     resultsUrl: null,
+    earlierTabs: new Set(),
     disposed,
     markDisposed: () => markDisposed(),
   }
@@ -580,6 +629,64 @@ function readResults(args: ReadResultsArgs): { text: string; sourceUrl: string |
     return { text, sourceUrl: null }
   } finally {
     copy.remove()
+  }
+}
+
+/** Every tab of the page's browser context, oldest first; none when the context is gone. */
+function tabsOf(page: Page): Page[] {
+  try {
+    return page.context().pages()
+  } catch {
+    return []
+  }
+}
+
+/** A highlight found in a tab other than the trial's own. */
+export interface TabPassage {
+  text: string
+  url: string
+  /** Whether the Tester is looking at that tab: the one in front in its window. */
+  visible: boolean
+}
+
+/**
+ * Which other tab's highlight Answer Found saves, given the highlights found
+ * in the other tabs (newest tab first) and whether the trial's own tab has
+ * one. Null means "read the trial's own tab as before":
+ * - the tab the Tester is looking at wins;
+ * - else a highlight in the trial's own tab wins, so one left behind in a
+ *   background tab never overrides the one just made on the results;
+ * - else the newest tab with a highlight.
+ */
+export function choosePassage(found: readonly TabPassage[], ownTabHasHighlight: boolean): { text: string; url: string } | null {
+  const pick = found.find((candidate) => candidate.visible) ?? (ownTabHasHighlight ? undefined : found[0])
+  return pick ? { text: pick.text, url: pick.url } : null
+}
+
+/** How long reading a tab's highlight may take: a tab that is busy or hung must not hold up Answer Found. */
+const READ_SELECTION_TIMEOUT_MS = 2_000
+
+/**
+ * A tab's highlighted text and whether the Tester is looking at it, or null
+ * when it cannot be read in time (closed, busy, or a page without a DOM,
+ * such as a PDF viewer).
+ */
+async function readSelection(page: Page): Promise<{ text: string; visible: boolean } | null> {
+  const read = page.evaluate(() => ({
+    text: (window.getSelection()?.toString() ?? '').trim(),
+    visible: document.visibilityState === 'visible',
+  }))
+  read.catch(() => {})
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), READ_SELECTION_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([read, timeout])
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
   }
 }
 

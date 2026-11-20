@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { chromium, type Browser, type Page } from 'playwright'
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { FailureType, type FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
@@ -10,6 +10,7 @@ import { loadSettings, type GoogleSettings } from '../config/settings'
 import { FailureDetector } from '../execution/failure-detector'
 import { startFakeGoogle, type FakeGoogle } from './__fixtures__/fake-google'
 import {
+  choosePassage,
   GOOGLE_CHALLENGE_AFTER_SUBMIT,
   GOOGLE_CHALLENGE_PROMPT,
   GOOGLE_SUBMIT_PROMPT,
@@ -34,6 +35,7 @@ const detector = new FailureDetector()
 describe('GoogleAdapter against the saved search and results pages', () => {
   let browser: Browser
   let google: FakeGoogle
+  let context: BrowserContext
   let page: Page
   let notices: AdapterNotice[]
   let signals: FailureSignal[]
@@ -51,7 +53,9 @@ describe('GoogleAdapter against the saved search and results pages', () => {
 
   beforeEach(async () => {
     google.reset()
-    page = await browser.newPage()
+    // A context of its own, as BrowserManager gives Google, so a test can open a second tab in it.
+    context = await browser.newContext()
+    page = await context.newPage()
     notices = []
     signals = []
     adapter = null
@@ -59,7 +63,7 @@ describe('GoogleAdapter against the saved search and results pages', () => {
 
   afterEach(async () => {
     await adapter?.dispose()
-    await page.close()
+    await context.close()
   })
 
   function settingsFor(overrides: Partial<GoogleSettings> = {}): GoogleSettings {
@@ -488,6 +492,108 @@ describe('GoogleAdapter against the saved search and results pages', () => {
       },
       BROWSER_TEST_TIMEOUT_MS,
     )
+
+    /** Opens a result in a second tab of the trial's context, as a middle-click does, and highlights a passage there. */
+    async function resultInNewTab(): Promise<Page> {
+      const tab = await page.context().newPage()
+      await tab.goto(`${google.origin}/result/one`)
+      await tab.evaluate(() => {
+        const node = document.querySelector('#passage')
+        if (!node) throw new Error('No #passage on the result page')
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+      })
+      return tab
+    }
+
+    it(
+      'on a result the Tester opened in a new tab, saves the passage highlighted there with that page as the source',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+        const tab = await resultInNewTab()
+
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).toBe('Most failures are triggered by one or two parameters interacting.')
+        expect(answer.sourceUrl).toBe(`${google.origin}/result/one`)
+        // The results page in the trial's own tab is left as it was.
+        expect(new URL(page.url()).pathname).toBe('/search')
+        await tab.close()
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'never reads a tab left open from an earlier trial, even with a highlight still in it',
+      async () => {
+        // Trial 1: the Tester opened a result in a new tab and highlighted it.
+        const first = adapterWith()
+        await loadedResults(first)
+        const leftOver = await resultInNewTab()
+        expect((await first.captureAnswer()).sourceUrl).toBe(`${google.origin}/result/one`)
+        await first.dispose()
+        notices = []
+
+        // Trial 2, with that tab still open: nothing is highlighted this time.
+        const second = adapterWith()
+        await loadedResults(second)
+        const answer = await second.captureAnswer()
+
+        expect(answer.text).not.toContain('Most failures are triggered')
+        expect(answer.text).toContain('Combinatorial testing | CSRC')
+        expect(answer.sourceUrl).toBe(page.url())
+        await leftOver.close()
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'reads the results as before when the other tab has nothing highlighted',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+        const tab = await resultInNewTab()
+        await tab.evaluate(() => window.getSelection()?.removeAllRanges())
+
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).toContain('Combinatorial testing | CSRC')
+        expect(answer.sourceUrl).toBe(page.url())
+        await tab.close()
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      "prefers a passage highlighted on the results page in the trial's tab, when the other tab is not the one in view",
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+        const tab = await resultInNewTab()
+        // The Tester went back to the results tab and highlighted a snippet there.
+        await page.bringToFront()
+        await highlight('#snippet-3')
+        const tabVisible = await tab.evaluate(() => document.visibilityState === 'visible')
+
+        const answer = await created.captureAnswer()
+
+        // Headless Chromium reports every tab as visible, so here the other
+        // tab counts as the one in view; in the headed app it is hidden and
+        // the results-page highlight wins. choosePassage's tests below pin
+        // down both rules without depending on the browser.
+        if (tabVisible) {
+          expect(answer.text).toBe('Most failures are triggered by one or two parameters interacting.')
+        } else {
+          expect(answer.text).toBe('Pairwise testing is the 2-way case of combinatorial testing.')
+          expect(answer.sourceUrl).toBe('https://example.net/pairwise')
+        }
+        await tab.close()
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
   })
 
   describe("Google's unusual-traffic check", () => {
@@ -632,6 +738,28 @@ describe('GoogleAdapter against the saved search and results pages', () => {
 })
 
 /** A URL on this machine that nothing listens on: a port a server just gave back. */
+describe('choosePassage: which tab Answer Found reads', () => {
+  const background = { text: 'Old highlight', url: 'https://a.example/old', visible: false }
+  const newerBackground = { text: 'Newer highlight', url: 'https://b.example/newer', visible: false }
+  const inView = { text: 'Passage in view', url: 'https://c.example/in-view', visible: true }
+
+  it('takes the tab the Tester is looking at, whatever else has a highlight', () => {
+    expect(choosePassage([newerBackground, inView, background], true)).toEqual({ text: 'Passage in view', url: 'https://c.example/in-view' })
+  })
+
+  it("lets a highlight in the trial's own tab win over one left in a background tab", () => {
+    expect(choosePassage([newerBackground, background], true)).toBeNull()
+  })
+
+  it("otherwise takes the newest tab with a highlight", () => {
+    expect(choosePassage([newerBackground, background], false)).toEqual({ text: 'Newer highlight', url: 'https://b.example/newer' })
+  })
+
+  it('takes nothing when no other tab has a highlight', () => {
+    expect(choosePassage([], false)).toBeNull()
+  })
+})
+
 async function closedPortUrl(): Promise<string> {
   const server = createServer()
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))

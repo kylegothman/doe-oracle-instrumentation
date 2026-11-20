@@ -258,8 +258,11 @@ Once the results have loaded, the Tester looks for the answer and the controller
 | --- | --- | --- |
 | highlighted a passage in the results | the highlighted text | the link of the result the passage starts in, not the search page |
 | highlighted nothing, or only text outside the results or inside the AI overview | the text of the results list as shown | the results page's own URL |
-| opened a result in the Google window and highlighted a passage there | the highlighted text | that page's URL |
-| opened a result and highlighted nothing | empty, so the trial is saved as an `EMPTY_ANSWER` failure | that page's URL |
+| opened a result in the Google window's tab and highlighted a passage there | the highlighted text | that page's URL |
+| opened a result in that tab and highlighted nothing | empty, so the trial is saved as an `EMPTY_ANSWER` failure | that page's URL |
+| opened a result in a new tab or window (middle-click, Ctrl-click) and highlighted a passage there | the highlighted text | that page's URL |
+
+Every tab of Google's window is checked for a highlight, since a result opened in a new tab is as common as one opened in place. Found on the first live run on Windows: a result opened in a new tab had its highlight missed and the whole results page saved instead. When more than one tab has a highlight, the tab the Tester is looking at wins; if that is the results tab, its highlight wins over one left in a background tab; otherwise the newest tab with a highlight is used (`choosePassage` in `google-adapter.ts`). Another Google results page in a second tab is not a result and is skipped, and so is every tab that was already open when the trial started: a result left open from an earlier trial, highlight and all, never becomes this trial's answer (also found on the live run). To use a page again, open it again from this trial's results. The Test Console says when the results page's text was saved because nothing was highlighted.
 
 The AI overview is never captured: it is cut from the results before they are read, and a passage highlighted inside it does not count as highlighted. It is found by its heading ("AI Overview", `google.aiOverviewLabels`) and by `google.selectors.aiOverview` when a container is known. Google's menus and footer are outside the results list and are not read either. The answer is never replaced with other text: if the page shows nothing, the answer is empty.
 
