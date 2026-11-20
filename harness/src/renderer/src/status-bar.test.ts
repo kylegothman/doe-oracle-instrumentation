@@ -36,6 +36,14 @@ describe('nextBarState', () => {
     })
   })
 
+  it("counts on from the Enter while the Tester looks for Google's answer", () => {
+    const google = { ...event('awaiting_confirmation', 9_000), subject: Subject.GOOGLE, beginMs: 10_000, endMs: 10_812 }
+    const state = nextBarState(google, 48_400)
+    expect(state).toMatchObject({ phase: 'searching', subject: Subject.GOOGLE, elapsedMs: 38_400, anchorAt: 48_400 })
+    expect(elapsedAt(state, 49_400)).toBe(39_400)
+    expect(badgeFor(state)).toEqual({ label: 'Searching', tone: 'accent' })
+  })
+
   it('falls back to the time since the start if the event has no begin and end', () => {
     expect(nextBarState(event('awaiting_confirmation', 14_000), 20_000)).toMatchObject({ elapsedMs: 14_000, anchorAt: null })
   })

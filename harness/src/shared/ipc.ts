@@ -38,13 +38,18 @@ export type SqliteStatus =
 /**
  * One subject's time limit, as the Test Console shows it: how long the
  * subject has to answer, when that clock starts (`trial_start`, or `submit`
- * for subjects where the Tester presses Enter), and whether the Tester
- * confirms the end before the trial is saved.
+ * for subjects where the Tester presses Enter), whether the Tester confirms
+ * the end before the trial is saved, and whether the Tester reports the
+ * answer once the subject has completed (Google: Answer Found or No Answer
+ * Found), with how long they have for that.
  */
 export interface TrialLimit {
   timeoutMs: number
   startsAt: 'trial_start' | 'submit'
   confirmEnd: boolean
+  answerFound: boolean
+  /** With answerFound: how long the Tester has to report, from completion. Null when there is no limit. */
+  answerLimitMs: number | null
 }
 
 /**

@@ -11,7 +11,11 @@ import { Badge, Banner, Card, Field, Metric, Panel, SelectField } from '../compo
 import { elapsedAt, formatElapsed, IDLE, nextBarState } from '../status-bar'
 import {
   adjustedEndMs,
+  answerFoundTime,
   answerPreview,
+  noAnswerMessage,
+  savedResultsText,
+  searchTimes,
   clockTime,
   failureTitle,
   formatMs,
@@ -138,6 +142,7 @@ export function TestConsolePage() {
           limit={limitFor(run.subject)}
           actionError={actionError}
           onConfirm={(trialId, endMs) => act(window.harness.confirmCompletion(trialId, endMs))}
+          onNoAnswer={(trialId) => act(window.harness.reportNoAnswer(trialId))}
           onCancel={(trialId) => act(window.harness.cancelTrial(trialId))}
         />
       )}
@@ -229,6 +234,7 @@ function ActiveTrialCard({
   limit,
   actionError,
   onConfirm,
+  onNoAnswer,
   onCancel,
 }: {
   run: Extract<Run, { phase: 'running' }>
@@ -236,6 +242,7 @@ function ActiveTrialCard({
   limit: TrialLimit | undefined
   actionError: string | null
   onConfirm: (trialId: string, endMs?: number) => void
+  onNoAnswer: (trialId: string) => void
   onCancel: (trialId: string) => void
 }) {
   const [now, setNow] = useState(() => Date.now())
@@ -246,18 +253,20 @@ function ActiveTrialCard({
   const latest = run.events.at(-1)
   const trialId = run.events[0]?.trialId ?? null
   const clock = latest ? nextBarState(latest, run.latestAt) : IDLE
-  const counting = clock.anchorAt !== null
+  // Google waiting for Answer Found (design screen 03): the page-load time and a counting "Searching for".
+  const search = searchTimes(latest, limit, now)
+  const ticking = clock.anchorAt !== null || search !== null
   useEffect(() => {
-    if (!counting) return
+    if (!ticking) return
     const timer = setInterval(() => setNow(Date.now()), TICK_MS)
     return () => clearInterval(timer)
-  }, [counting])
+  }, [ticking])
 
   const elapsed = elapsedAt(clock, now) ?? 0
   const confirming = latest?.status === 'awaiting_confirmation'
   const caption = timerCaption(limit, confirming && latest.beginMs !== undefined && latest.endMs !== undefined)
   const progress = limit && caption.showProgress ? Math.min(1, elapsed / limit.timeoutMs) : null
-  const banner = waitingBanner(latest)
+  const banner = waitingBanner(latest, limit)
   const beginMs = confirming ? latest.beginMs : undefined
 
   const startAdjusting = () => {
@@ -281,33 +290,42 @@ function ActiveTrialCard({
     <Card
       title={`${SUBJECT_LABELS[run.subject]} trial`}
       subtitle={questionLine(run.questionNumber, questions)}
-      aside={<Badge tone="accent" label="Running" testId="trial-badge" />}
+      aside={<Badge tone="accent" label={search ? 'Searching' : 'Running'} testId="trial-badge" />}
     >
-      <div className="timer">
-        <div className="timer-readout">
-          <span className="timer-elapsed" data-testid="trial-timer">
-            {formatElapsed(elapsed)}
-          </span>
-          <span className="caption timer-limit">{caption.text}</span>
+      {search ? (
+        <div className="metric-row" data-testid="trial-search">
+          <Metric label="Page load" value={formatMs(search.pageLoadMs)} testId="trial-page-load" />
+          <Metric label="Searching for" value={formatElapsed(search.searchingMs)} testId="trial-searching" />
         </div>
-        {progress !== null && (
-          <div className="progress-track" role="progressbar" aria-label="Time used of the limit" aria-valuenow={Math.round(progress * 100)}>
-            <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
+      ) : (
+        <>
+          <div className="timer">
+            <div className="timer-readout">
+              <span className="timer-elapsed" data-testid="trial-timer">
+                {formatElapsed(elapsed)}
+              </span>
+              <span className="caption timer-limit">{caption.text}</span>
+            </div>
+            {progress !== null && (
+              <div className="progress-track" role="progressbar" aria-label="Time used of the limit" aria-valuenow={Math.round(progress * 100)}>
+                <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* The step times and the response time count from different moments; say which. */}
-      <p className="caption steps-note">Step times: since the trial started</p>
-      <ol className="steps" data-testid="trial-steps">
-        {trialSteps(run.subject, run.events).map((step) => (
-          <li key={step.label} className={`step step-${step.state}`} data-state={step.state}>
-            <StepIcon state={step.state} />
-            <span className="step-label">{step.label}</span>
-            <span className="step-time mono">{step.time}</span>
-          </li>
-        ))}
-      </ol>
+          {/* The step times and the response time count from different moments; say which. */}
+          <p className="caption steps-note">Step times: since the trial started</p>
+          <ol className="steps" data-testid="trial-steps">
+            {trialSteps(run.subject, run.events).map((step) => (
+              <li key={step.label} className={`step step-${step.state}`} data-state={step.state}>
+                <StepIcon state={step.state} />
+                <span className="step-label">{step.label}</span>
+                <span className="step-time mono">{step.time}</span>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
 
       {banner && (
         <Banner tone="info" title={banner.title} testId="trial-waiting">
@@ -343,7 +361,18 @@ function ActiveTrialCard({
         <button type="button" className="button button-ghost" onClick={() => trialId && onCancel(trialId)} disabled={!trialId} data-testid="cancel-trial">
           Cancel Trial
         </button>
-        {confirming && !adjusting && (
+        {search && (
+          <span className="actions">
+            <button type="button" className="button button-secondary" onClick={() => trialId && onNoAnswer(trialId)} data-testid="no-answer">
+              No Answer Found
+            </button>
+            {/* Answer Found is the confirm call: the moment it reaches the harness is the time to answer. */}
+            <button type="button" className="button" onClick={() => trialId && onConfirm(trialId)} data-testid="answer-found">
+              Answer Found
+            </button>
+          </span>
+        )}
+        {confirming && !search && !adjusting && (
           <span className="actions">
             <button type="button" className="button button-secondary" onClick={startAdjusting} data-testid="adjust-end">
               Adjust
@@ -353,7 +382,7 @@ function ActiveTrialCard({
             </button>
           </span>
         )}
-        {confirming && adjusting && (
+        {confirming && !search && adjusting && (
           <span className="actions">
             <button type="button" className="button button-secondary" onClick={() => setAdjusting(false)} data-testid="adjust-back">
               Back
@@ -405,6 +434,48 @@ function ResultCard({
             <Metric label="Elapsed" value={formatMs(trial.failure.elapsedMs)} />
             <Metric label="First response" value={formatMs(trial.firstResponseMs)} testId="trial-first-response-ms" />
           </div>
+        </>
+      ) : trial.status === TrialStatus.NO_ANSWER_FOUND ? (
+        <>
+          <Banner tone="warning" title="No answer found" testId="trial-no-answer">
+            <p>{noAnswerMessage(limit)}</p>
+          </Banner>
+          <div className="metric-row">
+            <Metric label="Page load" value={formatMs(trial.pageLoadMs)} testId="trial-page-load" />
+            <Metric label="Begin" value={clockTime(trial.beginTs)} testId="trial-begin" />
+          </div>
+        </>
+      ) : trial.subject === Subject.GOOGLE ? (
+        <>
+          <div className="metric-row">
+            <Metric label="Page load" value={formatMs(trial.pageLoadMs)} testId="trial-page-load" />
+            <Metric label="Time to answer" value={formatMs(trial.timeToAnswerMs)} testId="trial-time-to-answer" />
+          </div>
+          <div className="metric-row">
+            <Metric label="Begin" value={clockTime(trial.beginTs)} testId="trial-begin" />
+            <Metric label="Answer found" value={answerFoundTime(trial)} testId="trial-answer-found" />
+          </div>
+          {savedResultsText(trial) && (
+            <Banner tone="warning" title="No passage was highlighted" testId="trial-results-text">
+              <p>
+                Answer Found saved the text of the whole results page. If you meant to save a passage, run the trial again,
+                highlight it, and click Answer Found while it is still highlighted.
+              </p>
+            </Banner>
+          )}
+          <Panel label={savedResultsText(trial) ? 'Results page text' : 'Selected passage'}>
+            <p className="panel-text answer-text" data-testid="trial-answer">
+              {answerPreview(trial.answerText)}
+            </p>
+          </Panel>
+          <Panel label="Source">
+            <p className="panel-text mono" data-testid="trial-source">
+              {trial.sourceUrl ?? '—'}
+            </p>
+          </Panel>
+          <p className="caption" data-testid="trial-details">
+            {recordDetails(trial)}
+          </p>
         </>
       ) : (
         <>

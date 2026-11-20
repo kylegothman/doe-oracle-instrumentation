@@ -11,11 +11,11 @@ import { TrialStatus, type Trial, type TrialEvent, type TrialFailure } from '../
  * without a window.
  */
 
-/** The subjects the console offers. TODO(#37): Google becomes available when E5 registers its adapter. */
+/** The subjects the console offers: all three. */
 export const SUBJECT_CHOICES: ReadonlyArray<{ value: Subject; label: string; disabled: boolean }> = SUBJECTS.map((subject) => ({
   value: subject,
-  label: subject === Subject.GOOGLE ? `${SUBJECT_LABELS[subject]} (arrives with E5)` : SUBJECT_LABELS[subject],
-  disabled: subject === Subject.GOOGLE,
+  label: SUBJECT_LABELS[subject],
+  disabled: false,
 }))
 
 /** How a question is listed: "Q1 · What is combinatorial testing?" */
@@ -31,7 +31,7 @@ export function startHelp(subject: Subject): string {
     case Subject.COPILOT:
       return 'The harness fills the question in on Copilot and you press Enter in the browser. When the answer stops changing, you confirm the end.'
     case Subject.GOOGLE:
-      return 'The harness fills the question in on Google and you press Enter in the browser.'
+      return 'The harness fills the question in on Google, signed out, and you press Enter in the browser. When the results have loaded, you highlight the passage that answers the question and click Answer Found, or No Answer Found.'
   }
 }
 
@@ -55,28 +55,41 @@ export function trialSteps(subject: Subject, events: readonly TrialEvent[]): Ste
   const first = event('first_response')
   const confirm = event('awaiting_confirmation')
 
-  if (subject === Subject.COPILOT) {
+  if (subject === Subject.COPILOT || subject === Subject.GOOGLE) {
+    // The Tester sends the question: filled in, their Enter, the first response, then the end.
     const submit = event('awaiting_submit')
     const done = confirm ? 4 : first ? 3 : submit ? 1 : 0
+    const google = subject === Subject.GOOGLE
     return withStates(
       [
-        { label: 'Question filled in on Copilot', time: submit ? '—' : '' },
+        { label: google ? 'Question filled in on Google' : 'Question filled in on Copilot', time: submit ? '—' : '' },
         { label: 'You pressed Enter', time: confirm?.beginMs === undefined ? (first ? '—' : '') : clockTime(new Date(confirm.beginMs).toISOString()) },
         { label: 'First response', time: since(first) },
-        { label: 'Answer stopped changing', time: since(confirm) },
+        { label: google ? 'Results page loaded' : 'Answer stopped changing', time: since(confirm) },
       ],
       done,
     )
   }
-  const label = subject === Subject.GOOGLE ? 'Question filled in on Google' : 'Question typed and sent'
   return withStates(
     [
-      { label, time: first ? '—' : '' },
+      { label: 'Question typed and sent', time: first ? '—' : '' },
       { label: 'First response', time: since(first) },
       { label: 'Answer complete', time: since(confirm) },
     ],
     confirm ? 3 : first ? 2 : 0,
   )
+}
+
+/**
+ * While Google waits for the Tester's Answer Found (design screen 03): the
+ * page-load time, Enter to the results loading, and how long the Tester has
+ * been searching, counting from their Enter. Null outside that wait.
+ */
+export function searchTimes(latest: TrialEvent | undefined, limit: TrialLimit | undefined, now: number): { pageLoadMs: number; searchingMs: number } | null {
+  if (!limit?.answerFound || latest?.status !== 'awaiting_confirmation' || latest.beginMs === undefined || latest.endMs === undefined) {
+    return null
+  }
+  return { pageLoadMs: latest.endMs - latest.beginMs, searchingMs: Math.max(0, now - latest.beginMs) }
 }
 
 function withStates(steps: ReadonlyArray<Omit<Step, 'state'>>, done: number): Step[] {
@@ -99,10 +112,26 @@ export function timerCaption(limit: TrialLimit | undefined, measured: boolean): 
     : { text: `since the trial started · the ${seconds} runs from your Enter`, showProgress: false }
 }
 
-/** The banner shown while the trial waits on the Tester. Null when it waits on nobody. */
-export function waitingBanner(latest: TrialEvent | undefined): { title: string; message: string } | null {
+/**
+ * The banner shown while the trial waits on the Tester. Null when it waits
+ * on nobody. The subject's own message says what to do: usually to press
+ * Enter, for Google sometimes to solve its "unusual traffic" check first.
+ */
+export function waitingBanner(latest: TrialEvent | undefined, limit?: TrialLimit): { title: string; message: string } | null {
   if (latest?.status === 'awaiting_submit') {
-    return { title: `Press Enter in the ${SUBJECT_LABELS[latest.subject]} window`, message: latest.message ?? 'The question is filled in. Send it from the browser.' }
+    return { title: `Your turn in the ${SUBJECT_LABELS[latest.subject]} window`, message: latest.message ?? 'The question is filled in. Press Enter there to send it.' }
+  }
+  if (latest?.status === 'awaiting_confirmation' && limit?.answerFound) {
+    const deadline =
+      limit.answerLimitMs === null
+        ? ''
+        : ` After ${Math.round(limit.answerLimitMs / 1000)} s without either, the trial is saved as no answer found.`
+    return {
+      title: 'Find the answer on the results page',
+      message:
+        'Open the organic result that best answers the question. Ignore the AI overview. ' +
+        `Highlight the passage that answers it, then click Answer Found, or No Answer Found if no result answers it.${deadline}`,
+    }
   }
   if (latest?.status === 'awaiting_confirmation') {
     const took =
@@ -166,9 +195,13 @@ export function questionLine(questionNumber: number, questions: readonly Questio
   return question ? questionLabel(question) : `Q${questionNumber}`
 }
 
-/** The question to offer after a trial: the next one after a success, the same one otherwise. */
+/**
+ * The question to offer after a trial: the next one after a result
+ * (SUCCESS, or Google's NO_ANSWER_FOUND), the same one after a failure, so
+ * it can be run again.
+ */
 export function nextQuestionNumber(trial: Pick<Trial, 'status' | 'questionNumber'>, questionCount: number): number {
-  return trial.status === TrialStatus.SUCCESS && trial.questionNumber < questionCount ? trial.questionNumber + 1 : trial.questionNumber
+  return trial.status !== TrialStatus.FAILED && trial.questionNumber < questionCount ? trial.questionNumber + 1 : trial.questionNumber
 }
 
 const PREVIEW_CHARS = 400
@@ -182,6 +215,36 @@ export function answerPreview(text: string | null): string {
 /** "Size 0.33 KB · Keywords: none yet", under the answer preview. */
 export function recordDetails(trial: Pick<Trial, 'sizeBytes' | 'keywords'>): string {
   return `Size ${(trial.sizeBytes / 1024).toFixed(2)} KB · Keywords: ${trial.keywords ?? 'none yet'}`
+}
+
+/** When the Tester clicked Answer Found, as the design shows it: the begin plus the time to answer. "—" when either is missing. */
+export function answerFoundTime(trial: Pick<Trial, 'beginTs' | 'timeToAnswerMs'>): string {
+  if (trial.beginTs === null || trial.timeToAnswerMs === null) return '—'
+  return clockTime(new Date(Date.parse(trial.beginTs) + trial.timeToAnswerMs).toISOString())
+}
+
+/**
+ * True when a Google trial saved the results page's text rather than a
+ * highlighted passage: nothing was highlighted when Answer Found was
+ * clicked, so its source is Google's own results page. The Test Console
+ * says so instead of calling the text a selected passage.
+ */
+export function savedResultsText(trial: Pick<Trial, 'subject' | 'sourceUrl'>): boolean {
+  if (trial.subject !== Subject.GOOGLE || trial.sourceUrl === null) return false
+  try {
+    const url = new URL(trial.sourceUrl)
+    return /(^|\.)google\.[a-z.]+$/i.test(url.hostname) && url.pathname === '/search'
+  } catch {
+    return false
+  }
+}
+
+/** What a NO_ANSWER_FOUND trial's banner says. */
+export function noAnswerMessage(limit: TrialLimit | undefined): string {
+  const how = limit?.answerLimitMs
+    ? `No Answer Found was clicked, or ${Math.round(limit.answerLimitMs / 1000)} s passed after the results loaded without Answer Found`
+    : 'No Answer Found was clicked'
+  return `${how}. Saved as a result, not a failure, with its page-load time.`
 }
 
 /** Whole milliseconds with thousands separators: "4,812 ms". Null is "—". */

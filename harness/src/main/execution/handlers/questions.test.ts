@@ -24,13 +24,17 @@ describe('questions:list handler', () => {
 })
 
 describe('trials:limits handler', () => {
-  it("gives each subject's limit, when its clock starts, and whether the end is confirmed", async () => {
+  it("gives each subject's limit, when its clock starts, and what the Tester does at the end", async () => {
     const policies: Record<Subject, TrialPolicy> = {
       [Subject.DOE_ORACLE]: { timeoutMs: 60_000, startsAt: 'trial_start', confirmEnd: false },
       [Subject.COPILOT]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: true },
-      [Subject.GOOGLE]: { timeoutMs: 45_000, startsAt: 'submit', confirmEnd: false },
+      [Subject.GOOGLE]: { timeoutMs: 45_000, startsAt: 'submit', confirmEnd: false, answerFound: true, answerLimitMs: 120_000 },
     }
 
-    await expect(createGetTrialLimitsHandler(policies)()).resolves.toEqual(policies)
+    await expect(createGetTrialLimitsHandler(policies)()).resolves.toEqual({
+      [Subject.DOE_ORACLE]: { timeoutMs: 60_000, startsAt: 'trial_start', confirmEnd: false, answerFound: false, answerLimitMs: null },
+      [Subject.COPILOT]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: true, answerFound: false, answerLimitMs: null },
+      [Subject.GOOGLE]: { timeoutMs: 45_000, startsAt: 'submit', confirmEnd: false, answerFound: true, answerLimitMs: 120_000 },
+    })
   })
 })

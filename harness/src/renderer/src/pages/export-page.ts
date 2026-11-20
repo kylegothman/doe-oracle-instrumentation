@@ -1,6 +1,6 @@
 import { ExportFormat, type ExportPreview, type ExportResult, type RecordFilter } from '../../../shared/export'
 import type { Session } from '../../../shared/session'
-import { SUBJECTS, SUBJECT_LABELS, type Subject } from '../../../shared/subjects'
+import { SUBJECTS, SUBJECT_LABELS, Subject } from '../../../shared/subjects'
 import type { TrialEvent } from '../../../shared/trials'
 
 /**
@@ -143,6 +143,12 @@ export function runningTrialWarning(latest: TrialEvent | undefined): { title: st
         message: `Q${latest.questionNumber} is saved when it ends, so it is not in this export yet. Wait for it on the Test Console, then export.`,
       }
     case 'awaiting_confirmation':
+      if (latest.subject === Subject.GOOGLE) {
+        return {
+          title: `A ${subject} trial is waiting for your answer`,
+          message: `Q${latest.questionNumber} is not saved until you click Answer Found or No Answer Found on the Test Console, so it is not in this export yet.`,
+        }
+      }
       return {
         title: `A ${subject} trial is waiting for you to confirm it`,
         message: `Q${latest.questionNumber} is not saved until you click Confirm Completion on the Test Console, so it is not in this export yet.`,

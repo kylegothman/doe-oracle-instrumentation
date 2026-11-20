@@ -1,4 +1,4 @@
-import type { Subject } from '../../shared/subjects'
+import { Subject } from '../../shared/subjects'
 import type { TrialEvent } from '../../shared/trials'
 
 /**
@@ -8,11 +8,13 @@ import type { TrialEvent } from '../../shared/trials'
  *
  * - idle: no trial has run in this window yet;
  * - running: a trial is under way, from `started` until it ends;
+ * - searching: Google's results have loaded and the Tester is looking for
+ *   the answer (design screen 03); the time counts from their Enter;
  * - ready: the last trial ended (saved, failed, cancelled, or aborted) and
  *   the harness can run the next one.
  */
 export interface BarState {
-  phase: 'idle' | 'running' | 'ready'
+  phase: 'idle' | 'running' | 'searching' | 'ready'
   subject: Subject | null
   questionNumber: number | null
   /**
@@ -40,6 +42,11 @@ export function nextBarState(event: TrialEvent, receivedAt: number): BarState {
     case 'first_response':
       return { phase: 'running', ...trial, elapsedMs: event.elapsedMs, anchorAt: receivedAt }
     case 'awaiting_confirmation': {
+      // Google is the one subject whose answer the Tester then looks for:
+      // the time counts on, from their Enter, until Answer Found.
+      if (event.subject === Subject.GOOGLE && event.beginMs !== undefined) {
+        return { phase: 'searching', ...trial, elapsedMs: Math.max(0, receivedAt - event.beginMs), anchorAt: receivedAt }
+      }
       // The controller stopped the clock at the end of the answer, and the
       // event carries the detected begin and end: from here the time shown
       // is the measured response, not the time since the trial started.
@@ -77,6 +84,8 @@ export function badgeFor(state: BarState): { label: string; tone: 'neutral' | 'a
       return { label: 'Idle', tone: 'neutral' }
     case 'running':
       return { label: 'Running', tone: 'accent' }
+    case 'searching':
+      return { label: 'Searching', tone: 'accent' }
     case 'ready':
       return { label: 'Ready', tone: 'neutral' }
   }

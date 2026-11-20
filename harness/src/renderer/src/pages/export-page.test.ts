@@ -185,6 +185,13 @@ describe('runningTrialWarning and endsTrial', () => {
     })
   })
 
+  it("says a Google trial waits for the Tester's Answer Found or No Answer Found", () => {
+    expect(runningTrialWarning({ ...event('awaiting_confirmation'), subject: Subject.GOOGLE })).toEqual({
+      title: 'A Google Search trial is waiting for your answer',
+      message: 'Q2 is not saved until you click Answer Found or No Answer Found on the Test Console, so it is not in this export yet.',
+    })
+  })
+
   it('warns of nothing once the trial has ended, or before any trial', () => {
     for (const status of ['completed', 'failed', 'cancelled', 'aborted'] as const) {
       expect(runningTrialWarning(event(status))).toBeNull()

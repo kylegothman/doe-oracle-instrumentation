@@ -23,8 +23,9 @@ export function createGetTrialLimitsHandler(policies: Readonly<Record<Subject, T
   return async () =>
     Object.fromEntries(
       SUBJECTS.map((subject) => {
-        const { timeoutMs, startsAt, confirmEnd } = policies[subject]
-        return [subject, { timeoutMs, startsAt, confirmEnd }]
+        const { timeoutMs, startsAt, confirmEnd, answerFound, answerLimitMs } = policies[subject]
+        const limit: TrialLimit = { timeoutMs, startsAt, confirmEnd, answerFound: answerFound ?? false, answerLimitMs: answerLimitMs ?? null }
+        return [subject, limit]
       }),
     ) as Record<Subject, TrialLimit>
 }

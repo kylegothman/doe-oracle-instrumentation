@@ -4,7 +4,11 @@ import { Subject } from '../../../shared/subjects'
 import { TrialStatus, type Trial, type TrialEvent } from '../../../shared/trials'
 import {
   adjustedEndMs,
+  answerFoundTime,
   answerPreview,
+  noAnswerMessage,
+  savedResultsText,
+  searchTimes,
   clockTime,
   failureTitle,
   formatMs,
@@ -53,15 +57,77 @@ const trial = (overrides: Partial<Trial> = {}): Trial => ({
   ...overrides,
 })
 
-const limit60 = { timeoutMs: 60_000, startsAt: 'trial_start' as const, confirmEnd: false }
+const limit60 = { timeoutMs: 60_000, startsAt: 'trial_start' as const, confirmEnd: false, answerFound: false, answerLimitMs: null }
+const googleLimit = { timeoutMs: 60_000, startsAt: 'submit' as const, confirmEnd: false, answerFound: true, answerLimitMs: 120_000 }
 
 describe('SUBJECT_CHOICES', () => {
-  it('offers the three subjects, with Google off until E5', () => {
+  it('offers the three subjects', () => {
     expect(SUBJECT_CHOICES).toEqual([
       { value: Subject.DOE_ORACLE, label: 'DOE Oracle', disabled: false },
       { value: Subject.COPILOT, label: 'Microsoft Copilot', disabled: false },
-      { value: Subject.GOOGLE, label: 'Google Search (arrives with E5)', disabled: true },
+      { value: Subject.GOOGLE, label: 'Google Search', disabled: false },
     ])
+  })
+})
+
+describe('Google', () => {
+  const beginMs = Date.UTC(2026, 10, 19, 20, 41, 12, 204)
+  const loaded = event(Subject.GOOGLE, 'awaiting_confirmation', 9_000, { beginMs, endMs: beginMs + 812 })
+
+  it("walks Google's steps, ending at the results page loading", () => {
+    const steps = trialSteps(Subject.GOOGLE, [
+      event(Subject.GOOGLE, 'started', 0),
+      event(Subject.GOOGLE, 'awaiting_submit', 400),
+      event(Subject.GOOGLE, 'first_response', 8_500),
+      loaded,
+    ])
+    expect(steps.map((step) => step.label)).toEqual(['Question filled in on Google', 'You pressed Enter', 'First response', 'Results page loaded'])
+    expect(steps.every((step) => step.state === 'done')).toBe(true)
+    expect(steps[1]?.time).toBe('20:41:12.204Z')
+  })
+
+  it('gives the page-load time and how long the Tester has been searching, from their Enter', () => {
+    expect(searchTimes(loaded, googleLimit, beginMs + 38_400)).toEqual({ pageLoadMs: 812, searchingMs: 38_400 })
+  })
+
+  it('gives no search times outside the Answer Found wait, or for a subject without it', () => {
+    expect(searchTimes(event(Subject.GOOGLE, 'first_response', 1), googleLimit, beginMs)).toBeNull()
+    expect(searchTimes(loaded, limit60, beginMs)).toBeNull()
+  })
+
+  it('asks for the passage, with the answer limit', () => {
+    expect(waitingBanner(loaded, googleLimit)).toEqual({
+      title: 'Find the answer on the results page',
+      message:
+        'Open the organic result that best answers the question. Ignore the AI overview. ' +
+        'Highlight the passage that answers it, then click Answer Found, or No Answer Found if no result answers it. ' +
+        'After 120 s without either, the trial is saved as no answer found.',
+    })
+  })
+
+  it('passes on the subject’s own message while waiting, such as the unusual-traffic check', () => {
+    expect(waitingBanner(event(Subject.GOOGLE, 'awaiting_submit', 1, { message: 'Google is showing its "unusual traffic" check.' }))).toEqual({
+      title: 'Your turn in the Google Search window',
+      message: 'Google is showing its "unusual traffic" check.',
+    })
+  })
+
+  it('tells a saved results page apart from a highlighted passage, by its source', () => {
+    const google = (sourceUrl: string | null) => ({ subject: Subject.GOOGLE, sourceUrl })
+    expect(savedResultsText(google('https://www.google.com/search?q=What+is+combinatorial+testing%3F&sca_esv=c5'))).toBe(true)
+    expect(savedResultsText(google('https://www.google.co.uk/search?q=x'))).toBe(true)
+    expect(savedResultsText(google('https://www.nist.gov/programs-projects/combinatorial-testing'))).toBe(false)
+    expect(savedResultsText(google('https://example.edu/search'))).toBe(false)
+    expect(savedResultsText(google(null))).toBe(false)
+    expect(savedResultsText({ subject: Subject.DOE_ORACLE, sourceUrl: 'https://www.google.com/search?q=x' })).toBe(false)
+  })
+
+  it('shows when Answer Found was clicked, and why a trial has no answer', () => {
+    expect(answerFoundTime({ beginTs: '2026-11-19T20:41:12.204Z', timeToAnswerMs: 38_406 })).toBe('20:41:50.610Z')
+    expect(answerFoundTime({ beginTs: '2026-11-19T20:41:12.204Z', timeToAnswerMs: null })).toBe('—')
+    expect(noAnswerMessage(googleLimit)).toBe(
+      'No Answer Found was clicked, or 120 s passed after the results loaded without Answer Found. Saved as a result, not a failure, with its page-load time.',
+    )
   })
 })
 
@@ -109,7 +175,7 @@ describe('trialSteps', () => {
 })
 
 describe('timerCaption', () => {
-  const copilot = { timeoutMs: 60_000, startsAt: 'submit' as const, confirmEnd: true }
+  const copilot = { timeoutMs: 60_000, startsAt: 'submit' as const, confirmEnd: true, answerFound: false, answerLimitMs: null }
 
   it('draws the bar against the limit when the limit counts from the trial start', () => {
     expect(timerCaption(limit60, false)).toEqual({ text: 'of 60 s limit', showProgress: true })
@@ -134,7 +200,7 @@ describe('timerCaption', () => {
 describe('waitingBanner', () => {
   it("asks for the Tester's Enter", () => {
     expect(waitingBanner(event(Subject.COPILOT, 'awaiting_submit', 1, { message: 'Press Enter in the Copilot window' }))).toEqual({
-      title: 'Press Enter in the Microsoft Copilot window',
+      title: 'Your turn in the Microsoft Copilot window',
       message: 'Press Enter in the Copilot window',
     })
   })
@@ -204,8 +270,9 @@ describe('the result card text', () => {
 })
 
 describe('nextQuestionNumber', () => {
-  it('moves on after a success and stays after anything else', () => {
+  it('moves on after a result, no answer found included, and stays after a failure', () => {
     expect(nextQuestionNumber({ status: TrialStatus.SUCCESS, questionNumber: 4 }, 12)).toBe(5)
+    expect(nextQuestionNumber({ status: TrialStatus.NO_ANSWER_FOUND, questionNumber: 4 }, 12)).toBe(5)
     expect(nextQuestionNumber({ status: TrialStatus.FAILED, questionNumber: 4 }, 12)).toBe(4)
   })
 
