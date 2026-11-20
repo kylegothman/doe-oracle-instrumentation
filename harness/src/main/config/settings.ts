@@ -10,20 +10,40 @@ export interface OracleSettings {
   searchEndpointPath: string
 }
 
+/**
+ * Where things are on Google's pages. Plain CSS, because every selector but
+ * `input` is used inside the page; see docs/google-spike.md for how each one
+ * was chosen and which have been checked against the live site.
+ */
 export interface GoogleSelectors {
-  /** The combobox search input field. */
+  /** The search box on the home page. A list: the first match is used. */
   input: string
-  /** The results container `#search`. */
-  searchResults: string
+  /** The list of results, tried in order; the first one present is read. */
+  resultContainers: string[]
+  /** The title inside a result's link. Its closest link is the result's URL. */
+  resultTitle: string
+  /** Known AI overview containers, never captured. Empty when none is known; the heading rule below still applies. */
+  aiOverview: string
+  /** Elements that can carry the AI overview's heading (see GoogleSettings.aiOverviewLabels). */
+  aiOverviewHeading: string
 }
 
-export interface GoogleSettings{
+export interface GoogleSettings {
+  /** The home page each trial starts from. */
   searchUrl: string
-
-  pageLoadTimeoutMs: number
-
+  /** Path of the results page a submitted search navigates to. */
+  resultsPath: string
+  /** The URL parameter that carries the search text. */
+  queryParam: string
+  /** How long the harness waits for the Tester's Enter before the trial is aborted. */
+  submitWaitMs: number
+  /**
+   * How long the Tester has, once the results have loaded, to report whether
+   * the answer is on the page. It becomes Google's TrialPolicy.answerLimitMs.
+   */
   answerFoundTimeoutMs: number
-
+  /** Heading texts that mark the AI overview, compared without case. Its block is never captured. */
+  aiOverviewLabels: string[]
   selectors: GoogleSelectors
 }
 
@@ -126,23 +146,28 @@ export interface TrialPolicy {
    * Oracle's end is unambiguous and needs no confirmation.
    */
   confirmEnd: boolean
+  /**
+   * Whether the Tester reports the answer once the subject has completed
+   * (story #37). On for Google only: completion is the results page
+   * finishing loading, and the Tester then says whether the answer is on
+   * the page. The clock is already stopped. Left out means false.
+   */
+  answerFound?: boolean
 }
 
 export interface HarnessSettings {
   oracle: OracleSettings
   /** The Copilot product being driven, resolved from the config's `copilot.product`. */
   copilot: CopilotSettings
-
   google: GoogleSettings
   /**
-   * Per-subject time limit (UC-4), when the clock starts, and whether the
-   * Tester confirms the end. The limit is 60 seconds for every subject by
-   * default, from src/shared/harness-config.json. Copilot's clock starts at
-   * the Tester's Enter: its adapter resolves start() at that moment.
-   * TODO(#37): Google's clock starts at the Tester's submit. Whether the
-   * limit should also cover the Tester finding the answer on the results
-   * page is an open question for the sponsor; until it is settled the
-   * clock stops when the adapter reports completion.
+   * Per-subject time limit (UC-4), when the clock starts, and what the
+   * Tester does at the end. The limit is 60 seconds for every subject by
+   * default, from src/shared/harness-config.json. Copilot's and Google's
+   * clocks start at the Tester's Enter: their adapters resolve start() at
+   * that moment. For Google the limit covers Enter to the results page
+   * finishing loading, and nothing after it: the time the Tester takes to
+   * find the answer on the page is not part of it.
    */
   trialPolicies: Record<Subject, TrialPolicy>
 }
@@ -173,12 +198,13 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
   const trialPolicies = {} as Record<Subject, TrialPolicy>
   for (const subject of SUBJECTS) {
     const configured = defaults.subjects[subject] as
-      | { timerStartsAt: string; timeoutMs?: number; confirmEnd?: boolean }
+      | { timerStartsAt: string; timeoutMs?: number; confirmEnd?: boolean; answerFound?: boolean }
       | undefined
     trialPolicies[subject] = {
       timeoutMs: timeoutMs ?? configured?.timeoutMs ?? defaults.trialTimeoutMs,
       startsAt: parseTimerStart(subject, configured?.timerStartsAt ?? 'trial_start'),
       confirmEnd: configured?.confirmEnd ?? false,
+      ...(configured?.answerFound ? { answerFound: true } : {}),
     }
   }
 
@@ -190,7 +216,6 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
     },
     copilot: loadCopilotSettings(env[COPILOT_PRODUCT_ENV]?.trim()),
     google: loadGoogleSettings(),
-
     trialPolicies,
   }
 }
@@ -218,14 +243,16 @@ function loadCopilotSettings(productOverride: string | undefined): CopilotSettin
     submitConfirmMs: positiveMs(defaults.copilot.submitConfirmMs, 'copilot.submitConfirmMs'),
   }
 }
-//newly added for proper loading into the return before trialPolicies
 function loadGoogleSettings(): GoogleSettings {
-  const searchUrl = parseHttpUrl(defaults.google.searchUrl, 'harness-config.json: google.searchUrl')
+  const configured = defaults.google
   return {
-    searchUrl,
-    pageLoadTimeoutMs: positiveMs(defaults.google.pageLoadTimeoutMs, 'google.pageLoadTimeoutMs'),
-    answerFoundTimeoutMs: positiveMs(defaults.google.answerFoundTimeoutMs, 'google.answerFoundTimeoutMs'),
-    selectors: { ...defaults.google.selectors },
+    searchUrl: parseHttpUrl(configured.searchUrl, 'harness-config.json: google.searchUrl'),
+    resultsPath: configured.resultsPath,
+    queryParam: configured.queryParam,
+    submitWaitMs: positiveMs(configured.submitWaitMs, 'google.submitWaitMs'),
+    answerFoundTimeoutMs: positiveMs(configured.answerFoundTimeoutMs, 'google.answerFoundTimeoutMs'),
+    aiOverviewLabels: [...configured.aiOverviewLabels],
+    selectors: { ...configured.selectors, resultContainers: [...configured.selectors.resultContainers] },
   }
 }
 

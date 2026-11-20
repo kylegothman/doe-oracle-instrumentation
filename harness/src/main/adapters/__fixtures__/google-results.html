@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>what is combinatorial testing? - Google Search</title>
+</head>
+<body>
+  <!--
+    A small stand-in for Google's results page, for google-adapter.test.ts.
+    It keeps the structure the adapter reads: the results list is #rso inside
+    #search, an organic result is a block whose link wraps an h3 title, the
+    AI overview is a block of the list under an "AI Overview" heading, and
+    the menus sit outside the list. The test server serves it at /search and
+    rewrites the marked parts for the variants a test needs. /slow.gif lets
+    a test hold the load event back.
+  -->
+  <header id="top-nav">
+    <a href="/">Google</a>
+    <a href="/search?tbm=isch">Images</a>
+    <a href="/search?tbm=nws">News</a>
+    <a href="/search?tbm=vid">Videos</a>
+    <a href="/signin">Sign in</a>
+  </header>
+  <form action="/search" method="GET" role="search">
+    <textarea name="q" role="combobox" aria-label="Search" rows="1">what is combinatorial testing?</textarea>
+  </form>
+  <div id="search">
+    <div id="rso">
+      <!--RESULTS-->
+      <!--AI_OVERVIEW-->
+      <div class="block" id="ai-overview">
+        <div class="ai-frame">
+          <!--AI_HEADING--><h1>AI Overview</h1><!--/AI_HEADING-->
+          <div class="ai-body">
+            <p id="ai-text">Generated summary: combinatorial testing is a method an AI model wrote about here.</p>
+            <ul>
+              <li><a href="https://ai-source.example/overview">A page the overview drew on</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <!--/AI_OVERVIEW-->
+      <div class="block" id="result-1">
+        <div class="g">
+          <a href="/result/one"><h3>Combinatorial testing | CSRC</h3><cite>https://csrc.example › acts</cite></a>
+          <div class="snippet" id="snippet-1">Combinatorial testing covers all t-way combinations of input parameter values.</div>
+        </div>
+      </div>
+      <div class="block" id="people-also-ask">
+        <div role="heading" aria-level="2">People also ask</div>
+        <div class="related-question">What is pairwise testing?</div>
+      </div>
+      <div class="block" id="result-2">
+        <div class="g">
+          <a href="/url?q=https://example.org/practical-combinatorial-testing&amp;sa=U"><h3>Practical Combinatorial Testing</h3><cite>https://example.org</cite></a>
+          <div class="snippet" id="snippet-2">A guide to covering arrays and how many tests a t-way suite needs.</div>
+        </div>
+      </div>
+      <div class="block" id="result-3">
+        <div class="g">
+          <a href="https://example.net/pairwise"><h3>Pairwise testing explained</h3><cite>https://example.net › pairwise</cite></a>
+          <div class="snippet" id="snippet-3">Pairwise testing is the 2-way case of combinatorial testing.</div>
+        </div>
+      </div>
+      <!--/RESULTS-->
+    </div>
+  </div>
+  <footer id="footer">
+    <a href="/help">Help</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+  </footer>
+  <img src="/slow.gif" alt="" width="1" height="1" />
+</body>
+</html>

@@ -1,11 +1,14 @@
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { chromium, type Browser, type Page } from 'playwright'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { FailureType, type FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import { Subject } from '../../shared/subjects'
 import { SubjectUnreachableError } from '../browser/navigation'
 import { loadSettings, type GoogleSettings } from '../config/settings'
+import { FailureDetector } from '../execution/failure-detector'
+import { startFakeGoogle, type FakeGoogle } from './__fixtures__/fake-google'
 import {
   GOOGLE_SUBMIT_PROMPT,
   GoogleAdapter,
@@ -15,141 +18,493 @@ import {
 } from './google-adapter'
 import { AdapterDisposedError, type AdapterNotice } from './subject-adapter'
 
-const FIXTURE_HTML = readFileSync(fileURLToPath(new URL('./__fixtures__/google-search.html', import.meta.url)), 'utf8')
-const QUESTION: Question = { number: 1, text: 'R32 GT-R fuel system modifications' }
+const QUESTION: Question = { number: 1, text: 'What is combinatorial testing?' }
 const BASE_SETTINGS = loadSettings({}).google
 const BROWSER_TEST_TIMEOUT_MS = 30_000
+const detector = new FailureDetector()
 
-describe('GoogleAdapter against the search fixture', () => {
+/**
+ * Every test here runs against the saved pages in __fixtures__, served by a
+ * local server. The tests press Enter themselves, standing in for the
+ * Tester; the adapter never does, and nothing here contacts Google.
+ */
+describe('GoogleAdapter against the saved search and results pages', () => {
   let browser: Browser
+  let google: FakeGoogle
   let page: Page
   let notices: AdapterNotice[]
-  let mockServerUrl: string
-  let closeServer: () => Promise<void>
+  let signals: FailureSignal[]
+  let adapter: GoogleAdapter | null
 
   beforeAll(async () => {
     browser = await chromium.launch()
-    // Simple local HTTP server for serving the static fixture with proper navigation events
-    const http = await import('node:http')
-    const server = http.createServer((req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(FIXTURE_HTML)
-    })
-    await new Promise<void>((resolve) => server.listen(0, resolve))
-    const address = server.address()
-    const port = typeof address === 'object' && address !== null ? address.port : 8080
-    mockServerUrl = `http://localhost:${port}`
-    closeServer = () => new Promise((resolve) => server.close(() => resolve()))
+    google = await startFakeGoogle()
   }, BROWSER_TEST_TIMEOUT_MS)
 
   afterAll(async () => {
     await browser?.close()
-    await closeServer?.()
+    await google?.close()
   })
 
   beforeEach(async () => {
+    google.reset()
     page = await browser.newPage()
     notices = []
+    signals = []
+    adapter = null
   })
 
   afterEach(async () => {
+    await adapter?.dispose()
     await page.close()
   })
 
   function settingsFor(overrides: Partial<GoogleSettings> = {}): GoogleSettings {
-    return {
-      ...BASE_SETTINGS,
-      searchUrl: mockServerUrl,
-      pageLoadTimeoutMs: 2_000,
-      answerFoundTimeoutMs: 1_000,
-      ...overrides,
-    }
+    return { ...BASE_SETTINGS, searchUrl: `${google.origin}/`, ...overrides }
   }
 
   function adapterWith(settings = settingsFor(), options: GoogleAdapterOptions = {}): GoogleAdapter {
-    const adapter = new GoogleAdapter({ getPage: async () => page }, settings, options)
-    adapter.onNotice((notice) => notices.push(notice))
-    return adapter
+    const created = new GoogleAdapter({ getPage: async () => page }, settings, options)
+    created.onNotice((notice) => notices.push(notice))
+    created.onFailure((signal) => signals.push(signal))
+    adapter = created
+    return created
   }
 
-  async function typed(adapter: GoogleAdapter): Promise<number> {
-    const pending = adapter.start(QUESTION)
-    await expect.poll(() => notices.length, { timeout: 5_000 }).toBe(1)
-    return pending as unknown as Promise<number>
+  /**
+   * Starts a trial and waits until the question is typed and the Tester has
+   * been told to press Enter. The pending start() comes back inside an
+   * object: an async function that returned the promise itself would wait
+   * for it, that is, for an Enter nobody has pressed yet.
+   */
+  async function typed(created: GoogleAdapter): Promise<{ pending: Promise<number> }> {
+    const pending = created.start(QUESTION)
+    pending.catch(() => {})
+    await expect.poll(() => notices.length, { timeout: 10_000 }).toBe(1)
+    return { pending }
   }
 
+  /** The Tester's Enter. Resolves with the moment just before the key went down. */
   async function pressEnter(): Promise<number> {
     const at = Date.now()
-    await page.locator(BASE_SETTINGS.selectors.input).press('Enter')
+    await page.locator(BASE_SETTINGS.selectors.input).first().press('Enter')
     return at
   }
 
-  it('types the query, prompts Tester, and records start time on load', async () => {
-    const adapter = adapterWith()
-    let settled = false
-    const pending = adapter.start(QUESTION)
-    pending.then(() => (settled = true)).catch(() => (settled = true))
-
-    await expect.poll(() => notices.length).toBe(1)
-    expect(notices).toEqual([{ status: 'awaiting_submit', message: GOOGLE_SUBMIT_PROMPT }])
-
-    const inputLocator = page.locator(BASE_SETTINGS.selectors.input)
-    const inputValue = await inputLocator.inputValue()
-    expect(inputValue).toBe(QUESTION.text)
-
-    await page.waitForTimeout(200)
-    expect(settled).toBe(false)
-
-    const enterAt = await pressEnter()
+  /** Runs a trial up to the results page having loaded. */
+  async function loadedResults(created: GoogleAdapter): Promise<{ beginMs: number; firstResponseMs: number; endMs: number }> {
+    const { pending } = await typed(created)
+    await pressEnter()
     const beginMs = await pending
+    const firstResponseMs = await created.waitForFirstResponse()
+    const endMs = await created.waitForCompletion()
+    return { beginMs, firstResponseMs, endMs }
+  }
 
-    expect(adapter.subject).toBe(Subject.GOOGLE)
-    expect(beginMs).toBeGreaterThanOrEqual(enterAt)
+  /** Highlights an element's text, as the Tester does by dragging over a passage. */
+  async function highlight(selector: string): Promise<void> {
+    await page.evaluate((target) => {
+      const node = document.querySelector(target)
+      if (!node) throw new Error(`Nothing matches ${target}`)
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+    }, selector)
+  }
 
-    const firstResponseMs = await adapter.waitForFirstResponse()
-    expect(firstResponseMs).toBeGreaterThanOrEqual(beginMs)
+  it(
+    'types the exact question, tells the Tester to press Enter, and does not begin until they do',
+    async () => {
+      const created = adapterWith()
+      let settled = false
+      const pending = created.start(QUESTION)
+      void pending.then(
+        () => (settled = true),
+        () => (settled = true),
+      )
 
-    const endMs = await adapter.waitForCompletion()
-    expect(endMs).toBeGreaterThanOrEqual(firstResponseMs)
+      await expect.poll(() => notices.length, { timeout: 10_000 }).toBe(1)
+      expect(notices).toEqual([{ status: 'awaiting_submit', message: GOOGLE_SUBMIT_PROMPT }])
+      expect(await page.locator(BASE_SETTINGS.selectors.input).first().inputValue()).toBe(QUESTION.text)
 
-    const answer = await adapter.captureAnswer()
-    expect(answer.sourceUrl).toBe(mockServerUrl)
+      // The home page loaded long ago. Nothing the Tester does, or does not do, before Enter starts the trial.
+      await page.waitForLoadState('load')
+      await page.waitForTimeout(400)
+      expect(settled).toBe(false)
+      expect(google.searches).toHaveLength(0)
 
-    await adapter.dispose()
-  }, BROWSER_TEST_TIMEOUT_MS)
+      const enterAt = await pressEnter()
+      const beginMs = await pending
+      const afterBegin = Date.now()
 
-  it('gives up with a clear error when the Tester never presses Enter within the page load timeout', async () => {
-    const adapter = adapterWith(settingsFor({ pageLoadTimeoutMs: 500 }))
-    const pending = adapter.start(QUESTION)
+      expect(created.subject).toBe(Subject.GOOGLE)
+      expect(google.searches.map((search) => search.query)).toEqual([QUESTION.text])
+      expect(beginMs).toBeGreaterThanOrEqual(enterAt)
+      expect(beginMs).toBeLessThanOrEqual(afterBegin)
+      expect(signals).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
 
-    await expect.poll(() => notices.length).toBe(1)
-    await expect(pending).rejects.toThrow(GoogleSubmitTimeoutError)
-    await expect(pending).rejects.toThrow(/Search page load timed out/)
+  it(
+    'takes first response from the server answering the search, and the end from the results page finishing loading',
+    async () => {
+      google.options.searchDelayMs = 300
+      google.options.assetDelayMs = 350
+      const created = adapterWith()
 
-    await adapter.dispose()
-  }, BROWSER_TEST_TIMEOUT_MS)
+      const { beginMs, firstResponseMs, endMs } = await loadedResults(created)
 
-  it('reports unreachable network errors cleanly', async () => {
-    const adapter = adapterWith(settingsFor({ searchUrl: 'http://localhost:65535' })) // Invalid closed port
-    let capturedSignal: any = null
-    adapter.onFailure((signal) => {
-      capturedSignal = signal
-    })
+      // The server held its answer for 300 ms, then an image held the load event for 350 ms more.
+      expect(firstResponseMs - beginMs).toBeGreaterThanOrEqual(280)
+      expect(endMs - firstResponseMs).toBeGreaterThanOrEqual(330)
+      expect(endMs).toBeLessThanOrEqual(Date.now())
+      expect(await page.evaluate(() => document.readyState)).toBe('complete')
+      expect(signals).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
 
-    await expect(adapter.start(QUESTION)).rejects.toThrow(SubjectUnreachableError)
-    expect(capturedSignal?.networkError).toMatch(/ERR_CONNECTION_REFUSED/)
+  it(
+    'stamps first response at the first answer when the search is redirected, and still ends at the load',
+    async () => {
+      google.options.redirectSearch = true
+      const created = adapterWith()
 
-    await adapter.dispose()
-  }, BROWSER_TEST_TIMEOUT_MS)
+      const { beginMs, firstResponseMs, endMs } = await loadedResults(created)
 
-  it('dispose() while waiting settles start() at once', async () => {
-    const adapter = adapterWith()
-    const pending = adapter.start(QUESTION)
-    pending.catch(() => {})
+      expect(google.searches).toHaveLength(2)
+      expect(firstResponseMs).toBeGreaterThanOrEqual(beginMs)
+      expect(endMs).toBeGreaterThanOrEqual(firstResponseMs)
+      expect(new URL(page.url()).searchParams.get('redirected')).toBe('1')
+      expect(signals).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
 
-    await expect.poll(() => notices.length).toBe(1)
-    await adapter.dispose()
+  it(
+    'gives up with a clear error when the Tester never presses Enter within the submit wait',
+    async () => {
+      const created = adapterWith(settingsFor(), { submitWaitMs: 400 })
+      const { pending } = await typed(created)
 
-    await expect(pending).rejects.toThrow(AdapterDisposedError)
-  }, BROWSER_TEST_TIMEOUT_MS)
+      await expect(pending).rejects.toThrow(GoogleSubmitTimeoutError)
+      await expect(pending).rejects.toThrow(/not submitted within 0\.4 s: no Enter in the Google window/)
+      // Not a failure of Google: nothing is reported, so the controller aborts the trial without saving.
+      expect(signals).toEqual([])
+      expect(google.searches).toHaveLength(0)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'aborts when the search that was sent is not the question',
+    async () => {
+      const created = adapterWith()
+      const { pending } = await typed(created)
+
+      await page.locator(BASE_SETTINGS.selectors.input).first().pressSequentially(' and more')
+      await pressEnter()
+
+      await expect(pending).rejects.toThrow(GoogleAnswerError)
+      await expect(pending).rejects.toThrow(/was "What is combinatorial testing\? and more", not the question/)
+      expect(signals).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports a home page that cannot be reached as a network error',
+    async () => {
+      const created = adapterWith(settingsFor({ searchUrl: await closedPortUrl() }))
+
+      await expect(created.start(QUESTION)).rejects.toThrow(SubjectUnreachableError)
+
+      expect(signals).toHaveLength(1)
+      expect(signals[0]?.networkError).toMatch(/ERR_CONNECTION_REFUSED/)
+      expect(detector.classify(signals[0] as FailureSignal)).toBe(FailureType.UNREACHABLE)
+      expect(notices).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports an error status from the search as an error response, keeping the first-response stamp',
+    async () => {
+      google.options.searchStatus = 503
+      const created = adapterWith()
+      const { pending } = await typed(created)
+      await pressEnter()
+      const beginMs = await pending
+
+      const firstResponseMs = await created.waitForFirstResponse()
+
+      expect(firstResponseMs).toBeGreaterThanOrEqual(beginMs)
+      expect(signals).toEqual([{ httpStatus: 503, timedOut: false }])
+      expect(detector.classify(signals[0] as FailureSignal)).toBe(FailureType.ERROR_RESPONSE)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'reports a search that gets no response as a network error',
+    async () => {
+      google.options.dropSearch = true
+      const created = adapterWith()
+      const { pending } = await typed(created)
+      await pressEnter()
+      await pending
+
+      await expect(created.waitForFirstResponse()).rejects.toThrow(/failed before the results page loaded/)
+
+      expect(signals).toHaveLength(1)
+      expect(detector.classify(signals[0] as FailureSignal)).toBe(FailureType.UNREACHABLE)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'dispose() while waiting for Enter settles start() at once',
+    async () => {
+      const created = adapterWith()
+      const { pending } = await typed(created)
+
+      await created.dispose()
+
+      await expect(pending).rejects.toThrow(AdapterDisposedError)
+      await expect(created.waitForFirstResponse()).rejects.toThrow(GoogleAnswerError)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'dispose() while the results load rejects the pending wait, and the adapter runs the next trial',
+    async () => {
+      google.options.assetDelayMs = 5_000
+      const created = adapterWith()
+      const { pending } = await typed(created)
+      await pressEnter()
+      await pending
+      await created.waitForFirstResponse()
+      const completion = created.waitForCompletion()
+      completion.catch(() => {})
+
+      await created.dispose()
+      await expect(completion).rejects.toThrow(AdapterDisposedError)
+
+      google.reset()
+      notices = []
+      const again = await loadedResults(created)
+      expect(again.endMs).toBeGreaterThanOrEqual(again.beginMs)
+      expect(google.searches).toHaveLength(1)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  describe('captureAnswer', () => {
+    it(
+      'with nothing highlighted reads the results, without the AI overview or the menus, and gives the results page as the source',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).toContain('Combinatorial testing | CSRC')
+        expect(answer.text).toContain('Combinatorial testing covers all t-way combinations of input parameter values.')
+        expect(answer.text).toContain('Practical Combinatorial Testing')
+        expect(answer.text).toContain('Pairwise testing is the 2-way case of combinatorial testing.')
+        // The AI overview: its heading, its text, and the pages it lists.
+        expect(answer.text).not.toMatch(/AI Overview/i)
+        expect(answer.text).not.toContain('Generated summary')
+        expect(answer.text).not.toContain('A page the overview drew on')
+        // Google's menus and footer.
+        expect(answer.text).not.toContain('Images')
+        expect(answer.text).not.toContain('Sign in')
+        expect(answer.text).not.toContain('Privacy')
+        expect(answer.citations).toEqual([])
+        expect(answer.sourceUrl).toBe(page.url())
+        expect(new URL(answer.sourceUrl ?? '').pathname).toBe('/search')
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'leaves the page as it was after reading it',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+        const before = await page.evaluate(() => document.body.innerHTML)
+
+        await created.captureAnswer()
+
+        expect(await page.evaluate(() => document.body.innerHTML)).toBe(before)
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'saves the highlighted passage and the URL of the result it came from, not the search page',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+
+        await highlight('#snippet-3')
+        const third = await created.captureAnswer()
+        expect(third.text).toBe('Pairwise testing is the 2-way case of combinatorial testing.')
+        expect(third.sourceUrl).toBe('https://example.net/pairwise')
+
+        // A link Google wrapped as /url?q=<target> gives the target.
+        await highlight('#snippet-2')
+        const second = await created.captureAnswer()
+        expect(second.text).toBe('A guide to covering arrays and how many tests a t-way suite needs.')
+        expect(second.sourceUrl).toBe('https://example.org/practical-combinatorial-testing')
+
+        await highlight('#result-1 h3')
+        const first = await created.captureAnswer()
+        expect(first.text).toBe('Combinatorial testing | CSRC')
+        expect(first.sourceUrl).toBe(`${google.origin}/result/one`)
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'gives a passage highlighted between results the result just before it',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+
+        await highlight('#people-also-ask .related-question')
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).toBe('What is pairwise testing?')
+        expect(answer.sourceUrl).toBe(`${google.origin}/result/one`)
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'never captures a passage highlighted in the AI overview: the results are read instead',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+
+        await highlight('#ai-text')
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).not.toContain('Generated summary')
+        expect(answer.text).toContain('Combinatorial testing | CSRC')
+        expect(answer.sourceUrl).toBe(page.url())
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'ignores a passage highlighted outside the results, such as the menus',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+
+        await highlight('#top-nav')
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).not.toContain('Sign in')
+        expect(answer.text).toContain('Combinatorial testing | CSRC')
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'cuts an AI overview that has no heading when its container is configured',
+      async () => {
+        google.options.results = 'ai-without-heading'
+        const selectors = { ...BASE_SETTINGS.selectors, aiOverview: '#ai-overview' }
+        const created = adapterWith(settingsFor({ selectors }))
+        await loadedResults(created)
+
+        const unhighlighted = await created.captureAnswer()
+        expect(unhighlighted.text).not.toContain('Generated summary')
+        expect(unhighlighted.text).toContain('Practical Combinatorial Testing')
+
+        await highlight('#ai-text')
+        const highlighted = await created.captureAnswer()
+        expect(highlighted.text).not.toContain('Generated summary')
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'reads every result when the page has no AI overview',
+      async () => {
+        google.options.results = 'no-ai-overview'
+        const created = adapterWith()
+        await loadedResults(created)
+
+        const answer = await created.captureAnswer()
+
+        expect(answer.text.startsWith('Combinatorial testing | CSRC')).toBe(true)
+        expect(answer.text).toContain('Pairwise testing explained')
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'leaves an empty answer empty when the page shows no results',
+      async () => {
+        google.options.results = 'empty'
+        const created = adapterWith()
+        await loadedResults(created)
+
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).toBe('')
+        expect(detector.classify({ answerText: answer.text, timedOut: false })).toBe(FailureType.EMPTY_ANSWER)
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'on a page the Tester opened from a result, saves the passage highlighted there with that page as the source',
+      async () => {
+        const created = adapterWith()
+        await loadedResults(created)
+
+        await page.locator('#result-1 a').click()
+        await page.waitForURL('**/result/one')
+        await highlight('#passage')
+        const answer = await created.captureAnswer()
+
+        expect(answer.text).toBe('Most failures are triggered by one or two parameters interacting.')
+        expect(answer.sourceUrl).toBe(`${google.origin}/result/one`)
+
+        // With nothing highlighted there, nothing is made up.
+        await page.evaluate(() => window.getSelection()?.removeAllRanges())
+        expect((await created.captureAnswer()).text).toBe('')
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+  })
+
+  it(
+    'refuses to wait for results before the Tester has pressed Enter',
+    async () => {
+      const created = adapterWith()
+
+      await expect(created.waitForFirstResponse()).rejects.toThrow(GoogleAnswerError)
+      await expect(created.waitForCompletion()).rejects.toThrow(GoogleAnswerError)
+      await expect(created.captureAnswer()).rejects.toThrow(GoogleAnswerError)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
 })
+
+/** A URL on this machine that nothing listens on: a port a server just gave back. */
+async function closedPortUrl(): Promise<string> {
+  const server = createServer()
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  return `http://127.0.0.1:${port}/`
+}

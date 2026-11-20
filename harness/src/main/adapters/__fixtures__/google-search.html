@@ -1,12 +1,36 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Google Search</title>
+  <meta charset="utf-8" />
+  <title>Google</title>
 </head>
 <body>
-  <form action="/search" method="GET">
-    <input type="text" role="combobox" aria-label="Search" name="q" />
+  <!--
+    A small stand-in for Google's home page, for google-adapter.test.ts. It
+    keeps what the adapter depends on: the search box is a textarea named q
+    with role combobox and the label Search, and Enter in it navigates the
+    whole page to /search?q=<text>. A textarea does not submit its form on
+    Enter by itself; the page's script does it, as Google's does.
+  -->
+  <header id="top-nav">
+    <a href="/about">About</a>
+    <a href="/store">Store</a>
+    <a href="/mail">Gmail</a>
+    <a href="/images">Images</a>
+    <a href="/signin">Sign in</a>
+  </header>
+  <form action="/search" method="GET" role="search" id="search-form">
+    <textarea name="q" role="combobox" aria-label="Search" rows="1" autofocus></textarea>
+    <input type="submit" name="btnK" value="Google Search" />
   </form>
-  <div id="search"></div>
+  <script>
+    const form = document.getElementById('search-form')
+    form.elements.q.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault()
+        form.requestSubmit()
+      }
+    })
+  </script>
 </body>
 </html>

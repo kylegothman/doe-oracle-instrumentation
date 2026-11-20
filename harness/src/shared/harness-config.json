@@ -55,19 +55,24 @@
     }
   },
   "google": {
-    "searchUrl": "https://google.com",
-    "pageLoadTimeoutMs": 60000,
-    "answerFoundTimeoutMs": 30000,
+    "searchUrl": "https://www.google.com/",
+    "resultsPath": "/search",
+    "queryParam": "q",
+    "submitWaitMs": 300000,
+    "answerFoundTimeoutMs": 120000,
+    "aiOverviewLabels": ["AI Overview"],
     "selectors": {
-      "input": "[role=\"combobox\"][aria-label=\"Search\"]",
-      "searchResults": "#search"
+      "input": "textarea[name=\"q\"], [role=\"combobox\"][aria-label=\"Search\"]",
+      "resultContainers": ["#rso", "#search"],
+      "resultTitle": "a[href] h3",
+      "aiOverview": "",
+      "aiOverviewHeading": "h1, h2, [role=\"heading\"]"
     }
   },
-
   "trialTimeoutMs": 60000,
   "subjects": {
     "DOE_ORACLE": { "timerStartsAt": "trial_start", "confirmEnd": false },
     "COPILOT": { "timerStartsAt": "submit", "confirmEnd": true },
-    "GOOGLE": { "timerStartsAt": "submit", "confirmEnd": false }
+    "GOOGLE": { "timerStartsAt": "submit", "confirmEnd": false, "answerFound": true }
   }
 }

@@ -2,9 +2,6 @@
  * The systems under test (Detailed Design 3.2). The enum values are the
  * subject codes: what the trials table stores in its subject column and
  * what a data set name starts with, for example DOE_ORACLE-2026-11-12.
- *
- * TODO(#6): the Google adapter arrives with E5; until then GOOGLE has no
- * adapter registered.
  */
 export enum Subject {
   DOE_ORACLE = 'DOE_ORACLE',
