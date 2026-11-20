@@ -10,7 +10,7 @@ import { MetricsRepository } from '../data/metrics-repository'
 import { QuestionBank } from './question-bank'
 import { SessionManager } from './session-manager'
 import { TimingService } from './timing-service'
-import { ANSWER_FOUND_PROMPT, CONFIRM_PROMPT, TrialCancelledError, TrialController } from './trial-controller'
+import { answerFoundPrompt, CONFIRM_PROMPT, TrialCancelledError, TrialController } from './trial-controller'
 
 const QUESTIONS = new QuestionBank([
   { number: 1, text: 'What is combinatorial testing?' },
@@ -542,7 +542,7 @@ describe('TrialController', () => {
         questionNumber: 1,
         status: 'awaiting_confirmation',
         elapsedMs: 1_900,
-        message: ANSWER_FOUND_PROMPT,
+        message: answerFoundPrompt(),
         beginMs: T0 + 1_000,
         endMs: T0 + 1_900,
       })
@@ -655,6 +655,122 @@ describe('TrialController', () => {
       expect(repository.listTrials()).toEqual([])
       expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'dispose'])
       expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'cancelled'])
+    })
+
+    describe('no answer', () => {
+      const limited = () => policies({ [Subject.GOOGLE]: { timeoutMs: 10_000, answerFound: true, answerLimitMs: 120_000 } })
+
+      it('saves NO_ANSWER_FOUND when the Tester reports no answer: a result with its page-load time, not a failure', async () => {
+        const adapter = google({ delays: { completion: 1_900 } })
+        const controller = controllerWith([adapter], { timeouts: limited() })
+
+        const pending = controller.startTrial(Subject.GOOGLE, 1)
+        await vi.advanceTimersByTimeAsync(5_000)
+        await controller.reportNoAnswer(controller.runningTrialId!)
+        const saved = await pending
+
+        expect(saved).toMatchObject({
+          subject: Subject.GOOGLE,
+          status: TrialStatus.NO_ANSWER_FOUND,
+          beginTs: '2026-11-12T15:00:01.000Z',
+          firstResponseTs: '2026-11-12T15:00:01.300Z',
+          endTs: '2026-11-12T15:00:01.900Z',
+          responseMs: 900,
+          pageLoadMs: 900,
+          timeToAnswerMs: null,
+          sourceUrl: null,
+          answerText: null,
+          citations: [],
+          sizeBytes: 0,
+        })
+        expect(saved.failure).toBeUndefined()
+        expect(repository.listTrials()).toEqual([saved])
+        // The page is not read: there is no answer to capture.
+        expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'dispose'])
+        expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'completed'])
+        expect(events.at(-1)).toMatchObject({
+          status: 'completed',
+          message: 'Saved as no answer found: the Tester reported that the answer is not on the page.',
+        })
+        expect(events.at(-1)?.failureType).toBeUndefined()
+        expect(controller.isReady()).toBe(true)
+      })
+
+      it('tells the Tester how long they have, and saves NO_ANSWER_FOUND when the answer limit runs out, counted from the results loading', async () => {
+        const adapter = google({ delays: { completion: 1_900 } })
+        const controller = controllerWith([adapter], { timeouts: limited() })
+
+        const pending = controller.startTrial(Subject.GOOGLE, 1)
+        await vi.advanceTimersByTimeAsync(1_900)
+        expect(events.at(-1)).toMatchObject({ status: 'awaiting_confirmation', message: answerFoundPrompt(120_000) })
+        expect(answerFoundPrompt(120_000)).toMatch(/After 120 s without either, the trial is saved as no answer found/)
+
+        // The results loaded 1.9 s into the trial. The 10 s page-load limit is long past and changes nothing.
+        await vi.advanceTimersByTimeAsync(119_999)
+        expect(repository.listTrials()).toEqual([])
+        await vi.advanceTimersByTimeAsync(1)
+        const saved = await pending
+
+        expect(saved).toMatchObject({ status: TrialStatus.NO_ANSWER_FOUND, pageLoadMs: 900, timeToAnswerMs: null, answerText: null })
+        expect(saved.failure).toBeUndefined()
+        expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'dispose'])
+        expect(events.at(-1)).toMatchObject({
+          status: 'completed',
+          message: 'Saved as no answer found: no answer was reported within 120 s of the results loading.',
+        })
+        expect(controller.isReady()).toBe(true)
+      })
+
+      it('saves Answer Found as SUCCESS when it arrives inside the limit, and the limit then does nothing', async () => {
+        const controller = controllerWith([google()], { timeouts: limited() })
+
+        const pending = controller.startTrial(Subject.GOOGLE, 1)
+        await vi.advanceTimersByTimeAsync(119_000)
+        await controller.confirmCompletion(controller.runningTrialId!)
+        const saved = await pending
+        await vi.advanceTimersByTimeAsync(10_000)
+
+        expect(saved).toMatchObject({ status: TrialStatus.SUCCESS, timeToAnswerMs: 118_000 })
+        expect(repository.listTrials()).toEqual([saved])
+        expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'completed'])
+      })
+
+      it('refuses no answer before the results have loaded, and for a trial that is not running', async () => {
+        const controller = controllerWith([google({ delays: { completion: 'never' } })], { timeouts: limited() })
+
+        await expect(controller.reportNoAnswer('nope')).rejects.toThrow(/Trial nope is not running/)
+        const pending = controller.startTrial(Subject.GOOGLE, 1)
+        pending.catch(() => {})
+        await vi.advanceTimersByTimeAsync(0)
+
+        await expect(controller.reportNoAnswer(controller.runningTrialId!)).rejects.toThrow(/results have not loaded yet/)
+        expect(repository.listTrials()).toEqual([])
+        await controller.cancelTrial(controller.runningTrialId!)
+      })
+
+      it('refuses no answer for a subject whose end the Tester confirms', async () => {
+        const adapter = new FakeAdapter(Subject.COPILOT)
+        const controller = controllerWith([adapter], { timeouts: policies({ [Subject.COPILOT]: { confirmEnd: true } }) })
+
+        const pending = controller.startTrial(Subject.COPILOT, 1)
+        await vi.advanceTimersByTimeAsync(0)
+
+        await expect(controller.reportNoAnswer(controller.runningTrialId!)).rejects.toThrow(/Microsoft Copilot trial has no "no answer" result/)
+        await controller.confirmCompletion(controller.runningTrialId!)
+        await expect(pending).resolves.toMatchObject({ status: TrialStatus.SUCCESS })
+      })
+
+      it('saves nothing when the adapter ends the trial for the harness\'s own reasons, such as Google\'s unusual-traffic check', async () => {
+        const adapter = google({ errors: { completion: 'Google showed its "unusual traffic" check instead of the results' } })
+        const controller = controllerWith([adapter], { timeouts: limited() })
+
+        await expect(controller.startTrial(Subject.GOOGLE, 1)).rejects.toThrow(/unusual traffic/)
+
+        expect(repository.listTrials()).toEqual([])
+        expect(statuses()).toEqual(['started', 'first_response', 'aborted'])
+        expect(events.at(-1)?.message).toMatch(/unusual traffic/)
+        expect(controller.isReady()).toBe(true)
+      })
     })
 
     it('leaves page load, time to answer, and source empty for the other subjects', async () => {

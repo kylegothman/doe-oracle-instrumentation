@@ -32,7 +32,7 @@ describe('loadSettings', () => {
     expect(trialPolicies).toEqual({
       [Subject.DOE_ORACLE]: { timeoutMs: 60_000, startsAt: 'trial_start', confirmEnd: false },
       [Subject.COPILOT]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: true },
-      [Subject.GOOGLE]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: false, answerFound: true },
+      [Subject.GOOGLE]: { timeoutMs: 60_000, startsAt: 'submit', confirmEnd: false, answerFound: true, answerLimitMs: 120_000 },
     })
   })
 
@@ -41,6 +41,8 @@ describe('loadSettings', () => {
 
     expect(trialPolicies[Subject.DOE_ORACLE]).toEqual({ timeoutMs: 5_000, startsAt: 'trial_start', confirmEnd: false })
     expect(trialPolicies[Subject.GOOGLE].timeoutMs).toBe(5_000)
+    // The answer limit is the Tester's reading time, not the subject's: the override leaves it alone.
+    expect(trialPolicies[Subject.GOOGLE].answerLimitMs).toBe(120_000)
   })
 
   it('rejects a time limit that is not a positive whole number of milliseconds', () => {

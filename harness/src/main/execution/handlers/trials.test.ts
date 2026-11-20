@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Subject } from '../../../shared/subjects'
 import type { Trial } from '../../../shared/trials'
-import { createCancelTrialHandler, createConfirmCompletionHandler, createListTrialsHandler, createStartTrialHandler } from './trials'
+import {
+  createCancelTrialHandler,
+  createConfirmCompletionHandler,
+  createListTrialsHandler,
+  createReportNoAnswerHandler,
+  createStartTrialHandler,
+} from './trials'
 
 const record = { trialId: 't', testNumber: 1 } as Trial
 
@@ -52,6 +58,28 @@ describe('trial:confirm handler', () => {
     await expect(handler('t', Number.NaN)).rejects.toThrow(/corrected end must be a number/)
     await expect(handler('t', '12' as unknown as number)).rejects.toThrow(/corrected end must be a number/)
     expect(confirmCompletion).not.toHaveBeenCalled()
+  })
+})
+
+describe('trial:no-answer handler', () => {
+  it('reports no answer through the controller and rejects a missing id first', async () => {
+    const reportNoAnswer = vi.fn(async () => {})
+    const handler = createReportNoAnswerHandler(async () => ({ reportNoAnswer }))
+
+    await expect(handler('t')).resolves.toBeUndefined()
+    expect(reportNoAnswer).toHaveBeenCalledWith('t')
+    await expect(handler(' ')).rejects.toThrow(/Trial id must be a non-empty string/)
+    expect(reportNoAnswer).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes the controller\'s refusal through as the error', async () => {
+    const handler = createReportNoAnswerHandler(async () => ({
+      reportNoAnswer: async () => {
+        throw new Error('The trial is not waiting for the Tester to report the answer')
+      },
+    }))
+
+    await expect(handler('t')).rejects.toThrow(/not waiting for the Tester/)
   })
 })
 

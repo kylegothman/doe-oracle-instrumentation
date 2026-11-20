@@ -27,6 +27,7 @@ import {
   createCancelTrialHandler,
   createConfirmCompletionHandler,
   createListTrialsHandler,
+  createReportNoAnswerHandler,
   createStartTrialHandler,
 } from './execution/handlers/trials'
 import { IpcRouter } from './execution/ipc-router'
@@ -137,6 +138,7 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   router.register(IpcChannels.startTrial, createStartTrialHandler(() => controllerReady))
   router.register(IpcChannels.confirmCompletion, createConfirmCompletionHandler(() => controllerReady))
   router.register(IpcChannels.cancelTrial, createCancelTrialHandler(() => controllerReady))
+  router.register(IpcChannels.reportNoAnswer, createReportNoAnswerHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   router.register(IpcChannels.openCopilotSignIn, createOpenCopilotSignInHandler({ pages: browserManager, settings: settings.copilot }))
   router.register(IpcChannels.listFailedWrites, createListFailedWritesHandler(errorLog))

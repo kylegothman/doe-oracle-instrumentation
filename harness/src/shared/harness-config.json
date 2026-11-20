@@ -58,6 +58,7 @@
     "searchUrl": "https://www.google.com/",
     "resultsPath": "/search",
     "queryParam": "q",
+    "challengePath": "/sorry/",
     "submitWaitMs": 300000,
     "answerFoundTimeoutMs": 120000,
     "aiOverviewLabels": ["AI Overview"],

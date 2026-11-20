@@ -35,6 +35,8 @@ export interface GoogleSettings {
   resultsPath: string
   /** The URL parameter that carries the search text. */
   queryParam: string
+  /** Path prefix of the page Google shows instead of its own when it suspects automated traffic. */
+  challengePath: string
   /** How long the harness waits for the Tester's Enter before the trial is aborted. */
   submitWaitMs: number
   /**
@@ -153,6 +155,13 @@ export interface TrialPolicy {
    * the page. The clock is already stopped. Left out means false.
    */
   answerFound?: boolean
+  /**
+   * With answerFound: how long the Tester has, counted from completion, to
+   * report the answer. When it runs out the trial is saved as
+   * NO_ANSWER_FOUND, which is a result and not a failure. Separate from
+   * timeoutMs, which covers only the subject. Left out means no limit.
+   */
+  answerLimitMs?: number
 }
 
 export interface HarnessSettings {
@@ -167,7 +176,9 @@ export interface HarnessSettings {
    * clocks start at the Tester's Enter: their adapters resolve start() at
    * that moment. For Google the limit covers Enter to the results page
    * finishing loading, and nothing after it: the time the Tester takes to
-   * find the answer on the page is not part of it.
+   * find the answer on the page has its own limit, answerLimitMs, 120
+   * seconds from `google.answerFoundTimeoutMs`. HARNESS_TRIAL_TIMEOUT_MS
+   * does not change that one.
    */
   trialPolicies: Record<Subject, TrialPolicy>
 }
@@ -195,6 +206,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
   const timeoutOverride = env[TRIAL_TIMEOUT_ENV]?.trim()
   const timeoutMs = timeoutOverride ? parseTimeout(timeoutOverride) : null
 
+  const google = loadGoogleSettings()
   const trialPolicies = {} as Record<Subject, TrialPolicy>
   for (const subject of SUBJECTS) {
     const configured = defaults.subjects[subject] as
@@ -204,7 +216,8 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
       timeoutMs: timeoutMs ?? configured?.timeoutMs ?? defaults.trialTimeoutMs,
       startsAt: parseTimerStart(subject, configured?.timerStartsAt ?? 'trial_start'),
       confirmEnd: configured?.confirmEnd ?? false,
-      ...(configured?.answerFound ? { answerFound: true } : {}),
+      // Google is the only subject whose answer the Tester reports, so the answer limit lives with its settings.
+      ...(configured?.answerFound ? { answerFound: true, answerLimitMs: google.answerFoundTimeoutMs } : {}),
     }
   }
 
@@ -215,7 +228,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): HarnessSetti
       searchEndpointPath: defaults.oracle.searchEndpointPath,
     },
     copilot: loadCopilotSettings(env[COPILOT_PRODUCT_ENV]?.trim()),
-    google: loadGoogleSettings(),
+    google,
     trialPolicies,
   }
 }
@@ -249,6 +262,7 @@ function loadGoogleSettings(): GoogleSettings {
     searchUrl: parseHttpUrl(configured.searchUrl, 'harness-config.json: google.searchUrl'),
     resultsPath: configured.resultsPath,
     queryParam: configured.queryParam,
+    challengePath: configured.challengePath,
     submitWaitMs: positiveMs(configured.submitWaitMs, 'google.submitWaitMs'),
     answerFoundTimeoutMs: positiveMs(configured.answerFoundTimeoutMs, 'google.answerFoundTimeoutMs'),
     aiOverviewLabels: [...configured.aiOverviewLabels],

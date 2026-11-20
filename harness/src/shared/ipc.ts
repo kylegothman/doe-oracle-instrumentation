@@ -45,6 +45,7 @@ export interface IpcContracts {
   'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
   'trial:confirm': { args: [trialId: string, endMs?: number]; result: void }
   'trial:cancel': { args: [trialId: string]; result: void }
+  'trial:no-answer': { args: [trialId: string]; result: void }
   'trials:list': { args: [sessionId?: string]; result: Trial[] }
   'copilot:open-sign-in': { args: []; result: CopilotSignInStatus }
   'errors:list': { args: []; result: FailedWriteSummary[] }
@@ -64,6 +65,7 @@ export const IpcChannels = {
   startTrial: 'trial:start',
   confirmCompletion: 'trial:confirm',
   cancelTrial: 'trial:cancel',
+  reportNoAnswer: 'trial:no-answer',
   listTrials: 'trials:list',
   openCopilotSignIn: 'copilot:open-sign-in',
   listFailedWrites: 'errors:list',
@@ -111,6 +113,12 @@ export interface HarnessApi {
   confirmCompletion(trialId: string, endMs?: number): Promise<void>
   /** Ends the running trial without saving it. startTrial's promise then rejects. */
   cancelTrial(trialId: string): Promise<void>
+  /**
+   * Reports that the answer is not on the page, for a Google trial that is
+   * awaiting confirmation. The trial is saved as NO_ANSWER_FOUND, which is a
+   * result and not a failure; startTrial's promise delivers the record.
+   */
+  reportNoAnswer(trialId: string): Promise<void>
   /** Lists saved trials, newest first, for one session or for all sessions. */
   listTrials(sessionId?: string): Promise<Trial[]>
   /**
