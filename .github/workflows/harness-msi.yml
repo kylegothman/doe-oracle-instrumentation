@@ -6,8 +6,9 @@
 # passed.
 #
 # Runs on pushes to main that touch the harness, on pull requests that
-# change anything that affects packaging or start-up, and on manual dispatch
-# for any branch (Actions tab, or `gh workflow run harness-msi --ref <branch>`).
+# change anything that affects packaging or the main process, and on manual
+# dispatch for any branch (Actions tab, or `gh workflow run harness-msi --ref
+# <branch>`). It is not a required check.
 #
 # The runner is Windows Server, not Windows 11, and it cannot sign in to
 # Copilot. This does not replace the manual test in
@@ -33,10 +34,17 @@ on:
       # What the installer ships next to the app
       - 'harness/config/**'
       - 'harness/build-resources/**'
-      # Start-up code the self-check runs
-      - 'harness/src/main/index.ts'
-      - 'harness/src/main/browser/**'
-      - 'harness/src/main/self-check/**'
+      # How the main process is compiled
+      - 'harness/tsconfig*.json'
+      # The main process and the code it shares with the UI. The self-check
+      # calls only some of it (QuestionBank, MetricsRepository and its
+      # migrations, BrowserManager), but index.ts imports all of src/main and
+      # it is built into one file, out/main/index.js, which the installed app
+      # runs from the top before the self-check starts. So a pull request
+      # that breaks any main-process module at load can break the installed
+      # app, and only this job would show it before the merge.
+      - 'harness/src/main/**'
+      - 'harness/src/shared/**'
   workflow_dispatch:
 
 permissions:
@@ -107,8 +115,11 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step install -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke')
 
+      # Two runs: the normal one, then one with the browser check's limit at
+      # 1 ms, which must time out, exit by itself, and leave no chrome.exe
+      # running from the install folder.
       - name: Run the installed app's self-check
-        timeout-minutes: 6
+        timeout-minutes: 12
         run: ./scripts/msi-smoke-test.ps1 -MsiPath (Get-Item release/*.msi).FullName -Step self-check -OutDir (Join-Path $env:RUNNER_TEMP 'msi-smoke') -ExpectedVersion $env:VERSION
         env:
           VERSION: ${{ steps.version.outputs.version }}

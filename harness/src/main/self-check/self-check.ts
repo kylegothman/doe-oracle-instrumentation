@@ -21,6 +21,14 @@ import { dirname } from 'node:path'
 export const SELF_CHECK_FLAG = '--self-check'
 /** Optional: where to write the report, `--self-check-out=<file>`. */
 export const SELF_CHECK_OUT_PREFIX = '--self-check-out='
+/**
+ * For testing only: replaces the browser check's time limit, in milliseconds
+ * (`--self-check-browser-timeout-ms=1` makes it time out at once). It exists
+ * so the timeout paths can be exercised on a packaged build.
+ */
+export const SELF_CHECK_BROWSER_TIMEOUT_PREFIX = '--self-check-browser-timeout-ms='
+/** For testing only: replaces the deadline of the whole run, in milliseconds. */
+export const SELF_CHECK_DEADLINE_PREFIX = '--self-check-deadline-ms='
 
 /** Exit codes of a self-check run. */
 export const SelfCheckExit = {
@@ -34,20 +42,52 @@ export interface SelfCheckArgs {
   enabled: boolean
   /** The report path given with --self-check-out=, or null for the default. */
   outPath: string | null
+  /** The browser check's limit given with --self-check-browser-timeout-ms=, or null for the default. */
+  browserTimeoutMs: number | null
+  /** The run's deadline given with --self-check-deadline-ms=, or null for the default. */
+  deadlineMs: number | null
 }
 
-/** Reads the self-check flags from the process arguments. */
+/**
+ * Reads the self-check flags from the process arguments. Every other flag
+ * is ignored unless --self-check itself is there, so none of them can change
+ * a normal launch.
+ */
 export function parseSelfCheckArgs(argv: readonly string[]): SelfCheckArgs {
   const enabled = argv.includes(SELF_CHECK_FLAG)
-  const out = argv.find((arg) => arg.startsWith(SELF_CHECK_OUT_PREFIX))?.slice(SELF_CHECK_OUT_PREFIX.length)
-  return { enabled, outPath: enabled && out ? out : null }
+  if (!enabled) {
+    return { enabled, outPath: null, browserTimeoutMs: null, deadlineMs: null }
+  }
+  const value = (prefix: string): string | undefined => argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length)
+  return {
+    enabled,
+    outPath: value(SELF_CHECK_OUT_PREFIX) || null,
+    browserTimeoutMs: wholeMilliseconds(value(SELF_CHECK_BROWSER_TIMEOUT_PREFIX)),
+    deadlineMs: wholeMilliseconds(value(SELF_CHECK_DEADLINE_PREFIX)),
+  }
 }
 
-/** One thing the self-check verifies. `run` resolves with a short description of what it found, or throws. */
+/** A whole number of milliseconds, 1 or more. Anything else is ignored and the default stands. */
+function wholeMilliseconds(text: string | undefined): number | null {
+  if (text === undefined || !/^\d+$/.test(text)) return null
+  const value = Number(text)
+  return Number.isSafeInteger(value) && value >= 1 ? value : null
+}
+
+/** One thing the self-check verifies. */
 export interface Check {
   name: string
   timeoutMs: number
+  /** Resolves with a short description of what it found, or throws. */
   run(): Promise<string>
+  /**
+   * Closes whatever `run` started: a browser, a file. The self-check calls
+   * it after every check, including one whose `run` is still going because
+   * it passed its limit, and once more before the app exits. So it must be
+   * safe to call more than once, while `run` is under way, and when `run`
+   * never started.
+   */
+  cleanup?(): Promise<void>
 }
 
 export interface CheckResult {
@@ -75,17 +115,38 @@ export interface SelfCheckReport {
   startedAt: string
   finishedAt: string
   checks: CheckResult[]
+  /**
+   * Whether everything the checks started was closed before the app exited.
+   * When it was not, `problem` says what went wrong and the run has failed.
+   */
+  cleanup: { ok: boolean; problem: string | null }
+}
+
+/**
+ * How long closing what a check started may take. A browser launch that is
+ * still under way has to be waited for before it can be closed, and
+ * Playwright ends one after SELF_CHECK_LAUNCH_TIMEOUT_MS (90 s), so this
+ * is that plus time to close.
+ */
+export const CHECK_CLEANUP_TIMEOUT_MS = 105_000
+
+export interface RunChecksOptions {
+  now?: () => number
+  onResult?: (result: CheckResult) => void
+  cleanupTimeoutMs?: number
 }
 
 /**
  * Runs the checks one after another. A check that throws or runs out of
  * time is recorded as failed and the next one still runs, so the report
  * always covers everything.
+ *
+ * Each check is cleaned up before the next one starts. That matters most for
+ * a check that ran out of time: its `run` is still going and would otherwise
+ * be left holding a browser when the app exits. A check whose cleanup fails
+ * or does not finish is recorded as failed, even if `run` had passed.
  */
-export async function runChecks(
-  checks: readonly Check[],
-  options: { now?: () => number; onResult?: (result: CheckResult) => void } = {},
-): Promise<CheckResult[]> {
+export async function runChecks(checks: readonly Check[], options: RunChecksOptions = {}): Promise<CheckResult[]> {
   const now = options.now ?? Date.now
   const results: CheckResult[] = []
   for (const check of checks) {
@@ -96,7 +157,12 @@ export async function runChecks(
       detail = await withTimeout(check.run(), check.timeoutMs)
       ok = true
     } catch (error) {
-      detail = error instanceof Error ? error.message : String(error)
+      detail = describe(error)
+    }
+    const problem = await cleanUp([check], options.cleanupTimeoutMs ?? CHECK_CLEANUP_TIMEOUT_MS)
+    if (problem !== null) {
+      ok = false
+      detail = `${detail}; ${problem}`
     }
     const result: CheckResult = { name: check.name, ok, detail, durationMs: now() - startedAt }
     results.push(result)
@@ -105,9 +171,33 @@ export async function runChecks(
   return results
 }
 
-function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+/**
+ * Calls `cleanup` on every check that has one and waits for them all, for
+ * at most `timeoutMs`. Never throws: resolves with null when everything was
+ * closed, or with what went wrong.
+ */
+export async function cleanUp(checks: readonly Check[], timeoutMs: number): Promise<string | null> {
+  const problems: string[] = []
+  const work = Promise.all(
+    checks.map(async (check) => {
+      try {
+        await check.cleanup?.()
+      } catch (error) {
+        problems.push(`cleaning up after the ${check.name} check failed: ${describe(error)}`)
+      }
+    }),
+  )
+  try {
+    await withTimeout(work, timeoutMs, `closing what the checks started did not finish within ${timeoutMs} ms`)
+  } catch (error) {
+    problems.push(describe(error))
+  }
+  return problems.length > 0 ? problems.join('; ') : null
+}
+
+function withTimeout<T>(work: Promise<T>, timeoutMs: number, message = `did not finish within ${timeoutMs} ms`): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`did not finish within ${timeoutMs} ms`)), timeoutMs)
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
     work.then(
       (value) => {
         clearTimeout(timer)
@@ -121,14 +211,23 @@ function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   })
 }
 
-/** Builds the report. It passes only when there is at least one check and every check passed. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Builds the report. It passes only when there is at least one check, every
+ * check passed, the run met its deadline, and everything was closed.
+ */
 export function buildReport(
   app: SelfCheckAppInfo,
   checks: readonly CheckResult[],
   times: { startedAt: Date; finishedAt: Date },
-  timedOut = false,
+  outcome: { timedOut?: boolean; cleanupProblem?: string | null } = {},
 ): SelfCheckReport {
-  const ok = !timedOut && checks.length > 0 && checks.every((check) => check.ok)
+  const timedOut = outcome.timedOut ?? false
+  const cleanupProblem = outcome.cleanupProblem ?? null
+  const ok = !timedOut && cleanupProblem === null && checks.length > 0 && checks.every((check) => check.ok)
   return {
     ok,
     status: timedOut ? 'timed_out' : ok ? 'passed' : 'failed',
@@ -136,6 +235,7 @@ export function buildReport(
     startedAt: times.startedAt.toISOString(),
     finishedAt: times.finishedAt.toISOString(),
     checks: [...checks],
+    cleanup: { ok: cleanupProblem === null, problem: cleanupProblem },
   }
 }
 

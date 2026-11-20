@@ -128,7 +128,16 @@ Which Chromium is launched depends on how the harness runs (`src/main/browser/br
 - Under `npm run dev`, Playwright finds the browser in its own cache, where `npm run setup:browser` put it.
 - The packaged app launches the copy the installer shipped in `resources/browser/`, found through `browser.json` in that folder. It never falls back to the cache or to a browser installed on the machine, so every installed harness of the same version drives the same Chromium build.
 
-If the packaged app's browser is missing or does not start, the trial is not run and the message says to reinstall the harness from its installer.
+`browser.json` also records the platform and architecture the browser was fetched for. The packaged app compares them with what the app itself was built for (`process.platform` and `process.arch`, so an x64 build running on Windows on ARM matches its x64 browser).
+
+When a launch fails, the trial is not run, and the message gives the fix that can work for what failed:
+
+| What failed | What the message says |
+| --- | --- |
+| The bundled browser is missing, damaged, or does not start | Reinstall the harness from its installer. |
+| The bundled browser was built for another platform, or `browser.json` does not say which | It names both sides, for example "built for macOS (arm64), but this harness is the Windows (x64) build", and says reinstalling will not fix it: ask the team for the right installer. |
+| A subject's profile is in use by another Chromium | Close that window and try again. |
+| A subject's profile fails to open for any other reason | It names the profile folder and says to close the harness, rename or delete the folder, and start again. The harness creates a new profile, so the Tester signs in to Copilot again. Reinstalling would not help: uninstall keeps the profile. |
 
 ## Running a trial
 
@@ -290,7 +299,13 @@ better-sqlite3 13 uses Node-API and ships prebuilt binaries inside the npm packa
 
 ## Packaging the Windows installer
 
-`npm run dist:win` on Windows builds the app and produces `release/DOE Oracle Test Harness-<version>-x64.msi` with electron-builder. The first run downloads the WiX toolset into electron-builder's cache and Chromium into `.browser-bundle/`. The installer is per-user (no administrator rights needed) and shows a short wizard. It installs to `%LOCALAPPDATA%\Programs\DOE Oracle Test Harness`.
+`npm run dist:win` on Windows builds the app and produces `release/DOE Oracle Test Harness-<version>-x64.msi` with electron-builder. The first run downloads the WiX toolset into electron-builder's cache and Chromium into `.browser-bundle/`. The installer is per-user and shows a short wizard. It installs to `%LOCALAPPDATA%\Programs\DOE Oracle Test Harness`.
+
+Whether it needs administrator rights is only partly known:
+
+- Tested on Windows 11 (MSI 0.2.21): an account in the Administrators group, with UAC at its defaults, got no elevation prompt at install or at uninstall.
+- Not tested: a standard user account. Until someone installs with one, do not assume it works without an administrator.
+- The Apps entry is registered under `HKEY_LOCAL_MACHINE`, not `HKEY_CURRENT_USER`, on that Windows 11 machine and on the CI runner.
 
 The MSI is the only thing a Tester installs for the harness. It contains the app, `config/questions.json`, the SQLite native module, and the browser.
 
@@ -298,17 +313,22 @@ The app icon lives in `build-resources/`: `icon.png` (512 px) is the source and 
 
 ### The bundled browser
 
-`scripts/bundle-browser.mjs` (`npm run bundle:browser`) runs Playwright's own installer for the Chromium build the installed Playwright version pins, into `harness/.browser-bundle/`, and writes `browser.json` there: the Playwright version, the build's revision and version, and the path of the executable. Only the headed build is fetched, because that is the only one the app launches; the headless shell is used by the unit tests alone. The script never reads or changes Playwright's cache in your user folder.
+`scripts/bundle-browser.mjs` (`npm run bundle:browser`) runs Playwright's own installer for the Chromium build the installed Playwright version pins, into `harness/.browser-bundle/`, and writes `browser.json` there: the Playwright version, the build's revision and version, the path of the executable, and the platform and architecture it was fetched for (checked when the installed app starts a browser; see "Browser automation"). Only the headed build is fetched, because that is the only one the app launches; the headless shell is used by the unit tests alone. The script never reads or changes Playwright's cache in your user folder.
 
 electron-builder ships `browser.json` and the `chromium-<revision>` folder as `resources/browser/`. Playwright's ffmpeg and winldd are left out: they record video and check installs, which the harness does not do.
 
 The build Playwright 1.65 pins is Google's Chrome for Testing 158. It ships exactly as downloaded, with its `ABOUT` notice file; its full credits and terms are inside the browser at `chrome://credits` and `chrome://terms`. **The installer includes Chrome for Testing and is for the team and the sponsor only. Do not publish it.**
 
-With the browser, the MSI is about 300 MB (it was about 135 MB without it) and the installed app about 855 MB.
+With the browser, the MSI is about 300 MB (it was about 135 MB without it). The installed program folder is 855.1 MB, measured on Windows 11 with MSI 0.2.21. Settings, Apps reports about 1.13 GB for that same install. We have not found out where the difference comes from.
 
 ### Versions
 
 `package.json` holds the major and minor version: `0.2` until the final build, which is `1.0`. The `harness-msi` workflow sets the patch to its run number, so an MSI from CI is, for example, `0.2.57`, and no two CI builds share a version. A local `dist:win` or `dist:dir` build keeps the `.0` from `package.json`.
+
+So a local build is always `0.2.0`, which is lower than every CI build (`0.2.N`). Two things follow:
+
+- A locally built MSI will not install over a CI build: Windows refuses it as older (see "Installing over an older version"). Uninstall the CI build first.
+- Every development session, under `npm run dev` or from a local build, is recorded as `0.2.0`. The `app_version` column tells CI builds apart, not development sessions.
 
 The version shows in the window under "App info", in the MSI's file name, in Settings, Apps, and in the `app_version` column of the `sessions` table, so every saved session records which build produced it.
 
@@ -352,7 +372,7 @@ Running the app with `--self-check` runs three start-up checks without opening t
 | `sqlite` | better-sqlite3 loads, and a scratch database (`self-check.db`) opens in the per-user data folder through `MetricsRepository`, migrations included; it is removed afterwards |
 | `browser` | the Chromium a trial would use launches headed through `BrowserManager`, both as the shared browser and on a scratch profile, opens a page, and is the version `browser.json` pins |
 
-The exit code is 0 when every check passed, 1 when one failed, and 2 when the run did not finish within 3 minutes. The report is `self-check\report.json` in the per-user data folder, or the file given with `--self-check-out=<file>`. It is a file because a packaged Electron app on Windows prints nothing to the console that started it.
+The exit code is 0 when every check passed, 1 when one failed, and 2 when the checks were not done within 3 minutes. The report is `self-check\report.json` in the per-user data folder, or the file given with `--self-check-out=<file>`. It is a file because a packaged Electron app on Windows prints nothing to the console that started it.
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\DOE Oracle Test Harness\DOE Oracle Test Harness.exe" --self-check | Out-Null
@@ -361,21 +381,46 @@ Get-Content "$env:APPDATA\DOE Oracle Test Harness\self-check\report.json"
 
 The self-check never opens `harness.db` or the Copilot profile, and it contacts no site: its pages are `about:blank` and one set from a string. Without the flag the app starts exactly as it always does. The code is in `src/main/self-check/`.
 
+#### Closing the browser
+
+The self-check closes every Chromium it started before it exits, whichever way the run ends, so no `chrome.exe` is left running from the program folder to lock files against the next uninstall or reinstall:
+
+- A check that passes its own limit (120 seconds for `browser`) is recorded as failed, and what it started is closed before the next check runs.
+- When the 3 minutes pass with a check still going, everything is closed before the report is written.
+- A browser launch that is still under way at either limit is waited for and then closed. Playwright cannot cancel a launch, so each self-check launch gets 90 seconds, after which Playwright ends the browser process itself. That is about four times the slowest browser check seen on the CI runner (21.4 seconds for both launches, on the first run).
+
+Closing has a limit of its own, 105 seconds. In the worst case the app therefore exits 4 minutes 45 seconds after it started. If closing does not finish, the run fails and the report says why. The report's `cleanup` field records the outcome: `{ "ok": true, "problem": null }` when everything was closed. The `browser` check's detail also gives the time each launch took.
+
+Measured before this was added, by forcing timeouts with the flags below: no browser process outlived the app. On the Windows CI runner, with the timeout forced mid-launch, nothing was running from the program folder once the app had exited. On macOS, across six forced runs, one browser process was still alive at the moment of exit and gone within 2 seconds, and the scratch profile folder was left behind twice. So a leftover `chrome.exe` had not been seen in practice. The explicit close makes it something the app does and reports, not a side effect of how Playwright shuts down.
+
+#### Flags for testing the self-check
+
+Two more flags exist only to test the timeout paths on a packaged build. They do nothing without `--self-check`, so they cannot change a normal launch:
+
+| Flag | Effect |
+| --- | --- |
+| `--self-check-browser-timeout-ms=<n>` | The `browser` check's limit, instead of 120000. With `1` the check always times out while its first launch is under way. |
+| `--self-check-deadline-ms=<n>` | The limit for all checks together, instead of 180000. |
+
+A value that is not a whole number of milliseconds, 1 or more, is ignored.
+
 ### Continuous integration
 
 The `harness-msi` workflow builds the MSI on `windows-latest` and then tests it on that runner, a clean machine with no Playwright cache and no development setup. `scripts/msi-smoke-test.ps1` does the work:
 
 1. Installs the MSI silently (`msiexec /i ... /qn`) and checks the program files, the bundled browser, the shortcuts, and the Apps entry are there.
-2. Runs the installed app with `--self-check`, with a time limit, and fails unless the report shows all three checks passed, from the installed copy, at the expected version.
+2. Runs the installed app with `--self-check`, with a time limit, and fails unless the report shows all three checks passed, from the installed copy, at the expected version. Then runs it again with `--self-check-browser-timeout-ms=1`, so the browser check times out mid-launch, and fails unless the app exits by itself with code 1, its report says it closed everything it started, and nothing is left running from the program folder.
 3. Uninstalls silently (`msiexec /x ... /qn`) and checks the program folder, shortcuts, and Apps entry are gone and the per-user data folder is still there.
 
-The MSI is attached to the run as the artifact `doe-oracle-test-harness-msi` only when all three steps pass. When one fails, the msiexec logs and the self-check report are attached as `harness-msi-smoke-logs` instead.
+The MSI is attached to the run as the artifact `doe-oracle-test-harness-msi` only when all three steps pass. When one fails, the msiexec logs and the self-check reports are attached as `harness-msi-smoke-logs` instead.
 
 The workflow runs:
 
 - on every push to `main` that touches the harness;
-- on pull requests that change the packaging setup (`electron-builder.yml`, `package.json`, the lockfile, `scripts/`), what ships beside the app (`config/`, `build-resources/`), or the start-up code (`src/main/index.ts`, `src/main/browser/`, `src/main/self-check/`);
+- on pull requests that change the packaging setup (`electron-builder.yml`, `electron.vite.config.ts`, `tsconfig*.json`, `package.json`, the lockfile, `.nvmrc`, `scripts/`), what ships beside the app (`config/`, `build-resources/`), or the main process and the code it shares with the UI (`src/main/`, `src/shared/`). All of `src/main` counts, not only what the self-check calls: it is built into one file that the installed app runs from the top before the self-check starts. A pull request that changes only the renderer or the preload script does not run it;
 - by hand, for any branch: in the Actions tab pick `harness-msi`, click **Run workflow**, and choose the branch, or run `gh workflow run harness-msi --ref <branch>`.
+
+It is not a required check, so it never blocks a merge by itself.
 
 The runner is Windows Server, not Windows 11, and it cannot sign in to Copilot or run a trial. A person still tests each MSI that matters on Windows 11 with `docs/install-test.md`.
 
@@ -402,3 +447,5 @@ On macOS, `npm run dist:dir` produces an unpacked `.app` under `release/` for a 
 - Electron failed to download during `npm install`: re-run `npm install`; if you are behind a proxy, set `HTTPS_PROXY`.
 - macOS shows a blank window on first launch: wait a moment, the window is shown once the renderer is ready.
 - The installed app says "The browser that ships with the harness is missing or damaged": something removed or blocked files under `resources\browser` in the program folder. Reinstall from the MSI. If it happens again, check whether antivirus quarantined `chrome.exe`.
+- The installed app says "The browser in this installer was built for ...": the MSI was packaged with a browser for another platform. Reinstalling the same MSI will not help. Build or download the MSI again from a `harness-msi` run.
+- The installed app says "Could not open the Microsoft Copilot profile at ...": the profile folder, `%APPDATA%\DOE Oracle Test Harness\browser-profiles\copilot`, may be damaged. Close the harness, rename that folder (or delete it), and start the harness again. You will need to sign in to Copilot again. Reinstalling does not help, because uninstall keeps that folder.

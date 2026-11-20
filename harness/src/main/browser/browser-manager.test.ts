@@ -164,7 +164,14 @@ describe('BrowserManager', () => {
   })
 
   describe('with the browser the installer shipped', () => {
-    const manifest = { playwrightVersion: '1.65.0', revision: '1254', browserVersion: '158.0.8127.18', executable: 'chromium-1254/chrome-win64/chrome.exe' }
+    const manifest = {
+      playwrightVersion: '1.65.0',
+      revision: '1254',
+      browserVersion: '158.0.8127.18',
+      executable: 'chromium-1254/chrome-win64/chrome.exe',
+      platform: 'win32',
+      arch: 'x64',
+    }
     const bundled = { source: 'bundled', executablePath: 'C:\\app\\resources\\browser\\chromium-1254\\chrome-win64\\chrome.exe', manifest } as const
     const profiles = { [Subject.COPILOT]: '/userData/browser-profiles/copilot' }
 
@@ -201,12 +208,42 @@ describe('BrowserManager', () => {
 
     it('never launches anything when the bundled copy is unusable', async () => {
       const { launcher } = createFakeLauncher()
-      const manager = new BrowserManager({ launcher, profiles, location: { source: 'unusable', problem: 'browser.json could not be read' } })
+      const location = { source: 'unusable', problem: 'browser.json could not be read', remedy: 'reinstall' } as const
+      const manager = new BrowserManager({ launcher, profiles, location })
 
       await expect(manager.getPage(Subject.DOE_ORACLE)).rejects.toThrow(/missing or damaged \(browser\.json could not be read\)/)
       await expect(manager.getPage(Subject.COPILOT)).rejects.toThrow(BrowserLaunchError)
       expect(launcher.launch).not.toHaveBeenCalled()
       expect(launcher.launchPersistentContext).not.toHaveBeenCalled()
+    })
+
+    it('reports a bundle built for another platform as a mismatch, without launching or suggesting a reinstall', async () => {
+      const { launcher } = createFakeLauncher()
+      const problem = 'The browser in this installer was built for macOS (arm64), but this harness is the Windows (x64) build.'
+      const manager = new BrowserManager({ launcher, profiles, location: { source: 'unusable', problem, remedy: 'new-installer' } })
+
+      for (const subject of [Subject.DOE_ORACLE, Subject.COPILOT]) {
+        const error = await manager.getPage(subject).catch((caught: unknown) => caught)
+        expect(error).toBeInstanceOf(BrowserLaunchError)
+        expect((error as Error).message).toBe(`${problem} Reinstalling will not fix it. Ask the team for the installer built for this computer.`)
+      }
+      expect(launcher.launch).not.toHaveBeenCalled()
+      expect(launcher.launchPersistentContext).not.toHaveBeenCalled()
+    })
+
+    it('points at the profile folder, not the installer, when a profile fails to open', async () => {
+      const manager = new BrowserManager({ launcher: failingLauncher('spawn EACCES'), profiles, location: bundled })
+
+      const error = await manager.getPage(Subject.COPILOT).catch((caught: unknown) => caught)
+
+      expect(error).toBeInstanceOf(BrowserLaunchError)
+      expect((error as Error).message).toBe(
+        'Could not open the Microsoft Copilot profile at /userData/browser-profiles/copilot: spawn EACCES. The profile folder may be damaged. ' +
+          'Close the harness, rename or delete that folder, and start the harness again. ' +
+          'It will create a new profile, and you will need to sign in to Microsoft Copilot again.',
+      )
+      // The shared Chromium is the bundled browser itself: that advice stays.
+      await expect(manager.getPage(Subject.DOE_ORACLE)).rejects.toThrow(/Reinstall DOE Oracle Test Harness from its installer/)
     })
   })
 
@@ -292,7 +329,7 @@ describe('BrowserManager', () => {
     it('says which profile could not be opened, and when another Chromium holds it', async () => {
       await expect(
         new BrowserManager({ launcher: failingLauncher('spawn EACCES'), profiles }).getPage(Subject.COPILOT),
-      ).rejects.toThrow(/Could not launch Microsoft Copilot profile at \/userData\/browser-profiles\/copilot: spawn EACCES/)
+      ).rejects.toThrow(/Could not open the Microsoft Copilot profile at \/userData\/browser-profiles\/copilot: spawn EACCES\. The profile folder may be damaged/)
       await expect(
         new BrowserManager({ launcher: failingLauncher('Failed to launch: ProcessSingleton lock held'), profiles }).getPage(Subject.COPILOT),
       ).rejects.toThrow(/another Chromium is using it/)
