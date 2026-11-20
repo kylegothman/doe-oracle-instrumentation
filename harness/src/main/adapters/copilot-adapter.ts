@@ -680,12 +680,25 @@ function countBefore(selectors: WatchSelectors): WatchCounts {
 }
 
 /**
- * Reads the new answer as shown. Runs inside the page. The reply is cloned
- * into the document, so innerText keeps its line breaks, with the inline
- * citation buttons removed; the citation titles come from the buttons'
- * labels, "Citation: <provider> — <title>", with any " plus N more" dropped.
+ * Reads the new answer as shown. Runs inside the page, so it must not use
+ * anything from this module. The reply is cloned into the document, so
+ * innerText keeps its line breaks, with the inline citation buttons
+ * removed; the citation titles come from the buttons' labels,
+ * "Citation: <provider> — <title>", with any " plus N more" dropped.
+ *
+ * Math is rendered by KaTeX as two copies of the expression: MathML, clipped
+ * out of sight but still text, and a visible copy that stacks its parts in
+ * boxes. Read as it stands, innerText gives one symbol per line and the
+ * expression twice ("3\n4\n=\n81\n3\n4\n=81" for 3^4 = 81, test #49 of the
+ * practice run). So each rendered expression in the clone is replaced with
+ * one line of text before it is read: its TeX source, which KaTeX keeps in
+ * an annotation, or the MathML copy's text when there is none. Inline math
+ * stays in its sentence; display math keeps a line of its own. A reply with
+ * no math is not touched.
+ *
+ * Exported for its tests only.
  */
-function readAnswer(args: {
+export function readAnswer(args: {
   reply: string
   botMessage: string
   citation: string
@@ -697,6 +710,31 @@ function readAnswer(args: {
   if (reply instanceof HTMLElement) {
     const clone = reply.cloneNode(true) as HTMLElement
     clone.querySelectorAll(args.citation).forEach((button) => button.remove())
+    const onOneLine = (math: Element): string => {
+      const tex = math.querySelector('annotation[encoding="application/x-tex"]')?.textContent ?? ''
+      if (tex.trim() !== '') return tex.replace(/\s+/g, ' ').trim()
+      // No TeX source: one copy of the expression, the MathML one where there is one, without any other annotation.
+      const copy = (math.matches('math') ? math : (math.querySelector('math') ?? math)).cloneNode(true) as Element
+      copy.querySelectorAll('annotation, annotation-xml').forEach((annotation) => annotation.remove())
+      return (copy.textContent ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim()
+    }
+    // Outermost first, so the copies inside an expression are gone before the selectors that would match them run.
+    clone.querySelectorAll('.katex-display').forEach((display) => {
+      const line = document.createElement('div')
+      line.textContent = onOneLine(display)
+      display.replaceWith(line)
+    })
+    clone.querySelectorAll('.katex, math').forEach((math) => {
+      // Already replaced along with an expression that contained it.
+      if (!clone.contains(math)) return
+      if (math.matches('math[display="block"]')) {
+        const line = document.createElement('div')
+        line.textContent = onOneLine(math)
+        math.replaceWith(line)
+      } else {
+        math.replaceWith(document.createTextNode(onOneLine(math)))
+      }
+    })
     clone.style.position = 'absolute'
     clone.style.left = '-99999px'
     clone.style.width = `${Math.max(reply.clientWidth, 320)}px`

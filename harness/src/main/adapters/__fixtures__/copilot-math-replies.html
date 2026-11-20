@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Copilot replies with math (test fixture)</title>
+    <!--
+      Copilot replies for the tests of readAnswer in copilot-adapter.ts, each a
+      [data-testid="markdown-reply"] inside its [data-testid="chat-response-message"].
+
+      Reply 0 is a real answer to question 9 from Microsoft 365 Copilot Chat,
+      saved on 2026-11-20 (issue #76). The markup inside the reply is as the
+      page rendered it, KaTeX output included. Trimmed for the fixture: the
+      message wrappers, the generated class names, the element ids, and the
+      focus-management attributes are gone. Nothing in it identifies an
+      account or a conversation.
+
+      Replies 1 to 3 are written for the tests in the same markup: one with
+      no math, one with math next to citation buttons, and one with math
+      whose markup carries no TeX source.
+
+      The style rules are the few from KaTeX's stylesheet that decide how the
+      math reads as text: the MathML copy is clipped out of sight, not
+      removed, and the visible copy stacks its parts in table cells. With
+      them, the reply's innerText comes out as it did on the practice run:
+      one symbol per line, and the expression twice.
+    -->
+    <style>
+      .katex .katex-mathml {
+        position: absolute;
+        clip: rect(1px, 1px, 1px, 1px);
+        padding: 0;
+        border: 0;
+        height: 1px;
+        width: 1px;
+        overflow: hidden;
+      }
+      .katex .base {
+        position: relative;
+        display: inline-block;
+        white-space: nowrap;
+        width: min-content;
+      }
+      .katex .strut,
+      .katex .pstrut {
+        display: inline-block;
+      }
+      .katex .vlist-t {
+        display: inline-table;
+        table-layout: fixed;
+        border-collapse: collapse;
+      }
+      .katex .vlist-r {
+        display: table-row;
+      }
+      .katex .vlist {
+        display: table-cell;
+        vertical-align: bottom;
+        position: relative;
+      }
+      .katex .vlist > span {
+        display: block;
+        height: 0;
+        position: relative;
+      }
+      .katex .vlist > span > span {
+        display: inline-block;
+      }
+      .katex .vlist-s {
+        display: table-cell;
+        vertical-align: bottom;
+        font-size: 1px;
+        width: 2px;
+        min-width: 2px;
+      }
+      .katex .msupsub {
+        text-align: left;
+      }
+      .katex .mfrac > span > span {
+        text-align: center;
+      }
+      .katex .mspace {
+        display: inline-block;
+      }
+      .katex-display {
+        display: block;
+        margin: 1em 0;
+        text-align: center;
+      }
+      .katex-display > .katex {
+        display: block;
+        text-align: center;
+        white-space: nowrap;
+      }
+      .katex-display > .katex > .katex-html {
+        display: block;
+        position: relative;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <!-- Reply 0: the real question 9 answer. Display math twice, inline math three times, a table. -->
+      <div data-testid="chat-response-message">
+        <div dir="auto" aria-hidden="false" data-testid="markdown-reply">
+          <p>For <strong>exhaustive testing</strong>, you test every possible combination of parameter values.</p>
+          <ul>
+          <li>4 parameters</li>
+          <li>3 values per parameter</li>
+          </ul>
+          <p>Number of exhaustive test cases:</p>
+          <span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msup><mn>3</mn><mn>4</mn></msup><mo>=</mo><mn>81</mn></mrow><annotation encoding="application/x-tex">3^4 = 81</annotation></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 0.8641em;"></span><span class="mord"><span class="mord">3</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8641em;"><span style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">4</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">81</span></span></span></span></span>
+          <p>So, <strong>exhaustive testing requires 81 tests</strong>.</p>
+          <p>For <strong>pairwise testing</strong>, the goal is to cover every possible pair of values between every pair of parameters at least once.</p>
+          <ul>
+          <li>There are <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mrow><mo fence="true">(</mo><mfrac linethickness="0px"><mn>4</mn><mn>2</mn></mfrac><mo fence="true">)</mo></mrow><mo>=</mo><mn>6</mn></mrow><annotation encoding="application/x-tex">\binom{4}{2} = 6</annotation></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 1.2451em; vertical-align: -0.35em;"></span><span class="mord"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size1">(</span></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8951em;"><span style="top: -2.355em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span><span style="top: -3.144em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">4</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.345em;"><span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;"><span class="delimsizing size1">)</span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">6</span></span></span></span> parameter pairs.</li>
+          <li>Each parameter pair has <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn><mo>=</mo><mn>9</mn></mrow><annotation encoding="application/x-tex">3 \times 3 = 9</annotation></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">3</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">3</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">9</span></span></span></span> value combinations.</li>
+          <li>Pairwise testing combines many of these pairs into the same test cases, so you do <strong>not</strong> need <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>6</mn><mo>×</mo><mn>9</mn><mo>=</mo><mn>54</mn></mrow><annotation encoding="application/x-tex">6 \times 9 = 54</annotation></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">6</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">9</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">54</span></span></span></span> tests.</li>
+          </ul>
+          <p>For a system with <strong>4 parameters and 3 values each</strong>, a pairwise test set can be covered in <strong>9 tests</strong>.</p>
+          <h3>Comparison</h3>
+          <div role="group" aria-label="Table">
+          <div role="group" aria-label="Table content"><table><thead><tr><th>Method</th><th>Number of Tests</th></tr></thead><tbody><tr><td>Exhaustive Testing</td><td>81</td></tr><tr><td>Pairwise Testing</td><td>9</td></tr></tbody></table></div></div>
+          <h3>Reduction</h3>
+          <span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mfrac><mrow><mn>81</mn><mo>−</mo><mn>9</mn></mrow><mn>81</mn></mfrac><mo>×</mo><mn>100</mn><mo>≈</mo><mn>88.9</mn><mi mathvariant="normal">%</mi></mrow><annotation encoding="application/x-tex">\frac{81 - 9}{81} \times 100 \approx 88.9\%</annotation></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 2.0074em; vertical-align: -0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3214em;"><span style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">81</span></span></span><span style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">81</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord">9</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">100</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">≈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">88.9%</span></span></span></span></span>
+          <p>So <strong>pairwise testing reduces the test suite from 81 tests to about 9 tests, an 89% reduction</strong>, while still covering all possible pairs of parameter values. This illustrates why combinatorial testing is often much more cost-effective than exhaustive testing.</p>
+        </div>
+      </div>
+
+      <!-- Reply 1: no math at all. -->
+      <div data-testid="chat-response-message">
+        <div dir="auto" aria-hidden="false" data-testid="markdown-reply">
+          <p><strong>Combinatorial testing</strong> covers every t-way combination of parameter values.</p>
+          <ul>
+            <li>2-way testing is also called pairwise testing.</li>
+            <li>It needs far fewer tests than 3^4 = 81 exhaustive ones.</li>
+          </ul>
+          <h3>Comparison</h3>
+          <div role="group" aria-label="Table"><div role="group" aria-label="Table content"><table><thead><tr><th>Method</th><th>Number of Tests</th></tr></thead><tbody><tr><td>Exhaustive Testing</td><td>81</td></tr><tr><td>Pairwise Testing</td><td>9</td></tr></tbody></table></div></div>
+          <p>Prices such as $5 and $10 are not math, and neither is a_b or x^2 written out.</p>
+        </div>
+      </div>
+
+      <!-- Reply 2: math next to citation buttons, inline and display. -->
+      <div data-testid="chat-response-message">
+        <div dir="auto" aria-hidden="false" data-testid="markdown-reply">
+          <p>Each parameter pair has <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn><mo>=</mo><mn>9</mn></mrow><annotation encoding="application/x-tex">3 \times 3 = 9</annotation></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">3</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">3</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">9</span></span></span></span> value combinations. <button class="fai-BebopCitation" aria-label="Citation: nist — Combinatorial Testing | NIST">nist</button></p>
+          <p>The exhaustive count is:</p>
+          <span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msup><mn>3</mn><mn>4</mn></msup><mo>=</mo><mn>81</mn></mrow><annotation encoding="application/x-tex">3^4 = 81</annotation></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 0.8641em;"></span><span class="mord"><span class="mord">3</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8641em;"><span style="top: -3.113em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">4</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">81</span></span></span></span></span>
+          <p>That is the figure most sources give. <button class="fai-BebopCitation" aria-label="Citation: wikipedia — All-pairs testing plus 1 more">wikipedia +1</button></p>
+        </div>
+      </div>
+
+      <!-- Reply 3: math whose markup carries no TeX source: KaTeX without the annotation, and bare MathML. -->
+      <div data-testid="chat-response-message">
+        <div dir="auto" aria-hidden="false" data-testid="markdown-reply">
+          <p>Six pairs of nine give <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>6</mn><mo>×</mo><mn>9</mn><mo>=</mo><mn>54</mn></mrow></semantics></math></span><span class="katex-html" ariahidden="true"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">6</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">9</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">54</span></span></span></span> combinations, and <math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><mn>81</mn><mo>−</mo><mn>9</mn><mo>=</mo><mn>72</mn></mrow></math> tests are saved.</p>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
