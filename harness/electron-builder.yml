@@ -58,7 +58,11 @@ win:
 
 msi:
   # A short wizard instead of a silent install, so a teammate can see where
-  # it goes. Per-user install needs no administrator rights.
+  # it goes. Per-user (perMachine: false): the program goes under
+  # %LOCALAPPDATA%\Programs. What is known about administrator rights: on
+  # Windows 11, an account in the Administrators group with default UAC got
+  # no prompt at install or uninstall. A standard user account has not been
+  # tested. The Apps entry is registered under HKEY_LOCAL_MACHINE.
   oneClick: false
   perMachine: false
   runAfterFinish: true

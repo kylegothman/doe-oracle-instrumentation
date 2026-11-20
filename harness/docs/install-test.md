@@ -58,11 +58,11 @@ Write **pass** or **fail** for each step. For a failure, add what you saw and a 
 
 Expected:
 
-- Windows never asks for an administrator password or shows a "Do you want to allow this app to make changes" prompt.
+- Windows never asks for an administrator password or shows a "Do you want to allow this app to make changes" prompt. So far this has only been checked with an account in the Administrators group (UAC at its defaults, no prompt). A standard user account has not been tested: if you can test with one, that result is the one we are missing.
 - The install finishes without an error. It copies about 855 MB, so it can take a minute or two.
 - "DOE Oracle Test Harness" is in the Start menu and on the desktop.
 - The folder `%LOCALAPPDATA%\Programs\DOE Oracle Test Harness` exists and contains `DOE Oracle Test Harness.exe`.
-- Settings, Apps, Installed apps lists "DOE Oracle Test Harness" with the same version as the MSI's file name.
+- Settings, Apps, Installed apps lists "DOE Oracle Test Harness" with the same version as the MSI's file name. The size shown there may be about 1.13 GB while the program folder is 855 MB; that difference has been seen before and is not a failure.
 
 ### 2. First launch
 
