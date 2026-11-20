@@ -20,6 +20,7 @@ import { createGetAppInfoHandler } from './execution/handlers/app-info'
 import { createOpenCopilotSignInHandler } from './execution/handlers/copilot'
 import { createListFailedWritesHandler, createRetryFailedWritesHandler } from './execution/handlers/errors'
 import { createExportHandler, createExportPreviewHandler } from './execution/handlers/export'
+import { createGetTrialLimitsHandler, createListQuestionsHandler } from './execution/handlers/questions'
 import { createGetSessionHandler, createListSessionsHandler } from './execution/handlers/session'
 import { createGetSqliteStatusHandler } from './execution/handlers/sqlite-status'
 import {
@@ -151,6 +152,8 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   router.register(IpcChannels.exportLog, createExportHandler(() => exportReady, chooseSavePath))
   router.register(IpcChannels.previewExport, createExportPreviewHandler(() => exportReady))
   router.register(IpcChannels.listSessions, createListSessionsHandler(() => repositoryReady))
+  router.register(IpcChannels.listQuestions, createListQuestionsHandler(() => questionsReady))
+  router.register(IpcChannels.getTrialLimits, createGetTrialLimitsHandler(settings.trialPolicies))
   return router
 }
 

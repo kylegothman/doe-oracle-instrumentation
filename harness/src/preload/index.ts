@@ -26,6 +26,8 @@ const harnessApi: HarnessApi = {
   getSqliteStatus: () => invoke(IpcChannels.getSqliteStatus),
   getSession: () => invoke(IpcChannels.getSession),
   listSessions: () => invoke(IpcChannels.listSessions),
+  listQuestions: () => invoke(IpcChannels.listQuestions),
+  getTrialLimits: () => invoke(IpcChannels.getTrialLimits),
   startTrial: (subject, questionNumber) => invoke(IpcChannels.startTrial, subject, questionNumber),
   confirmCompletion: (trialId, endMs) =>
     endMs === undefined ? invoke(IpcChannels.confirmCompletion, trialId) : invoke(IpcChannels.confirmCompletion, trialId, endMs),

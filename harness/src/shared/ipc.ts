@@ -1,6 +1,7 @@
 import type { CopilotSignInStatus } from './copilot'
 import type { FailedWriteSummary } from './errors'
 import type { ExportPreview, ExportRequest, ExportResult, RecordFilter } from './export'
+import type { Question } from './questions'
 import type { Session } from './session'
 import type { Subject } from './subjects'
 import type { Trial, TrialEvent } from './trials'
@@ -35,6 +36,18 @@ export type SqliteStatus =
   | { ok: false; error: string }
 
 /**
+ * One subject's time limit, as the Test Console shows it: how long the
+ * subject has to answer, when that clock starts (`trial_start`, or `submit`
+ * for subjects where the Tester presses Enter), and whether the Tester
+ * confirms the end before the trial is saved.
+ */
+export interface TrialLimit {
+  timeoutMs: number
+  startsAt: 'trial_start' | 'submit'
+  confirmEnd: boolean
+}
+
+/**
  * Request and response shape for every IPC channel. Add a new channel here
  * first; the compiler then points at the handler and the bridge to update.
  */
@@ -43,6 +56,8 @@ export interface IpcContracts {
   'diagnostics:get-sqlite-status': { args: []; result: SqliteStatus }
   'session:get': { args: []; result: Session }
   'sessions:list': { args: []; result: Session[] }
+  'questions:list': { args: []; result: Question[] }
+  'trials:limits': { args: []; result: Record<Subject, TrialLimit> }
   'trial:start': { args: [subject: Subject, questionNumber: number]; result: Trial }
   'trial:confirm': { args: [trialId: string, endMs?: number]; result: void }
   'trial:cancel': { args: [trialId: string]; result: void }
@@ -64,6 +79,8 @@ export const IpcChannels = {
   getSqliteStatus: 'diagnostics:get-sqlite-status',
   getSession: 'session:get',
   listSessions: 'sessions:list',
+  listQuestions: 'questions:list',
+  getTrialLimits: 'trials:limits',
   startTrial: 'trial:start',
   confirmCompletion: 'trial:confirm',
   cancelTrial: 'trial:cancel',
@@ -106,6 +123,10 @@ export interface HarnessApi {
   getSession(): Promise<Session>
   /** Lists every saved session, newest first, for the Export Page's session filter. */
   listSessions(): Promise<Session[]>
+  /** The standard questions, in order, from config/questions.json. Rejects when the file is unusable. */
+  listQuestions(): Promise<Question[]>
+  /** Each subject's time limit, when its clock starts, and whether the Tester confirms the end. */
+  getTrialLimits(): Promise<Record<Subject, TrialLimit>>
   /** Runs one trial of a question against a subject and resolves with the saved trial. */
   startTrial(subject: Subject, questionNumber: number): Promise<Trial>
   /**

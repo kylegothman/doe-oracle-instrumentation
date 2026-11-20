@@ -15,7 +15,11 @@ export interface BarState {
   phase: 'idle' | 'running' | 'ready'
   subject: Subject | null
   questionNumber: number | null
-  /** Milliseconds since the trial started, as of `anchorAt`. Null when no trial is running. */
+  /**
+   * Milliseconds since the trial started, as of `anchorAt`, while the time
+   * counts. Once the answer is complete it is the measured response time,
+   * begin to end. Null when no trial is running.
+   */
   elapsedMs: number | null
   /**
    * When `elapsedMs` was measured, by the window's clock, while the time is
@@ -35,9 +39,13 @@ export function nextBarState(event: TrialEvent, receivedAt: number): BarState {
     case 'awaiting_submit':
     case 'first_response':
       return { phase: 'running', ...trial, elapsedMs: event.elapsedMs, anchorAt: receivedAt }
-    case 'awaiting_confirmation':
-      // The controller stopped the clock at the end of the answer.
-      return { phase: 'running', ...trial, elapsedMs: event.elapsedMs, anchorAt: null }
+    case 'awaiting_confirmation': {
+      // The controller stopped the clock at the end of the answer, and the
+      // event carries the detected begin and end: from here the time shown
+      // is the measured response, not the time since the trial started.
+      const measured = event.beginMs !== undefined && event.endMs !== undefined ? event.endMs - event.beginMs : event.elapsedMs
+      return { phase: 'running', ...trial, elapsedMs: measured, anchorAt: null }
+    }
     case 'completed':
     case 'failed':
     case 'cancelled':

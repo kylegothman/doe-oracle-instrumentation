@@ -1,312 +1,570 @@
 import { useEffect, useState } from 'react'
 import type { CopilotSignInStatus } from '../../../shared/copilot'
-import type { AppInfo, SqliteStatus } from '../../../shared/ipc'
+import type { SqliteStatus, TrialLimit } from '../../../shared/ipc'
+import type { Question } from '../../../shared/questions'
 import { SUBJECT_LABELS, Subject } from '../../../shared/subjects'
-import type { Trial, TrialEvent } from '../../../shared/trials'
+import { TrialStatus, type Trial, type TrialEvent } from '../../../shared/trials'
+import doneIcon from '../assets/step-done.svg'
+import currentIcon from '../assets/radio-selected.svg'
 import { describeError, useBridgeCall, type Loadable } from '../bridge'
+import { Badge, Banner, Card, Field, Metric, Panel, SelectField } from '../components/ui'
+import { elapsedAt, formatElapsed, IDLE, nextBarState } from '../status-bar'
+import {
+  adjustedEndMs,
+  answerPreview,
+  clockTime,
+  failureTitle,
+  formatMs,
+  nextQuestionNumber,
+  questionLabel,
+  questionLine,
+  recordDetails,
+  sessionSummary,
+  startHelp,
+  SUBJECT_CHOICES,
+  timerCaption,
+  trialBadge,
+  trialSteps,
+  trialTitle,
+  waitingBanner,
+} from './test-console'
 
-function AppInfoPanel({ appInfo }: { appInfo: Loadable<AppInfo> }) {
-  return (
-    <section aria-labelledby="app-info-heading">
-      <h2 id="app-info-heading">App info</h2>
-      {appInfo.status === 'loading' && <p>Loading app info from the main process…</p>}
-      {appInfo.status === 'ready' && (
-        <dl className="facts">
-          <dt>Name</dt>
-          <dd data-testid="app-name">{appInfo.value.name}</dd>
-          <dt>Version</dt>
-          <dd data-testid="app-version">{appInfo.value.version}</dd>
-        </dl>
-      )}
-      {appInfo.status === 'error' && (
-        <p role="alert" className="error">
-          Could not read app info from the main process: {appInfo.message}
-        </p>
-      )}
-    </section>
-  )
-}
+/** Where the console is: choosing a trial, running one, showing its result, or showing why it did not run. */
+type Run =
+  | { phase: 'idle'; note: string | null }
+  | { phase: 'running'; subject: Subject; questionNumber: number; events: TrialEvent[]; latestAt: number }
+  | { phase: 'done'; trial: Trial }
+  | { phase: 'problem'; subject: Subject; questionNumber: number; message: string }
 
-function SqlitePanel({ sqlite }: { sqlite: Loadable<SqliteStatus> }) {
-  return (
-    <section aria-labelledby="sqlite-heading">
-      <h2 id="sqlite-heading">Storage</h2>
-      {sqlite.status === 'loading' && <p>Checking SQLite…</p>}
-      {sqlite.status === 'ready' && sqlite.value.ok && (
-        <p className="ok" data-testid="sqlite-ok">
-          SQLite {sqlite.value.version} loaded through better-sqlite3.
-        </p>
-      )}
-      {sqlite.status === 'ready' && !sqlite.value.ok && (
-        <div role="alert" className="error-box" data-testid="sqlite-error">
-          <p>
-            <strong>SQLite failed to load.</strong> The harness cannot store results on this install.
-          </p>
-          <p>
-            The native module better-sqlite3 could not be opened: <code>{sqlite.value.error}</code>
-          </p>
-          <p>Please report this message, together with the app version above, to the team.</p>
-        </div>
-      )}
-      {sqlite.status === 'error' && (
-        <p role="alert" className="error" data-testid="sqlite-error">
-          Could not reach the SQLite probe in the main process: {sqlite.message}
-        </p>
-      )}
-    </section>
-  )
-}
+/** How often the timer is redrawn while it counts. */
+const TICK_MS = 50
 
-type TrialRunState =
-  | { status: 'idle' }
-  | { status: 'running' }
-  | { status: 'done'; trial: Trial }
-  | { status: 'cancelled'; message: string }
-  | { status: 'error'; message: string }
+/**
+ * The Test Console (story #38, UC-1 and UC-3), following the design's
+ * screens 01, 02, and 04: pick a subject and one of the standard questions,
+ * start the trial, follow it step by step, confirm Copilot's end, and see
+ * the saved result. Every trial of this session is listed underneath.
+ */
+export function TestConsolePage() {
+  const questions = useBridgeCall(() => window.harness.listQuestions())
+  const limits = useBridgeCall(() => window.harness.getTrialLimits())
+  const session = useBridgeCall(() => window.harness.getSession())
+  const sqlite = useBridgeCall(() => window.harness.getSqliteStatus())
 
-function formatSeconds(ms: number | null): string {
-  return ms === null ? '–' : `${(ms / 1000).toFixed(1)} s`
-}
-
-/** The status events the main process pushed for the current trial, oldest first. */
-function TrialEvents({ events }: { events: TrialEvent[] }) {
-  if (events.length === 0) return null
-  return (
-    <ol className="events" data-testid="trial-events">
-      {events.map((event, index) => (
-        <li key={index} data-status={event.status}>
-          <span className="event-status">{event.status.replaceAll('_', ' ')}</span> at {formatSeconds(event.elapsedMs)}
-          {event.failureType && <> · {event.failureType}</>}
-          {event.message && <> · {event.message}</>}
-        </li>
-      ))}
-    </ol>
-  )
-}
-
-const ANSWER_PREVIEW_CHARS = 400
-
-function TrialResult({ trial }: { trial: Trial }) {
-  const preview =
-    trial.answerText && trial.answerText.length > ANSWER_PREVIEW_CHARS
-      ? `${trial.answerText.slice(0, ANSWER_PREVIEW_CHARS)}…`
-      : trial.answerText || '(no answer text)'
-  return (
-    <div className="result" data-testid="trial-result">
-      <dl className="facts">
-        <dt>Test number</dt>
-        <dd data-testid="trial-test-number">{trial.testNumber}</dd>
-        <dt>Data set</dt>
-        <dd>{trial.dataSetName}</dd>
-        <dt>Begin</dt>
-        <dd data-testid="trial-begin">{trial.beginTs}</dd>
-        <dt>First response</dt>
-        <dd data-testid="trial-first-response">{trial.firstResponseTs}</dd>
-        <dt>End</dt>
-        <dd data-testid="trial-end">{trial.endTs}</dd>
-        <dt>Status</dt>
-        <dd data-testid="trial-status">
-          {trial.status}
-          {trial.failure && (
-            <>
-              {' '}
-              · <strong data-testid="trial-failure-type">{trial.failure.type}</strong> after{' '}
-              {formatSeconds(trial.failure.elapsedMs)}
-            </>
-          )}
-        </dd>
-        {trial.failure && (
-          <>
-            <dt>Failure</dt>
-            <dd className="error" data-testid="trial-failure-message">
-              {trial.failure.message}
-            </dd>
-          </>
-        )}
-        <dt>Response time</dt>
-        <dd data-testid="trial-response-ms">{trial.responseMs === null ? '–' : `${trial.responseMs} ms`}</dd>
-        <dt>Time to first response</dt>
-        <dd data-testid="trial-first-response-ms">{trial.firstResponseMs === null ? '–' : `${trial.firstResponseMs} ms`}</dd>
-        <dt>Citations</dt>
-        <dd>{trial.citations.length > 0 ? trial.citations.join('; ') : 'none'}</dd>
-      </dl>
-      <p className="answer-preview" data-testid="trial-answer">
-        {preview}
-      </p>
-    </div>
-  )
-}
-
-const QUESTION_NUMBER = 1
-/** Subjects the window can run. TODO(#6): Google arrives with E5. */
-const SUBJECT_CHOICES: readonly Subject[] = [Subject.DOE_ORACLE, Subject.COPILOT]
-
-const SUBJECT_INSTRUCTIONS: Record<Subject, string> = {
-  [Subject.DOE_ORACLE]:
-    'Opens the Oracle chat in a Chromium window the harness controls, types question 1, submits it, times the answer from browser events, and saves the trial.',
-  [Subject.COPILOT]:
-    'Opens a new chat in the Copilot window and types question 1. You press Enter there: the clock runs from your Enter to the end of the streamed answer, which you confirm or correct before the trial is saved.',
-  [Subject.GOOGLE]: 'Not available yet.',
-}
-
-/** One line on where the running trial is, from its latest event. */
-function statusLine(event: TrialEvent | undefined): string | null {
-  if (!event) return null
-  switch (event.status) {
-    case 'started':
-      return 'Starting the trial…'
-    case 'awaiting_submit':
-      return event.message ?? 'Press Enter in the browser'
-    case 'first_response':
-      return `The answer started ${formatSeconds(event.elapsedMs)} into the trial.`
-    case 'awaiting_confirmation':
-      return event.beginMs !== undefined && event.endMs !== undefined
-        ? `The answer finished ${formatSeconds(event.endMs - event.beginMs)} after your Enter. Confirm that end, adjust it, or cancel.`
-        : (event.message ?? 'Confirm the end of the answer.')
-    case 'completed':
-      return 'Saved.'
-    case 'failed':
-      return `Failed: ${event.message ?? event.failureType ?? 'unknown failure'}`
-    case 'cancelled':
-      return 'Cancelled. Nothing was saved.'
-    case 'aborted':
-      return `Aborted: ${event.message ?? 'the harness could not run the trial'}`
-  }
-}
-
-function TrialPanel({ onSaved }: { onSaved: () => void }) {
   const [subject, setSubject] = useState<Subject>(Subject.DOE_ORACLE)
-  const [run, setRun] = useState<TrialRunState>({ status: 'idle' })
-  const [events, setEvents] = useState<TrialEvent[]>([])
-  const [adjustSeconds, setAdjustSeconds] = useState('')
+  const [questionNumber, setQuestionNumber] = useState(1)
+  const [run, setRun] = useState<Run>({ phase: 'idle', note: null })
+  const [savedVersion, setSavedVersion] = useState(0)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  useEffect(() => {
-    // Subscribed for the panel's lifetime; the main process sends one stream for every trial.
-    return window.harness.onTrialEvent((event) => {
-      setEvents((prev) => [...prev, event])
-      if (event.status === 'awaiting_confirmation' && event.beginMs !== undefined && event.endMs !== undefined) {
-        setAdjustSeconds(((event.endMs - event.beginMs) / 1000).toFixed(3))
-      }
-    })
-  }, [])
+  const questionList = questions.status === 'ready' ? questions.value : []
+  const limitFor = (forSubject: Subject): TrialLimit | undefined => (limits.status === 'ready' ? limits.value[forSubject] : undefined)
 
-  const latest = events.at(-1)
-  const trialId = events[0]?.trialId ?? null
-  const running = run.status === 'running'
-  const awaitingConfirmation = running && latest?.status === 'awaiting_confirmation'
-  const beginMs = latest?.status === 'awaiting_confirmation' ? latest.beginMs : undefined
+  useEffect(
+    () =>
+      // One stream for every trial; only the running one's events are kept.
+      window.harness.onTrialEvent((event) =>
+        setRun((current) =>
+          current.phase === 'running' && (current.events.length === 0 || current.events[0]?.trialId === event.trialId)
+            ? { ...current, events: [...current.events, event], latestAt: Date.now() }
+            : current,
+        ),
+      ),
+    [],
+  )
 
-  const startTrial = () => {
-    setRun({ status: 'running' })
-    setEvents([])
+  const startTrial = (forSubject: Subject, forQuestion: number) => {
+    setSubject(forSubject)
+    setQuestionNumber(forQuestion)
     setActionError(null)
+    setRun({ phase: 'running', subject: forSubject, questionNumber: forQuestion, events: [], latestAt: Date.now() })
     window.harness
-      .startTrial(subject, QUESTION_NUMBER)
-      .then((trial) => {
-        setRun({ status: 'done', trial })
-        onSaved()
-      })
+      .startTrial(forSubject, forQuestion)
+      .then((trial) => setRun({ phase: 'done', trial }))
       .catch((error: unknown) => {
         const message = describeError(error)
-        setRun(/cancelled/i.test(message) ? { status: 'cancelled', message } : { status: 'error', message })
+        setRun(
+          /cancelled/i.test(message)
+            ? { phase: 'idle', note: 'Trial cancelled. Nothing was saved.' }
+            : { phase: 'problem', subject: forSubject, questionNumber: forQuestion, message },
+        )
       })
+      // Failed trials are saved too, so the list is read again however it ended.
+      .finally(() => setSavedVersion((version) => version + 1))
   }
 
-  /** Runs one of the Tester's actions on the trial, showing its error if it is refused. */
+  /** Runs one of the Tester's actions on the running trial, showing its error if it is refused. */
   const act = (work: Promise<void>) => {
     setActionError(null)
     work.catch((error: unknown) => setActionError(describeError(error)))
   }
-  const confirm = () => {
-    if (trialId) act(window.harness.confirmCompletion(trialId))
-  }
-  const confirmAdjusted = () => {
-    if (!trialId || beginMs === undefined) return
-    const seconds = Number(adjustSeconds)
-    if (adjustSeconds.trim() === '' || !Number.isFinite(seconds) || seconds < 0) {
-      setActionError('Enter the end as seconds after your Enter, for example 8.950')
-      return
-    }
-    act(window.harness.confirmCompletion(trialId, Math.round(beginMs + seconds * 1000)))
-  }
-  const cancel = () => {
-    if (trialId) act(window.harness.cancelTrial(trialId))
+
+  const newTrial = () => {
+    if (run.phase === 'done') setQuestionNumber(nextQuestionNumber(run.trial, questionList.length))
+    setRun({ phase: 'idle', note: null })
   }
 
   return (
-    <section aria-labelledby="trial-heading">
-      <h2 id="trial-heading">Trial</h2>
-      <p>
-        <label>
-          Subject{' '}
-          <select
-            value={subject}
-            onChange={(event) => setSubject(event.target.value as Subject)}
-            disabled={running}
-            data-testid="subject-select"
-          >
-            {SUBJECT_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>
-                {SUBJECT_LABELS[choice]}
-              </option>
-            ))}
-          </select>
-        </label>
-      </p>
-      <p>{SUBJECT_INSTRUCTIONS[subject]}</p>
-      <p className="actions">
-        <button type="button" onClick={startTrial} disabled={running} data-testid="run-trial">
-          {running ? `Running ${SUBJECT_LABELS[subject]} trial…` : `Run ${SUBJECT_LABELS[subject]} trial (Q${QUESTION_NUMBER})`}
-        </button>
-        {running && (
-          <button type="button" onClick={cancel} className="secondary" data-testid="cancel-trial">
-            Cancel
-          </button>
-        )}
-      </p>
-      {running && latest && (
-        <p className="status-line" data-testid="trial-status-line" data-status={latest.status}>
-          {statusLine(latest)}
+    <>
+      {sqlite.status === 'ready' && !sqlite.value.ok && (
+        <Banner tone="danger" title="SQLite failed to load" testId="sqlite-error">
+          <p>
+            The harness cannot store results on this install. The native module better-sqlite3 could not be opened:{' '}
+            <code>{sqlite.value.error}</code>. Please report this message, with the version under App info, to the team.
+          </p>
+        </Banner>
+      )}
+      {questions.status === 'error' && (
+        <Banner tone="danger" title="The standard questions could not be loaded" testId="questions-error">
+          <p>{questions.message}</p>
+        </Banner>
+      )}
+
+      {run.phase === 'idle' && (
+        <NewTrialCard
+          subject={subject}
+          questionNumber={questionNumber}
+          questions={questions}
+          note={run.note}
+          onSubject={setSubject}
+          onQuestion={setQuestionNumber}
+          onStart={() => startTrial(subject, questionNumber)}
+        />
+      )}
+      {run.phase === 'running' && (
+        <ActiveTrialCard
+          run={run}
+          questions={questionList}
+          limit={limitFor(run.subject)}
+          actionError={actionError}
+          onConfirm={(trialId, endMs) => act(window.harness.confirmCompletion(trialId, endMs))}
+          onCancel={(trialId) => act(window.harness.cancelTrial(trialId))}
+        />
+      )}
+      {run.phase === 'done' && (
+        <ResultCard
+          trial={run.trial}
+          questions={questionList}
+          limit={limitFor(run.trial.subject)}
+          onRetry={() => startTrial(run.trial.subject, run.trial.questionNumber)}
+          onNewTrial={newTrial}
+        />
+      )}
+      {run.phase === 'problem' && (
+        <ProblemCard
+          run={run}
+          questions={questionList}
+          onRetry={() => startTrial(run.subject, run.questionNumber)}
+          onNewTrial={newTrial}
+        />
+      )}
+
+      {session.status === 'ready' && <SessionTrialsCard sessionId={session.value.sessionId} refreshKey={savedVersion} />}
+      <AppInfoCard sqlite={sqlite} />
+    </>
+  )
+}
+
+function NewTrialCard({
+  subject,
+  questionNumber,
+  questions,
+  note,
+  onSubject,
+  onQuestion,
+  onStart,
+}: {
+  subject: Subject
+  questionNumber: number
+  questions: Loadable<Question[]>
+  note: string | null
+  onSubject: (subject: Subject) => void
+  onQuestion: (questionNumber: number) => void
+  onStart: () => void
+}) {
+  const list = questions.status === 'ready' ? questions.value : []
+  const question = list.find((candidate) => candidate.number === questionNumber)
+  const questionChoices =
+    list.length > 0
+      ? list.map((candidate) => ({ value: String(candidate.number), label: questionLabel(candidate) }))
+      : [{ value: String(questionNumber), label: questions.status === 'loading' ? 'Loading questions…' : 'No questions' }]
+
+  return (
+    <Card title="New trial" subtitle={`Pick a subject and one of the ${list.length || 12} standard questions.`}>
+      <div className="field-row">
+        <SelectField label="Subject" value={subject} choices={SUBJECT_CHOICES} onChange={onSubject} testId="subject-select" />
+        <SelectField
+          label="Question"
+          value={String(questionNumber)}
+          choices={questionChoices}
+          onChange={(value) => onQuestion(Number(value))}
+          disabled={list.length === 0}
+          testId="question-select"
+        />
+      </div>
+      <Panel label="Exact text sent">
+        <p className="panel-text" data-testid="question-text">
+          {question?.text ?? '—'}
+        </p>
+      </Panel>
+      <p className="caption">{startHelp(subject)}</p>
+      {subject === Subject.COPILOT && <CopilotSignIn />}
+      {note && (
+        <p className="caption" role="status" data-testid="trial-note">
+          {note}
         </p>
       )}
-      {awaitingConfirmation && (
-        <div className="confirm-box" data-testid="confirm-box">
-          <p className="actions">
-            <button type="button" onClick={confirm} data-testid="confirm-end">
-              Confirm
-            </button>
-            <label>
-              End, seconds after your Enter{' '}
+      <div className="actions">
+        <button type="button" className="button" onClick={onStart} disabled={!question} data-testid="run-trial">
+          Start Trial
+        </button>
+      </div>
+    </Card>
+  )
+}
+
+function ActiveTrialCard({
+  run,
+  questions,
+  limit,
+  actionError,
+  onConfirm,
+  onCancel,
+}: {
+  run: Extract<Run, { phase: 'running' }>
+  questions: readonly Question[]
+  limit: TrialLimit | undefined
+  actionError: string | null
+  onConfirm: (trialId: string, endMs?: number) => void
+  onCancel: (trialId: string) => void
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const [adjusting, setAdjusting] = useState(false)
+  const [adjustSeconds, setAdjustSeconds] = useState('')
+  const [adjustError, setAdjustError] = useState<string | null>(null)
+
+  const latest = run.events.at(-1)
+  const trialId = run.events[0]?.trialId ?? null
+  const clock = latest ? nextBarState(latest, run.latestAt) : IDLE
+  const counting = clock.anchorAt !== null
+  useEffect(() => {
+    if (!counting) return
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(timer)
+  }, [counting])
+
+  const elapsed = elapsedAt(clock, now) ?? 0
+  const confirming = latest?.status === 'awaiting_confirmation'
+  const caption = timerCaption(limit, confirming && latest.beginMs !== undefined && latest.endMs !== undefined)
+  const progress = limit && caption.showProgress ? Math.min(1, elapsed / limit.timeoutMs) : null
+  const banner = waitingBanner(latest)
+  const beginMs = confirming ? latest.beginMs : undefined
+
+  const startAdjusting = () => {
+    if (latest?.beginMs !== undefined && latest.endMs !== undefined) {
+      setAdjustSeconds(((latest.endMs - latest.beginMs) / 1000).toFixed(3))
+    }
+    setAdjustError(null)
+    setAdjusting(true)
+  }
+  const confirmAdjusted = () => {
+    if (!trialId || beginMs === undefined) return
+    const endMs = adjustedEndMs(beginMs, adjustSeconds)
+    if (endMs === null) {
+      setAdjustError('Enter the end as seconds after your Enter, for example 8.950')
+      return
+    }
+    onConfirm(trialId, endMs)
+  }
+
+  return (
+    <Card
+      title={`${SUBJECT_LABELS[run.subject]} trial`}
+      subtitle={questionLine(run.questionNumber, questions)}
+      aside={<Badge tone="accent" label="Running" testId="trial-badge" />}
+    >
+      <div className="timer">
+        <div className="timer-readout">
+          <span className="timer-elapsed" data-testid="trial-timer">
+            {formatElapsed(elapsed)}
+          </span>
+          <span className="caption timer-limit">{caption.text}</span>
+        </div>
+        {progress !== null && (
+          <div className="progress-track" role="progressbar" aria-label="Time used of the limit" aria-valuenow={Math.round(progress * 100)}>
+            <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
+          </div>
+        )}
+      </div>
+
+      <ol className="steps" data-testid="trial-steps">
+        {trialSteps(run.subject, run.events).map((step) => (
+          <li key={step.label} className={`step step-${step.state}`} data-state={step.state}>
+            <StepIcon state={step.state} />
+            <span className="step-label">{step.label}</span>
+            <span className="step-time mono">{step.time}</span>
+          </li>
+        ))}
+      </ol>
+
+      {banner && (
+        <Banner tone="info" title={banner.title} testId="trial-waiting">
+          <p>{banner.message}</p>
+        </Banner>
+      )}
+
+      {confirming && adjusting && (
+        <div className="adjust-row">
+          <Field label="End, in seconds after your Enter">
+            {(id) => (
               <input
+                id={id}
                 type="number"
                 step="0.001"
                 min="0"
+                className="control"
                 value={adjustSeconds}
                 onChange={(event) => setAdjustSeconds(event.target.value)}
                 data-testid="adjust-end-seconds"
               />
-            </label>
-            <button type="button" onClick={confirmAdjusted} className="secondary" data-testid="confirm-adjusted-end">
-              Adjust and confirm
-            </button>
-          </p>
+            )}
+          </Field>
         </div>
       )}
-      {actionError && (
-        <p role="alert" className="error" data-testid="trial-action-error">
-          {actionError}
+      {(adjustError ?? actionError) && (
+        <p role="alert" className="caption match-count-problem" data-testid="trial-action-error">
+          {adjustError ?? actionError}
         </p>
       )}
-      <TrialEvents events={events} />
-      {run.status === 'cancelled' && <p data-testid="trial-cancelled">{run.message}</p>}
-      {run.status === 'error' && (
-        <p role="alert" className="error" data-testid="trial-error">
-          {run.message}
+
+      <div className="actions actions-split">
+        <button type="button" className="button button-ghost" onClick={() => trialId && onCancel(trialId)} disabled={!trialId} data-testid="cancel-trial">
+          Cancel Trial
+        </button>
+        {confirming && !adjusting && (
+          <span className="actions">
+            <button type="button" className="button button-secondary" onClick={startAdjusting} data-testid="adjust-end">
+              Adjust
+            </button>
+            <button type="button" className="button" onClick={() => trialId && onConfirm(trialId)} data-testid="confirm-end">
+              Confirm Completion
+            </button>
+          </span>
+        )}
+        {confirming && adjusting && (
+          <span className="actions">
+            <button type="button" className="button button-secondary" onClick={() => setAdjusting(false)} data-testid="adjust-back">
+              Back
+            </button>
+            <button type="button" className="button" onClick={confirmAdjusted} data-testid="confirm-adjusted-end">
+              Confirm Adjusted End
+            </button>
+          </span>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function StepIcon({ state }: { state: 'done' | 'current' | 'pending' }) {
+  if (state === 'pending') return <span className="step-icon step-icon-pending" aria-hidden="true" />
+  return <img className="step-icon" src={state === 'done' ? doneIcon : currentIcon} width={16} height={16} alt="" />
+}
+
+function ResultCard({
+  trial,
+  questions,
+  limit,
+  onRetry,
+  onNewTrial,
+}: {
+  trial: Trial
+  questions: readonly Question[]
+  limit: TrialLimit | undefined
+  onRetry: () => void
+  onNewTrial: () => void
+}) {
+  const badge = trialBadge(trial)
+  const failed = trial.status === TrialStatus.FAILED
+
+  return (
+    <Card
+      title={trialTitle(trial)}
+      subtitle={questionLine(trial.questionNumber, questions)}
+      aside={<Badge tone={badge.tone} label={failed ? 'Failed' : badge.label} testId="trial-badge" />}
+    >
+      {failed && trial.failure ? (
+        <>
+          <Banner tone="danger" title={failureTitle(trial.failure, limit)} testId="trial-failure">
+            <p>Saved as a failed request. Timings captured before the failure are kept.</p>
+          </Banner>
+          <div className="metric-row metric-row-3">
+            <Metric label="Failure type" value={trial.failure.type} testId="trial-failure-type" />
+            <Metric label="Elapsed" value={formatMs(trial.failure.elapsedMs)} />
+            <Metric label="First response" value={formatMs(trial.firstResponseMs)} testId="trial-first-response-ms" />
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="metric-row">
+            <Metric label="Response time" value={formatMs(trial.responseMs)} testId="trial-response-ms" />
+            <Metric label="First response" value={formatMs(trial.firstResponseMs)} testId="trial-first-response-ms" />
+          </div>
+          <div className="metric-row">
+            <Metric label="Begin" value={clockTime(trial.beginTs)} testId="trial-begin" />
+            <Metric label="End" value={clockTime(trial.endTs)} testId="trial-end" />
+          </div>
+          <Panel label="Answer preview">
+            <p className="panel-text answer-text" data-testid="trial-answer">
+              {answerPreview(trial.answerText)}
+            </p>
+            {trial.citations.length > 0 && <p className="citation">Cited: {trial.citations.join('; ')}</p>}
+          </Panel>
+          <p className="caption" data-testid="trial-details">
+            {recordDetails(trial)}
+          </p>
+        </>
+      )}
+      <div className="actions actions-split">
+        <ReadyNote />
+        <span className="actions">
+          {failed && (
+            <button type="button" className="button button-secondary" onClick={onRetry} data-testid="retry-trial">
+              Retry Q{trial.questionNumber}
+            </button>
+          )}
+          <button type="button" className="button" onClick={onNewTrial} data-testid="new-trial">
+            New Trial
+          </button>
+        </span>
+      </div>
+    </Card>
+  )
+}
+
+function ProblemCard({
+  run,
+  questions,
+  onRetry,
+  onNewTrial,
+}: {
+  run: Extract<Run, { phase: 'problem' }>
+  questions: readonly Question[]
+  onRetry: () => void
+  onNewTrial: () => void
+}) {
+  return (
+    <Card
+      title={`${SUBJECT_LABELS[run.subject]} trial`}
+      subtitle={questionLine(run.questionNumber, questions)}
+      aside={<Badge tone="danger" label="Not saved" testId="trial-badge" />}
+    >
+      <Banner tone="danger" title="The trial did not run to the end" testId="trial-error">
+        <p>{run.message}</p>
+      </Banner>
+      <div className="actions actions-split">
+        <ReadyNote />
+        <span className="actions">
+          <button type="button" className="button button-secondary" onClick={onRetry} data-testid="retry-trial">
+            Retry Q{run.questionNumber}
+          </button>
+          <button type="button" className="button" onClick={onNewTrial} data-testid="new-trial">
+            New Trial
+          </button>
+        </span>
+      </div>
+    </Card>
+  )
+}
+
+function ReadyNote() {
+  return (
+    <span className="ready-note" role="status">
+      <span className="ready-dot" aria-hidden="true" />
+      Ready for the next trial
+    </span>
+  )
+}
+
+/** Every trial of this session, newest first, read again after each trial. */
+function SessionTrialsCard({ sessionId, refreshKey }: { sessionId: string; refreshKey: number }) {
+  const trials = useBridgeCall(() => window.harness.listTrials(sessionId), refreshKey)
+
+  return (
+    <Card title="This session" subtitle={trials.status === 'ready' ? sessionSummary(trials.value) : 'Loading trials…'}>
+      {trials.status === 'error' && (
+        <p role="alert" className="caption match-count-problem" data-testid="saved-trials-error">
+          Could not list this session&apos;s trials: {trials.message}
         </p>
       )}
-      {run.status === 'done' && <TrialResult trial={run.trial} />}
-    </section>
+      {trials.status === 'ready' && trials.value.length > 0 && (
+        <table className="trials-table" data-testid="saved-trials">
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">Subject</th>
+              <th scope="col">Q</th>
+              <th scope="col">Status</th>
+              <th scope="col" className="numeric">
+                Response
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {trials.value.map((trial) => {
+              const badge = trialBadge(trial)
+              return (
+                <tr key={trial.trialId} title={trial.failure?.message}>
+                  <td className="muted">{trial.testNumber}</td>
+                  <td>{SUBJECT_LABELS[trial.subject]}</td>
+                  <td className="mono muted">Q{trial.questionNumber}</td>
+                  <td>
+                    <Badge tone={badge.tone} label={badge.label} />
+                  </td>
+                  <td className="mono numeric">{formatMs(trial.failure ? trial.failure.elapsedMs : trial.responseMs)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  )
+}
+
+/** The app's name and version, and whether SQLite loaded: what an install check and a bug report need. */
+function AppInfoCard({ sqlite }: { sqlite: Loadable<SqliteStatus> }) {
+  const appInfo = useBridgeCall(() => window.harness.getAppInfo())
+  return (
+    <Card title="App info">
+      <div className="metric-row">
+        <div className="metric">
+          <span className="metric-label">Version</span>
+          <span className="metric-value mono">
+            {appInfo.status === 'ready' && (
+              <>
+                <span data-testid="app-name">{appInfo.value.name}</span> <span data-testid="app-version">{appInfo.value.version}</span>
+              </>
+            )}
+            {appInfo.status === 'loading' && 'Loading…'}
+            {appInfo.status === 'error' && <span className="match-count-problem">{appInfo.message}</span>}
+          </span>
+        </div>
+        <div className="metric">
+          <span className="metric-label">Storage</span>
+          <span className="metric-value mono">
+            {sqlite.status === 'ready' && sqlite.value.ok && (
+              <span className="ok-text" data-testid="sqlite-ok">
+                SQLite {sqlite.value.version} loaded
+              </span>
+            )}
+            {sqlite.status === 'ready' && !sqlite.value.ok && <span className="match-count-problem">SQLite failed to load</span>}
+            {sqlite.status === 'loading' && 'Checking SQLite…'}
+            {sqlite.status === 'error' && <span className="match-count-problem">{sqlite.message}</span>}
+          </span>
+        </div>
+      </div>
+    </Card>
   )
 }
 
@@ -321,7 +579,7 @@ function describeSignIn(result: CopilotSignInStatus): string {
     case 'chat':
       return `Copilot is signed in (${result.label}). You can run a Copilot trial.`
     case 'signed_out':
-      return `Not signed in yet: the Copilot window is at ${result.url}. Sign in there, then run the trial.`
+      return `Not signed in yet: the Copilot window is at ${result.url}. Sign in there, then click the button again to check.`
     case 'offline':
       return 'The Copilot window shows "No internet connection". Check the network, then try again.'
     case 'unknown':
@@ -330,10 +588,11 @@ function describeSignIn(result: CopilotSignInStatus): string {
 }
 
 /**
- * The sign-in action for Copilot: opens its window on the chat page and
- * reports what it shows. The Tester signs in there; the harness never does.
+ * Opens the Copilot window on the chat page and reports what it shows. The
+ * Tester signs in there; the harness never does. With the work account
+ * tested, the sign-in lasted only until the harness quit.
  */
-function CopilotSignInPanel() {
+function CopilotSignIn() {
   const [state, setState] = useState<SignInState>({ status: 'idle' })
 
   const open = () => {
@@ -345,96 +604,29 @@ function CopilotSignInPanel() {
   }
 
   return (
-    <section aria-labelledby="copilot-heading">
-      <h2 id="copilot-heading">Copilot sign-in</h2>
-      <p>
-        Copilot runs in its own browser profile. Sign in here after launching the harness unless the window already
-        shows the chat: with the work account tested, the sign-in lasted only until the harness quit. Use the account the
-        trials should run under.
+    <div className="sign-in-row">
+      <p className="caption">
+        {state.status === 'done' ? (
+          <span data-testid="copilot-sign-in-status" data-state={state.result.state} className={state.result.signedIn ? 'ok-text' : undefined}>
+            {describeSignIn(state.result)}
+          </span>
+        ) : state.status === 'error' ? (
+          <span role="alert" className="match-count-problem" data-testid="copilot-sign-in-error">
+            {state.message}
+          </span>
+        ) : (
+          'Copilot runs in its own browser profile. Sign in once after launching the harness, with the account the trials should run under.'
+        )}
       </p>
-      <button type="button" onClick={open} disabled={state.status === 'opening'} data-testid="open-copilot-sign-in">
+      <button
+        type="button"
+        className="button button-secondary"
+        onClick={open}
+        disabled={state.status === 'opening'}
+        data-testid="open-copilot-sign-in"
+      >
         {state.status === 'opening' ? 'Opening Copilot…' : 'Open Copilot to sign in'}
       </button>
-      {state.status === 'done' && (
-        <p data-testid="copilot-sign-in-status" data-state={state.result.state} className={state.result.signedIn ? 'ok' : undefined}>
-          {describeSignIn(state.result)}
-        </p>
-      )}
-      {state.status === 'error' && (
-        <p role="alert" className="error" data-testid="copilot-sign-in-error">
-          {state.message}
-        </p>
-      )}
-    </section>
-  )
-}
-
-function SavedTrials({ refreshKey }: { refreshKey: number }) {
-  const trials = useBridgeCall(() => window.harness.listTrials(), refreshKey)
-
-  return (
-    <section aria-labelledby="saved-heading">
-      <h2 id="saved-heading">Saved trials</h2>
-      {trials.status === 'loading' && <p>Loading saved trials…</p>}
-      {trials.status === 'error' && (
-        <p role="alert" className="error" data-testid="saved-trials-error">
-          Could not list saved trials: {trials.message}
-        </p>
-      )}
-      {trials.status === 'ready' && trials.value.length === 0 && (
-        <p data-testid="saved-trials-empty">No trials saved yet.</p>
-      )}
-      {trials.status === 'ready' && trials.value.length > 0 && (
-        <table className="trials" data-testid="saved-trials">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Subject</th>
-              <th>Q</th>
-              <th>Status</th>
-              <th>Response</th>
-              <th>Begin</th>
-              <th>Session</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trials.value.map((trial) => (
-              <tr key={trial.trialId}>
-                <td>{trial.testNumber}</td>
-                <td>{trial.subject}</td>
-                <td>{trial.questionNumber}</td>
-                <td title={trial.failure?.message}>
-                  {trial.status}
-                  {trial.failure && ` · ${trial.failure.type}`}
-                </td>
-                <td>{trial.responseMs === null ? '–' : `${trial.responseMs} ms`}</td>
-                <td>{trial.beginTs}</td>
-                <td title={trial.sessionId}>{trial.sessionId.slice(0, 8)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
-  )
-}
-
-/**
- * The Test Console tab. Until story #38 rebuilds it to the design, it holds
- * the panels the window had before E6, unchanged.
- */
-export function TestConsolePage() {
-  const appInfo = useBridgeCall(() => window.harness.getAppInfo())
-  const sqlite = useBridgeCall(() => window.harness.getSqliteStatus())
-  const [savedVersion, setSavedVersion] = useState(0)
-
-  return (
-    <div className="legacy-console">
-      <CopilotSignInPanel />
-      <TrialPanel onSaved={() => setSavedVersion((v) => v + 1)} />
-      <SavedTrials refreshKey={savedVersion} />
-      <AppInfoPanel appInfo={appInfo} />
-      <SqlitePanel sqlite={sqlite} />
     </div>
   )
 }

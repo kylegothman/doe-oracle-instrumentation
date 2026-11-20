@@ -581,159 +581,261 @@ fieldset.field > legend {
   color: var(--danger-text);
 }
 
-/*
- * The Test Console as it was before E6. Story #38 replaces it with the
- * design; until then its old classes use the theme so it stays readable.
- */
+/* Badge tones beyond neutral and accent */
 
-.legacy-console {
+.badge-success {
+  background: var(--success-subtle);
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+
+.badge-danger {
+  background: var(--danger-subtle);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+.badge-warning {
+  background: var(--warning-subtle);
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+
+/* Shared bits of the result cards */
+
+.muted {
+  color: var(--text-muted);
+}
+
+.ok-text {
+  color: var(--success-text);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-12);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.overline {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.panel-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.answer-text {
+  white-space: pre-wrap;
+}
+
+.citation {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--accent-text);
+  overflow-wrap: anywhere;
+}
+
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-12);
+}
+
+.metric-row-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.metric-label {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+.metric-value {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* Buttons the console adds: low emphasis, and a row split left and right */
+
+.button-ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+.button-ghost:hover:not(:disabled) {
+  filter: none;
+  color: var(--text-primary);
+}
+
+.actions-split {
+  justify-content: space-between;
+}
+
+.ready-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--success-text);
+}
+
+.ready-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--success-text);
+}
+
+/* The running trial: timer, progress against the limit, and the steps */
+
+.timer {
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
 }
 
-.legacy-console h2 {
-  margin: var(--space-16) 0 0;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 18px;
+.timer-readout {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
 }
 
-.legacy-console p {
-  margin: 0;
-}
-
-.legacy-console button {
-  padding: var(--space-6) var(--space-12);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-md);
-  background: var(--accent);
-  color: var(--text-on-accent);
-  font: inherit;
-  font-size: 12px;
+.timer-elapsed {
+  font-family: var(--font-mono);
+  font-size: 28px;
   font-weight: 500;
-  cursor: pointer;
+  line-height: 34px;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
 }
 
-.legacy-console button:disabled {
-  opacity: 0.5;
-  cursor: progress;
+.timer-limit {
+  color: var(--text-muted);
 }
 
-.legacy-console button.secondary {
-  background: var(--bg-raised);
-  border-color: var(--border-strong);
-  color: var(--text-primary);
+.progress-track {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--border-default);
+  overflow: hidden;
 }
 
-.legacy-console select,
-.legacy-console input[type='number'] {
-  padding: var(--space-4) var(--space-8);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font: inherit;
+.progress-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent);
 }
 
-.legacy-console input[type='number'] {
-  width: 7rem;
-}
-
-.legacy-console .actions {
-  justify-content: flex-start;
-}
-
-.facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--space-4) var(--space-16);
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
   margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.facts dt {
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.step-icon {
+  display: block;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.step-icon-pending {
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-full);
+}
+
+.step-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-pending .step-label {
+  color: var(--text-muted);
+}
+
+.step-time {
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
-.facts dd {
-  margin: 0;
+.adjust-row {
+  display: flex;
+  max-width: 16rem;
 }
 
-.error {
-  color: var(--danger-text);
-}
-
-.ok {
-  color: var(--success-text);
-}
-
-.error-box {
-  padding: var(--space-12) var(--space-16);
-  border: 1px solid var(--danger-border);
-  border-radius: var(--radius-md);
-  background: var(--danger-subtle);
-  color: var(--danger-text);
-}
-
-.error-box code {
-  color: inherit;
-  word-break: break-word;
-}
-
-.status-line {
-  font-weight: 600;
-}
-
-.confirm-box,
-.result {
-  padding: var(--space-12) var(--space-16);
+.sign-in-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  padding: var(--space-12);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
 }
 
-.answer-preview {
-  white-space: pre-wrap;
-  margin-top: var(--space-12) !important;
+.sign-in-row .button {
+  flex-shrink: 0;
 }
 
-.trials {
+/* This session's trials */
+
+.trials-table {
   width: 100%;
   border-collapse: collapse;
 }
 
-.trials th,
-.trials td {
-  padding: var(--space-4) var(--space-8);
-  border-bottom: 1px solid var(--border-default);
-  text-align: left;
-}
-
-.trials th {
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.events {
-  margin: 0;
-  padding-left: var(--space-16);
-}
-
-.event-status {
+.trials-table th {
+  padding: var(--space-12);
+  background: var(--bg-raised);
+  font-size: 10px;
   font-weight: 600;
-  text-transform: capitalize;
+  line-height: 14px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-default);
 }
 
-.events li[data-status='failed'],
-.events li[data-status='aborted'] {
-  color: var(--danger-text);
+.trials-table td {
+  padding: var(--space-8) var(--space-12);
+  border-bottom: 1px solid var(--border-default);
+  vertical-align: middle;
 }
 
-.events li[data-status='completed'] {
-  color: var(--success-text);
-}
-
-.events li[data-status='awaiting_submit'],
-.events li[data-status='awaiting_confirmation'] {
-  color: var(--warning-text);
+.trials-table .numeric {
+  text-align: right;
+  white-space: nowrap;
 }

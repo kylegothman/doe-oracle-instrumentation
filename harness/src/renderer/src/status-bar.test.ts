@@ -28,12 +28,16 @@ describe('nextBarState', () => {
     }
   })
 
-  it('stops the time when the answer is complete and waits for confirmation', () => {
-    expect(nextBarState(event('awaiting_confirmation', 9_377), 20_000)).toMatchObject({
+  it('stops the time at the measured response, begin to end, when the answer is complete', () => {
+    expect(nextBarState({ ...event('awaiting_confirmation', 14_000), beginMs: 50_000, endMs: 59_377 }, 20_000)).toMatchObject({
       phase: 'running',
       elapsedMs: 9_377,
       anchorAt: null,
     })
+  })
+
+  it('falls back to the time since the start if the event has no begin and end', () => {
+    expect(nextBarState(event('awaiting_confirmation', 14_000), 20_000)).toMatchObject({ elapsedMs: 14_000, anchorAt: null })
   })
 
   it('clears the trial and says ready once it ends, however it ended', () => {

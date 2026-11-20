@@ -1,6 +1,9 @@
 import { useId, type ReactNode } from 'react'
 import dotAccent from '../assets/dot-accent.svg'
+import dotDanger from '../assets/dot-danger.svg'
 import dotNeutral from '../assets/dot-neutral.svg'
+import dotSuccess from '../assets/dot-success.svg'
+import dotWarning from '../assets/dot-warning.svg'
 
 /**
  * The design's building blocks (Figma "Mockups" page, components Card,
@@ -159,8 +162,12 @@ export function RadioOption({
   )
 }
 
-/** The badge's dot, one of the design's own SVGs per tone. */
-const BADGE_DOTS = { neutral: dotNeutral, accent: dotAccent } as const
+/**
+ * The badge's dot per tone. Neutral and accent are the design's own SVGs;
+ * success, danger, and warning are the same 6 px circle in the design's
+ * text colors for those tones.
+ */
+const BADGE_DOTS = { neutral: dotNeutral, accent: dotAccent, success: dotSuccess, danger: dotDanger, warning: dotWarning } as const
 
 export type BadgeTone = keyof typeof BADGE_DOTS
 
@@ -171,6 +178,28 @@ export function Badge({ tone, label, testId }: { tone: BadgeTone; label: string;
       <img className="badge-dot" src={BADGE_DOTS[tone]} width={6} height={6} alt="" />
       {label}
     </span>
+  )
+}
+
+/** A label over a value, as in the result cards: "Response time / 4,812 ms". */
+export function Metric({ label, value, testId }: { label: string; value: string; testId?: string }) {
+  return (
+    <div className="metric">
+      <span className="metric-label">{label}</span>
+      <span className="metric-value mono" data-testid={testId}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+/** A boxed block with a small capitalized label: "EXACT TEXT SENT", "ANSWER PREVIEW". */
+export function Panel({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="panel">
+      <p className="overline">{label}</p>
+      {children}
+    </div>
   )
 }
 

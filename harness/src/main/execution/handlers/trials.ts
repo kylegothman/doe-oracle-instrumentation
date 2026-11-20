@@ -3,8 +3,14 @@ import type { Trial } from '../../../shared/trials'
 import type { MetricsRepository } from '../../data/metrics-repository'
 import type { TrialController } from '../trial-controller'
 
-/** Trials shown in the UI list. */
+/** Trials shown in the UI list across all sessions. */
 const LIST_LIMIT = 20
+/**
+ * Trials listed for one session, for the Test Console's "This session"
+ * table. A full session is 36 trials (12 questions, 3 subjects); this leaves
+ * room for retries without cutting any off.
+ */
+const SESSION_LIST_LIMIT = 200
 
 /**
  * Builds the handler for `trial:start`. The controller is supplied through a
@@ -58,7 +64,7 @@ export function createListTrialsHandler(
   repository: () => Promise<Pick<MetricsRepository, 'listTrials'>>,
 ): (sessionId?: string) => Promise<Trial[]> {
   return async (sessionId) => {
-    const filter = sessionId ? { sessionId, limit: LIST_LIMIT } : { limit: LIST_LIMIT }
+    const filter = sessionId ? { sessionId, limit: SESSION_LIST_LIMIT } : { limit: LIST_LIMIT }
     return (await repository()).listTrials(filter)
   }
 }
