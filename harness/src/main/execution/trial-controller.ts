@@ -42,6 +42,12 @@ export class TrialCancelledError extends Error {
 const DEFAULT_DISPOSE_TIMEOUT_MS = 3_000
 /** What the Tester is told once a confirmed subject's answer has finished. */
 export const CONFIRM_PROMPT = 'The answer finished. Confirm the end, adjust it, or cancel the trial.'
+/** What the Tester is told once the results have loaded, for a subject whose answer the Tester reports. */
+export const ANSWER_FOUND_PROMPT =
+  'The results page loaded. In the browser window, highlight the passage that answers the question, then click Answer Found.'
+
+/** What a trial can wait for the Tester to do once the subject has completed. */
+type TesterStep = 'end' | 'answer'
 
 /** What ended a trial early. */
 type Interruption = { kind: 'failure'; failure: TrialFailure } | { kind: 'cancel' }
@@ -60,13 +66,15 @@ class RunningTrial {
   readonly trialId = randomUUID()
   interruption: Interruption | null = null
   answer: CapturedAnswer | null = null
+  /** When the Tester reported the answer was on the page, for a subject whose policy has answerFound. */
+  answerFoundAtMs: number | null = null
   /** True once the controller has released the trial; nothing more happens to it after that. */
   released = false
   /** The timed adapter step in flight, so its stamp can still be recorded if the trial is interrupted as it settles. */
   pending: { event: TimingEvent; work: Promise<number> } | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
-  /** Set while the trial waits for the Tester to confirm the end. */
-  private confirmation: { resolve: (endMs: number | undefined) => void } | null = null
+  /** Set while the trial waits for the Tester: to confirm the end, or to report the answer. */
+  private confirmation: { waitingFor: TesterStep; resolve: (atMs: number | undefined) => void } | null = null
   private readonly interrupted: Promise<never>
   private rejectInterrupted: (error: TrialInterruptedError) => void = () => {}
   private resolveClosed: () => void = () => {}
@@ -104,21 +112,26 @@ class RunningTrial {
     return true
   }
 
-  get isAwaitingConfirmation(): boolean {
-    return this.confirmation !== null
+  /** What the trial is waiting for the Tester to do, or null when it waits for nothing. */
+  get waitingFor(): TesterStep | null {
+    return this.confirmation?.waitingFor ?? null
   }
 
-  /** Resolves with the Tester's corrected end, or undefined to keep the detected one. */
-  awaitConfirmation(): Promise<number | undefined> {
+  /**
+   * Resolves when the Tester acts. For 'end': with the corrected end, or
+   * undefined to keep the detected one. For 'answer': with the moment the
+   * Tester reported the answer.
+   */
+  awaitConfirmation(waitingFor: TesterStep): Promise<number | undefined> {
     return new Promise((resolve) => {
-      this.confirmation = { resolve }
+      this.confirmation = { waitingFor, resolve }
     })
   }
 
-  confirm(endMs: number | undefined): void {
+  confirm(atMs: number | undefined): void {
     const confirmation = this.confirmation
     this.confirmation = null
-    confirmation?.resolve(endMs)
+    confirmation?.resolve(atMs)
   }
 
   startTimer(ms: number, onExpiry: () => void): void {
@@ -153,9 +166,15 @@ class RunningTrial {
  *    confirmEnd, the controller then sends `awaiting_confirmation` with
  *    the detected begin and end and waits for confirmCompletion, which may
  *    replace the end, before the answer is captured; the Tester has as
- *    long as they like. Each step is raced against the trial being
- *    interrupted by the timer, by a failure signal from the adapter, or by
- *    cancelTrial.
+ *    long as they like. For a subject whose policy has answerFound
+ *    (Google, story #37) completion is the results page finishing loading:
+ *    the controller sends `awaiting_confirmation` with begin and that end,
+ *    and the same confirmCompletion call is the Tester's Answer Found. The
+ *    moment it arrives is stamped, the answer is captured, and the trial is
+ *    saved with its page-load time (begin to end), time to answer (begin to
+ *    Answer Found), and source URL. Each step is raced against the trial
+ *    being interrupted by the timer, by a failure signal from the adapter,
+ *    or by cancelTrial.
  * 3. On a failure (SD-4): the FailureDetector classifies the signal, the
  *    adapter is disposed, the clock stops, and closeTrial saves the trial
  *    as FAILED with a failed_requests row and sends `failed`. The failed
@@ -168,9 +187,6 @@ class RunningTrial {
  * the adapter) also saves nothing: the trial is released, `aborted` is
  * sent, and the error reaches the caller. Either way the controller is
  * ready for the next trial as soon as closeTrial returns.
- *
- * TODO(#37): markAnswerFound(trialId) and markNoAnswerFound(trialId), for
- * Google, where the Tester reports whether the answer was on the page.
  */
 export class TrialController {
   private current: RunningTrial | null = null
@@ -228,10 +244,15 @@ export class TrialController {
       if (policy.confirmEnd) {
         const marks = this.deps.timing.getMarks(trial.trialId)
         this.send(trial, 'awaiting_confirmation', { message: CONFIRM_PROMPT, beginMs: marks.begin, endMs: marks.end })
-        const correctedEnd = await trial.step(trial.awaitConfirmation())
+        const correctedEnd = await trial.step(trial.awaitConfirmation('end'))
         if (correctedEnd !== undefined) {
           this.deps.timing.mark(trial.trialId, 'end', correctedEnd)
         }
+      }
+      if (policy.answerFound) {
+        const marks = this.deps.timing.getMarks(trial.trialId)
+        this.send(trial, 'awaiting_confirmation', { message: ANSWER_FOUND_PROMPT, beginMs: marks.begin, endMs: marks.end })
+        trial.answerFoundAtMs = (await trial.step(trial.awaitConfirmation('answer'))) ?? null
       }
       trial.answer = await trial.step(adapter.captureAnswer())
       // The subject-independent check: an answer with no text is a failure, whatever the adapter said.
@@ -257,18 +278,35 @@ export class TrialController {
   }
 
   /**
-   * The Tester confirmed the end of a trial that is awaiting confirmation:
-   * keeps the detected end, or replaces it with endMs, which must not be
-   * before the question was sent. The trial is then captured and saved;
-   * resolves once that is done and the controller is ready again.
+   * The Tester confirmed a trial that is awaiting confirmation.
+   *
+   * For a subject whose end the Tester confirms: keeps the detected end, or
+   * replaces it with endMs, which must not be before the question was sent.
+   *
+   * For a subject whose answer the Tester reports (Google), this is Answer
+   * Found: the moment the call arrives is the time to answer, read from the
+   * main process's clock, so endMs is refused.
+   *
+   * The trial is then captured and saved; resolves once that is done and
+   * the controller is ready again.
    */
   async confirmCompletion(trialId: string, endMs?: number): Promise<void> {
     const trial = this.current
     if (!trial || trial.trialId !== trialId) {
       throw new Error(`Trial ${trialId} is not running`)
     }
-    if (!trial.isAwaitingConfirmation) {
+    if (trial.waitingFor === null) {
       throw new Error('The trial is not waiting for confirmation: its answer has not finished yet')
+    }
+    if (trial.waitingFor === 'answer') {
+      if (endMs !== undefined) {
+        throw new Error(
+          `The time to answer for ${SUBJECT_LABELS[trial.subject]} is the moment Answer Found is clicked. It cannot be adjusted.`,
+        )
+      }
+      trial.confirm(this.now())
+      await trial.closed
+      return
     }
     if (endMs !== undefined) {
       const { timing } = this.deps
@@ -428,6 +466,15 @@ export class TrialController {
         beginMs === undefined || firstResponseMs === undefined ? null : timing.durationMs(beginMs, firstResponseMs),
       answerText: trial.answer?.text ?? null,
       citations: trial.answer?.citations ?? [],
+      // Only a subject whose answer the Tester reports has these three; the others leave them null.
+      ...(this.deps.policies[trial.subject].answerFound
+        ? {
+            pageLoadMs: beginMs === undefined || endMs === undefined ? null : timing.durationMs(beginMs, endMs),
+            timeToAnswerMs:
+              beginMs === undefined || trial.answerFoundAtMs === null ? null : timing.durationMs(beginMs, trial.answerFoundAtMs),
+            sourceUrl: trial.answer?.sourceUrl ?? null,
+          }
+        : {}),
     }
   }
 

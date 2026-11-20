@@ -106,6 +106,7 @@ export interface HarnessApi {
    * Confirms the end of a trial that is awaiting confirmation, keeping the
    * detected end or replacing it with endMs (epoch milliseconds). The trial
    * is then captured and saved; startTrial's promise delivers the record.
+   * For Google this is Answer Found: call it without endMs, which is refused.
    */
   confirmCompletion(trialId: string, endMs?: number): Promise<void>
   /** Ends the running trial without saving it. startTrial's promise then rejects. */

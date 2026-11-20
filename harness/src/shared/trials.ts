@@ -46,9 +46,12 @@ export interface Trial {
   citations: string[]
   /** Google only: Enter to the results page finishing loading. Null for the other subjects. */
   pageLoadMs: number | null
-  /** Google only: Enter to the Tester's Answer Found click. Null for the other subjects. */
+  /** Google only: Enter to the Tester's Answer Found click, as it reached the main process. Null for the other subjects. */
   timeToAnswerMs: number | null
-  /** Google only: the page the answering passage came from. Null for the other subjects. */
+  /**
+   * Google only: the result the highlighted passage came from, or the
+   * results page when nothing was highlighted. Null for the other subjects.
+   */
   sourceUrl: string | null
   /** UTF-8 byte length of answerText, 0 when there is none. The repository computes it on save. */
   sizeBytes: number
@@ -67,7 +70,9 @@ export interface Trial {
  *   first_response, and awaiting_confirmation (the answer finished and the
  *   clock stopped; the Tester confirms or corrects the end, carried in
  *   beginMs and endMs, before anything is saved) are progress; nothing is
- *   saved yet;
+ *   saved yet. For Google, awaiting_confirmation means the results page
+ *   has loaded (endMs) and the Tester is looking for the answer: the same
+ *   confirm call is their Answer Found, and the end cannot be corrected;
  * - completed means the trial was saved as SUCCESS;
  * - failed means the trial was saved as FAILED, and failureType says why;
  * - cancelled (the Tester cancelled it) and aborted (the harness itself
