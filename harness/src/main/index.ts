@@ -185,6 +185,9 @@ function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1024,
     height: 720,
+    // Below this the console's cards no longer fit; without a minimum the window can be dragged down to its title bar.
+    minWidth: 900,
+    minHeight: 600,
     show: false,
     autoHideMenuBar: true,
     title: app.getName(),
