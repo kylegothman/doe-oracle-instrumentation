@@ -4,6 +4,7 @@ import { ExportFormat } from '../shared/export'
 import { IpcChannels } from '../shared/ipc'
 import { Subject } from '../shared/subjects'
 import { CopilotAdapter } from './adapters/copilot-adapter'
+import { GoogleAdapter } from './adapters/google-adapter'
 import { OracleAdapter } from './adapters/oracle-adapter'
 import type { SubjectAdapter } from './adapters/subject-adapter'
 import { resolveBrowserLocation, type BrowserLocation } from './browser/browser-location'
@@ -27,6 +28,7 @@ import {
   createCancelTrialHandler,
   createConfirmCompletionHandler,
   createListTrialsHandler,
+  createReportNoAnswerHandler,
   createStartTrialHandler,
 } from './execution/handlers/trials'
 import { IpcRouter } from './execution/ipc-router'
@@ -93,12 +95,14 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   void sqliteStatus.then(logSqliteStatus)
 
   const settings = loadSettings()
-  // One adapter per subject, each driving its own page: the Oracle in the
-  // shared Chromium, Copilot on its persistent profile.
-  // TODO(#6): register the Google adapter here.
+  // One adapter per subject, each driving its own page: the Oracle and
+  // Google in separate contexts of the shared Chromium, Copilot on its
+  // persistent profile. Google has no profile folder, so it is signed out
+  // and its cookies are gone when the harness quits.
   const adapters = new Map<Subject, SubjectAdapter>([
     [Subject.DOE_ORACLE, new OracleAdapter(browserManager, settings.oracle)],
     [Subject.COPILOT, new CopilotAdapter(browserManager, settings.copilot)],
+    [Subject.GOOGLE, new GoogleAdapter(browserManager, settings.google)],
   ])
   // One session per launch, started as soon as the database is open so it
   // is saved before any trial can reference it.
@@ -135,6 +139,7 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   router.register(IpcChannels.startTrial, createStartTrialHandler(() => controllerReady))
   router.register(IpcChannels.confirmCompletion, createConfirmCompletionHandler(() => controllerReady))
   router.register(IpcChannels.cancelTrial, createCancelTrialHandler(() => controllerReady))
+  router.register(IpcChannels.reportNoAnswer, createReportNoAnswerHandler(() => controllerReady))
   router.register(IpcChannels.listTrials, createListTrialsHandler(() => repositoryReady))
   router.register(IpcChannels.openCopilotSignIn, createOpenCopilotSignInHandler({ pages: browserManager, settings: settings.copilot }))
   router.register(IpcChannels.listFailedWrites, createListFailedWritesHandler(errorLog))

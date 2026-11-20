@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sorry...</title>
+</head>
+<body>
+  <!--
+    A small stand-in for the page Google shows at /sorry/index when it
+    suspects automated traffic, for google-adapter.test.ts. The real page
+    carries a reCAPTCHA; here one button stands for a person solving it. A
+    test clicks it in the Tester's place; the adapter never does. The test
+    server answers the click by lifting the check and going back to the page
+    named in "continue".
+  -->
+  <div id="infoDiv">
+    <p>Our systems have detected unusual traffic from your computer network. This page checks to see if it's really you sending the requests, and not a robot.</p>
+  </div>
+  <form id="captcha-form" action="/sorry/solve" method="GET">
+    <input type="hidden" name="continue" value="__CONTINUE__" />
+    <button type="submit" id="solve">I'm not a robot</button>
+  </form>
+</body>
+</html>

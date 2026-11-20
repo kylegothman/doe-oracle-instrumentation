@@ -13,8 +13,13 @@ export class AdapterDisposedError extends Error {
  * trial event with the same status.
  */
 export interface AdapterNotice {
-  /** The question is typed and the subject waits for the Tester to submit it. */
+  /**
+   * The subject waits for the Tester to act in its window, before anything
+   * is timed. Usually the question is typed and they must submit it; Google
+   * also uses it when its "unusual traffic" check must be solved first.
+   */
   status: 'awaiting_submit'
+  /** What the Tester must do, in plain words. The window shows it as it is. */
   message: string
 }
 
@@ -24,7 +29,11 @@ export interface CapturedAnswer {
   text: string
   /** Citation lines as shown, for example "paper.pdf · p.3". Empty when the subject shows none. */
   citations: string[]
-  /** Where the answer was read from, usually the page URL. */
+  /**
+   * Where the answer was read from, usually the page URL. For Google, the
+   * result a highlighted passage came from; it is the only subject whose
+   * source is saved with the trial.
+   */
   sourceUrl?: string
 }
 
@@ -43,12 +52,15 @@ export interface CapturedAnswer {
  * - start() does everything needed to ask the question: open or focus the
  *   subject, type the question, and submit it. It resolves with begin, the
  *   moment the question was submitted. For the Oracle that is when the
- *   search request leaves the page; for Copilot and Google it will be the
+ *   search request leaves the page; for Copilot and Google it is the
  *   Tester's submit (#34, #36).
  * - waitForFirstResponse() and waitForCompletion() resolve with the moment
- *   the first part of the answer and the whole answer appeared.
+ *   the first part of the answer and the whole answer appeared. For Google
+ *   those are the server answering the search and the results page
+ *   finishing loading.
  * - captureAnswer() reads the answer as shown. An empty text is allowed;
- *   the controller records it as EMPTY_ANSWER.
+ *   the controller records it as EMPTY_ANSWER. For Google it is called once
+ *   the Tester has clicked Answer Found (#37).
  * - onFailure(handler) registers the one handler the adapter calls as soon
  *   as it observes a failure: an error status, a request or page load that
  *   failed, an empty answer. The controller registers it before each
@@ -66,8 +78,6 @@ export interface CapturedAnswer {
  *   Tester, such as "press Enter" once the question is typed. An adapter
  *   that drives its subject itself (the Oracle) has nothing to say and
  *   leaves it out.
- *
- * TODO(#6): the Google adapter (E5) implements this interface.
  */
 export interface SubjectAdapter {
   readonly subject: Subject

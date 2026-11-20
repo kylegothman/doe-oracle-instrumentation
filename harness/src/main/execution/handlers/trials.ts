@@ -53,6 +53,16 @@ export function createCancelTrialHandler(
   }
 }
 
+/** Builds the handler for `trial:no-answer`: the Tester reported that the answer is not on the page. */
+export function createReportNoAnswerHandler(
+  controller: () => Promise<Pick<TrialController, 'reportNoAnswer'>>,
+): (trialId: string) => Promise<void> {
+  return async (trialId) => {
+    requireTrialId(trialId)
+    await (await controller()).reportNoAnswer(trialId)
+  }
+}
+
 function requireTrialId(trialId: unknown): void {
   if (typeof trialId !== 'string' || trialId.trim() === '') {
     throw new Error(`Trial id must be a non-empty string, got ${String(trialId)}`)
