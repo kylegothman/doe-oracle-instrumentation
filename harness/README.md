@@ -91,10 +91,10 @@ harness/
     preload/                contextBridge script that exposes window.harness
     renderer/               React UI (browser only, no Node access)
       src/App.tsx           the shell: header, tabs, one page per tab
-      src/pages/            one file per page
+      src/pages/            Test Console, Expert Responses, Export, with each page's logic in a tested .ts file
       src/components/ui.tsx the design's building blocks (Card, Field, Segmented, RadioOption, Banner)
       src/styles.css        the design's colors, spacing, and text styles as CSS variables
-    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult; FailedWriteSummary)
+    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult, ExportPreview; FailedWriteSummary)
   .browser-bundle/          Chromium fetched for the installer (ignored by git)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
@@ -104,7 +104,7 @@ harness/
 
 The window follows the team's Figma mockups (E6): a dark theme, a header with three tabs (Test Console, Expert Responses, Export), and one page per tab. Every color, space, radius, and text style in the design is a CSS variable at the top of `src/renderer/src/styles.css`, named after the design's variable (`color/bg/surface` is `--bg-surface`). The fonts, Inter and JetBrains Mono, ship inside the app (`@fontsource`, OFL license), so the window looks the same with no network.
 
-All three pages stay mounted and only the active one is shown, so switching tabs during a trial does not interrupt it. Export is a placeholder until story #40, and Expert Responses until E7 builds it. The Test Console keeps the panels it had before E6 until story #38 rebuilds it to the design.
+All three pages stay mounted and only the active one is shown, so switching tabs during a trial does not interrupt it. Expert Responses is a placeholder until E7 builds it. The Test Console keeps the panels it had before E6 until story #38 rebuilds it to the design.
 
 ## Security baseline
 
@@ -251,6 +251,22 @@ The Export Page calls `window.harness.exportLog(request)` on the `export:run` ch
 5. returns `EXPORTED` with the files written and the row count, or `WRITE_FAILED` with a message to show when the file cannot be written, for example because it is open in Excel (UC-6 E2). The Tester can export again and choose another location.
 
 An export only reads the database, so no outcome changes a stored record. The `ExportResult` carries `ok`, `status`, `filePaths`, `rowCount`, and `error`.
+
+Two more channels serve the Export Page before it exports:
+
+- `sessions:list` (`window.harness.listSessions()`) returns every saved session, newest first, for the Session dropdown.
+- `export:preview` (`window.harness.previewExport(filter)`) returns how many trials and expert answers the filter matches (`ExportPreview`). `ExportService.preview` counts with the same `listExportRecords` query the export runs, so the count on the page always equals the rows written, superseded answers left out.
+
+### The Export Page
+
+The Export tab (story #40) follows the design's "06 Export Page":
+
+- **Records to export.** Filter by **Session** (the running session is chosen until the Tester picks another) or by **Date range** (whole local days, both included), and optionally one subject or only the expert's answers. The line below gives the count from `export:preview`. Export is disabled when nothing matches or the range is backwards.
+- **Format.** The TestLogV3 workbook or CSV. **Export…** opens the save dialog.
+- **Result.** "Exported N rows" with every file written (both files for CSV), or the reason nothing was written. Closing the save dialog shows nothing.
+- **Saves waiting for a retry.** When the error log holds failed saves, a warning above the filters lists them and offers Retry, because those records are not in any export until they reach the database.
+
+The sessions, the count, and the waiting saves are read again each time the tab is opened, so trials saved since the last visit are included.
 
 ### Export rows
 

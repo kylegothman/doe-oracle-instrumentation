@@ -129,6 +129,25 @@ describe('ExportService', () => {
   it('suggests a .csv name for CSV', () => {
     expect(service().suggestedName(ExportFormat.CSV)).toBe('TestLog-2026-11-14.csv')
   })
+
+  it('counts the trials and expert answers the filter matches, without asking for a location or writing', () => {
+    const listExportRecords = vi.fn(() => [
+      ...oneRecord,
+      { kind: 'TRIAL', testNumber: 2 },
+      { kind: 'EXPERT', testNumber: 3 },
+    ] as ExportRecord[])
+    const filter = { ...ALL_RECORDS, sessionId: 's2' }
+
+    const preview = new ExportService({ repository: { listExportRecords }, writers: new Map([[ExportFormat.TESTLOG_V3_XLSX, writer]]) }).preview(filter)
+
+    expect(preview).toEqual({ trials: 2, expertAnswers: 1 })
+    expect(listExportRecords).toHaveBeenCalledWith(filter)
+    expect(writer.write).not.toHaveBeenCalled()
+  })
+
+  it('counts nothing when no record matches', () => {
+    expect(service([]).preview(ALL_RECORDS)).toEqual({ trials: 0, expertAnswers: 0 })
+  })
 })
 
 /** The whole path with a real database and a real workbook: what export:run does after the dialog. */
@@ -162,11 +181,14 @@ describe('ExportService end to end', () => {
     repository.saveExpertResponse({ ...answer, answerText: 'Original.' })
     repository.saveExpertResponse({ ...answer, answerText: 'Revised.' }, { replace: true })
     const filePath = join(dir, 'TestLog.xlsx')
-
-    const result = await new ExportService({
+    const service = new ExportService({
       repository,
       writers: new Map([[ExportFormat.TESTLOG_V3_XLSX, new TestLogV3Writer()]]),
-    }).export(request, async () => filePath)
+    })
+
+    // The Export Page's count leaves the superseded answer out too, so it matches the rows written.
+    expect(service.preview(request.filter)).toEqual({ trials: 1, expertAnswers: 1 })
+    const result = await service.export(request, async () => filePath)
 
     expect(result).toEqual({ ok: true, status: 'EXPORTED', filePaths: [filePath], rowCount: 2, error: null })
     const workbook = new ExcelJS.Workbook()

@@ -1,6 +1,6 @@
 import { useState, type KeyboardEvent } from 'react'
-import { Card } from './components/ui'
 import { ExpertResponsesPage } from './pages/ExpertResponsesPage'
+import { ExportPage } from './pages/ExportPage'
 import { TestConsolePage } from './pages/TestConsolePage'
 
 type PageId = 'console' | 'expert' | 'export'
@@ -19,7 +19,14 @@ const PAGES: ReadonlyArray<{ id: PageId; label: string }> = [
  * holds the running trial and its event subscription.
  */
 export function App() {
-  const [active, setActive] = useState<PageId>('console')
+  const [active, setActiveState] = useState<PageId>('console')
+  // How many times Export was opened: it re-reads its sessions and count on each visit.
+  const [exportVisits, setExportVisits] = useState(0)
+
+  const setActive = (page: PageId) => {
+    if (page === 'export' && active !== 'export') setExportVisits((visits) => visits + 1)
+    setActiveState(page)
+  }
 
   // Arrow keys move between tabs, as in any tab list.
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -67,9 +74,7 @@ export function App() {
           <ExpertResponsesPage />
         </section>
         <section id="page-export" role="tabpanel" aria-labelledby="tab-export" hidden={active !== 'export'}>
-          <Card title="Export" subtitle="The Export Page arrives with story #40.">
-            <p className="caption">Exporting the test log as a TestLogV3 workbook or CSV will be done here.</p>
-          </Card>
+          <ExportPage refreshKey={exportVisits} />
         </section>
       </main>
     </div>

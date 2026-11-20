@@ -1,4 +1,4 @@
-import { ExportFormat, type ExportRequest, type ExportResult } from '../../shared/export'
+import { ExportFormat, type ExportPreview, type ExportRequest, type ExportResult, type RecordFilter } from '../../shared/export'
 import { toExportRows } from './export-rows'
 import type { LogWriter } from './log-writer'
 import type { MetricsRepository } from './metrics-repository'
@@ -63,6 +63,17 @@ export class ExportService {
     }
     console.log(`[export] Wrote ${main.length} rows to ${filePaths.join(', ')}`)
     return { ok: true, status: 'EXPORTED', filePaths, rowCount: main.length, error: null }
+  }
+
+  /**
+   * Counts what an export with this filter would include, by the same query
+   * the export runs, so the count on the Export Page always matches the
+   * rows written.
+   */
+  preview(filter: RecordFilter): ExportPreview {
+    const records = this.deps.repository.listExportRecords(filter)
+    const trials = records.filter((record) => record.kind === 'TRIAL').length
+    return { trials, expertAnswers: records.length - trials }
   }
 
   /** TestLog-<local date>.<extension>, for example TestLog-2026-11-14.xlsx. */
