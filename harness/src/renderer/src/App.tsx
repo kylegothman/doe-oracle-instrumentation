@@ -1,4 +1,5 @@
 import { useState, type KeyboardEvent } from 'react'
+import { StatusBar } from './components/StatusBar'
 import { ExpertResponsesPage } from './pages/ExpertResponsesPage'
 import { ExportPage } from './pages/ExportPage'
 import { TestConsolePage } from './pages/TestConsolePage'
@@ -12,7 +13,8 @@ const PAGES: ReadonlyArray<{ id: PageId; label: string }> = [
 ]
 
 /**
- * The app shell: the header with the three tabs, and the page below it.
+ * The app shell: the header with the three tabs, the page below it, and the
+ * session status bar at the bottom of every page.
  *
  * Every page stays mounted and only the active one is shown. Switching to
  * Export in the middle of a trial must not unmount the Test Console, which
@@ -77,6 +79,7 @@ export function App() {
           <ExportPage refreshKey={exportVisits} />
         </section>
       </main>
+      <StatusBar />
     </div>
   )
 }

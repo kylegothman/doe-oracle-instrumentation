@@ -180,6 +180,88 @@ code,
   gap: var(--space-16);
 }
 
+/* Session status bar, at the bottom of every page */
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-4) var(--space-12);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-default);
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.1px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.status-bar .mono {
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+.status-session {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.status-muted {
+  color: var(--text-muted);
+}
+
+.status-error {
+  color: var(--danger-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 24rem;
+}
+
+.status-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+/* Badge: a status pill with a dot */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  letter-spacing: 0;
+}
+
+.badge-dot {
+  display: block;
+  flex-shrink: 0;
+}
+
+.badge-neutral {
+  background: var(--bg-raised);
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.badge-accent {
+  background: var(--accent-subtle);
+  border-color: var(--border-focus);
+  color: var(--accent-text);
+}
+
 /* Card */
 
 .card {
@@ -560,14 +642,6 @@ fieldset.field > legend {
 
 .legacy-console .actions {
   justify-content: flex-start;
-}
-
-.session-bar {
-  padding: var(--space-8) var(--space-12);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  color: var(--text-secondary);
 }
 
 .facts {

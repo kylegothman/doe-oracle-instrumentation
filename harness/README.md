@@ -92,7 +92,8 @@ harness/
     renderer/               React UI (browser only, no Node access)
       src/App.tsx           the shell: header, tabs, one page per tab
       src/pages/            Test Console, Expert Responses, Export, with each page's logic in a tested .ts file
-      src/components/ui.tsx the design's building blocks (Card, Field, Segmented, RadioOption, Banner)
+      src/components/       the design's building blocks in ui.tsx (Card, Field, Segmented, RadioOption, Banner, Badge) and the StatusBar
+      src/status-bar.ts     what the status bar shows, worked out from the trial events
       src/styles.css        the design's colors, spacing, and text styles as CSS variables
     shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult, ExportPreview; FailedWriteSummary)
   .browser-bundle/          Chromium fetched for the installer (ignored by git)
@@ -105,6 +106,8 @@ harness/
 The window follows the team's Figma mockups (E6): a dark theme, a header with three tabs (Test Console, Expert Responses, Export), and one page per tab. Every color, space, radius, and text style in the design is a CSS variable at the top of `src/renderer/src/styles.css`, named after the design's variable (`color/bg/surface` is `--bg-surface`). The fonts, Inter and JetBrains Mono, ship inside the app (`@fontsource`, OFL license), so the window looks the same with no network.
 
 All three pages stay mounted and only the active one is shown, so switching tabs during a trial does not interrupt it. Expert Responses is a placeholder until E7 builds it. The Test Console keeps the panels it had before E6 until story #38 rebuilds it to the design.
+
+The session status bar (story #39) runs along the bottom of every page. It shows the first 8 characters of this launch's session ID (hover for the full ID and start time), the running trial's subject and question, the time since the trial started, and a badge: **Idle** before the first trial, **Running** during one, **Ready** once it has ended, however it ended. The time counts while the answer streams and stops when the answer is complete, so while the harness waits for the Tester to confirm, it holds still. The bar follows the `trial:event` stream itself, so it is right whichever tab is open. If the session could not be started, it says so in red, since trials cannot be saved without one.
 
 ## Security baseline
 
@@ -152,7 +155,7 @@ When a launch fails, the trial is not run, and the message gives the fix that ca
 ## Running a trial
 
 1. For the Oracle, start it: Ollama, its Flask backend, and its Vite frontend (see `docs/run-the-oracle.md`). The harness only needs the frontend URL, `http://localhost:5173` by default; set `HARNESS_ORACLE_URL` to point somewhere else. For Copilot, sign in with **Open Copilot to sign in** after launching the harness, unless the window already shows the chat (see "Driving Copilot").
-2. From `harness/`, run `npm run dev`. The window shows this launch's session ID in the bar at the top; every trial saved during the launch carries it.
+2. From `harness/`, run `npm run dev`. The status bar at the bottom of the window shows this launch's session ID; every trial saved during the launch carries it.
 3. Pick the subject and click **Run … trial (Q1)**. For the Oracle, a Chromium window opens on the chat page, the harness types "What is combinatorial testing?", presses Enter, and waits for the answer. For Copilot, the harness types the question in the Copilot window and the status line says **Press Enter in the Copilot window**; you press Enter, and when the answer has finished the status line gives the detected response time with **Confirm**, an end you can adjust (seconds after your Enter) with **Adjust and confirm**, and **Cancel**. Status events (`started`, `awaiting submit`, `first response`, `awaiting confirmation`, `completed`, `failed`, `cancelled`, or `aborted`) appear under the buttons as they happen.
 4. The result panel shows the status, begin, first response, and end (ISO 8601 UTC with milliseconds), the response time and time to first response in milliseconds, the citations, and a preview of the answer. A failed trial shows its failure type and message instead. The saved-trials table below reads back from the database, so a trial from an earlier launch is still listed.
 

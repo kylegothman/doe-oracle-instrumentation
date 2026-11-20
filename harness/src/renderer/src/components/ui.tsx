@@ -1,4 +1,6 @@
 import { useId, type ReactNode } from 'react'
+import dotAccent from '../assets/dot-accent.svg'
+import dotNeutral from '../assets/dot-neutral.svg'
 
 /**
  * The design's building blocks (Figma "Mockups" page, components Card,
@@ -154,6 +156,21 @@ export function RadioOption({
         <span className="caption">{description}</span>
       </span>
     </label>
+  )
+}
+
+/** The badge's dot, one of the design's own SVGs per tone. */
+const BADGE_DOTS = { neutral: dotNeutral, accent: dotAccent } as const
+
+export type BadgeTone = keyof typeof BADGE_DOTS
+
+/** A trial or record status pill: a dot and a short label. */
+export function Badge({ tone, label, testId }: { tone: BadgeTone; label: string; testId?: string }) {
+  return (
+    <span className={`badge badge-${tone}`} data-testid={testId} data-tone={tone}>
+      <img className="badge-dot" src={BADGE_DOTS[tone]} width={6} height={6} alt="" />
+      {label}
+    </span>
   )
 }
 
