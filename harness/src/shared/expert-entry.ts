@@ -36,14 +36,28 @@ export interface ExpertAnswerInput {
   questionNumber: number
   /** The answer as pasted. Blank lines at the very start and end are dropped on save; nothing else changes. */
   answerText: string
+  /**
+   * What to do when the question already has an answer. False: save
+   * nothing and answer ANSWER_EXISTS, so the page can show the existing
+   * answer and ask. True: the Researcher confirmed; save this one as the
+   * active answer and keep the old one as superseded.
+   */
+  replace: boolean
 }
 
 /** The fields of an answer a save can refuse. */
 export type ExpertAnswerField = 'questionNumber' | 'answerText'
 
-/** What saving an answer did: saved it, or saved nothing and says which field is wrong. */
+/**
+ * What saving an answer did. SAVED: it is the active answer, and
+ * superseded is the answer it replaced, kept but no longer active (null
+ * when there was none). ANSWER_EXISTS: nothing was saved, because the
+ * question has this answer already and replace was false (story #43).
+ * INVALID: nothing was saved, and the field says what is wrong.
+ */
 export type SaveExpertAnswerResult =
-  | { status: 'SAVED'; saved: ExpertResponse }
+  | { status: 'SAVED'; saved: ExpertResponse; superseded: ExpertResponse | null }
+  | { status: 'ANSWER_EXISTS'; existing: ExpertResponse }
   | { status: 'INVALID'; field: ExpertAnswerField; message: string }
 
 const ISO_UTC_MILLIS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
@@ -107,9 +121,10 @@ export function trimBlankLines(text: string): string {
  */
 export function validateExpertAnswerInput(value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return 'The expert answer is missing'
-  const { expertId, questionNumber, answerText } = value as Partial<ExpertAnswerInput>
+  const { expertId, questionNumber, answerText, replace } = value as Partial<ExpertAnswerInput>
   if (typeof expertId !== 'string' || expertId.trim() === '') return 'The expert id must be a non-empty string'
   if (typeof questionNumber !== 'number') return 'The question number must be a number'
   if (typeof answerText !== 'string') return 'The answer must be text'
+  if (typeof replace !== 'boolean') return 'The replace flag must be true or false'
   return null
 }

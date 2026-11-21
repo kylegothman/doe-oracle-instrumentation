@@ -72,11 +72,11 @@ describe('validateExpertInput', () => {
 })
 
 describe('validateExpertAnswerInput', () => {
-  const input = { expertId: 'expert-1', questionNumber: 1, answerText: 'An answer.' }
+  const input = { expertId: 'expert-1', questionNumber: 1, answerText: 'An answer.', replace: false }
 
   it('accepts an answer, including values the service will judge', () => {
     expect(validateExpertAnswerInput(input)).toBeNull()
-    expect(validateExpertAnswerInput({ ...input, questionNumber: 99, answerText: '' })).toBeNull()
+    expect(validateExpertAnswerInput({ ...input, questionNumber: 99, answerText: '', replace: true })).toBeNull()
   })
 
   it.each([
@@ -85,6 +85,8 @@ describe('validateExpertAnswerInput', () => {
     [{ ...input, expertId: null }, /expert id must be/],
     [{ ...input, questionNumber: '1' }, /question number must be a number/],
     [{ ...input, answerText: ['An answer.'] }, /answer must be text/],
+    [{ ...input, replace: undefined }, /replace flag must be true or false/],
+    [{ ...input, replace: 'yes' }, /replace flag must be true or false/],
   ])('refuses %j', (value, problem) => {
     expect(validateExpertAnswerInput(value)).toMatch(problem)
   })

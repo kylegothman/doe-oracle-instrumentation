@@ -9,7 +9,7 @@ import {
   type SaveExpertResult,
 } from '../../shared/expert-entry'
 import { isResponseSource, type Expert, type ExpertResponse } from '../../shared/experts'
-import type { MetricsRepository } from '../data/metrics-repository'
+import { ActiveAnswerExistsError, type MetricsRepository } from '../data/metrics-repository'
 import type { QuestionBank } from './question-bank'
 import type { SessionManager } from './session-manager'
 
@@ -97,6 +97,12 @@ export class ExpertRecordService {
    * Saves the expert's answer to one question, in the current session. The
    * text is stored as pasted apart from blank lines at its very start and
    * end; keywords stay empty.
+   *
+   * A question that already has an answer is only replaced when
+   * input.replace is true: the new answer becomes the active one and the
+   * old one is kept as superseded, never overwritten. Without it nothing
+   * is saved and the existing answer comes back, for the page to show
+   * before it asks (story #43).
    */
   saveAnswer(input: ExpertAnswerInput): SaveExpertAnswerResult {
     if (!this.options.repository.getExpert(input.expertId)) {
@@ -109,14 +115,22 @@ export class ExpertRecordService {
     const answerText = trimBlankLines(input.answerText)
     if (answerText.trim() === '') return invalid('answerText', 'Answer is empty. Paste or type the expert\'s answer.')
 
-    const { saved } = this.options.repository.saveExpertResponse({
-      expertId: input.expertId,
-      sessionId: this.options.session.getCurrentSession().sessionId,
-      questionNumber: input.questionNumber,
-      answerText,
-      recordedAt: new Date((this.options.now ?? Date.now)()).toISOString(),
-    })
-    return { status: 'SAVED', saved }
+    try {
+      const { saved, superseded } = this.options.repository.saveExpertResponse(
+        {
+          expertId: input.expertId,
+          sessionId: this.options.session.getCurrentSession().sessionId,
+          questionNumber: input.questionNumber,
+          answerText,
+          recordedAt: new Date((this.options.now ?? Date.now)()).toISOString(),
+        },
+        { replace: input.replace },
+      )
+      return { status: 'SAVED', saved, superseded }
+    } catch (error) {
+      if (error instanceof ActiveAnswerExistsError) return { status: 'ANSWER_EXISTS', existing: error.existing }
+      throw error
+    }
   }
 }
 

@@ -46,6 +46,7 @@ function answerInput(overrides: Partial<ExpertAnswerInput> = {}): ExpertAnswerIn
     expertId: 'expert-1',
     questionNumber: 1,
     answerText: 'Combinatorial testing covers interactions among factors.',
+    replace: false,
     ...overrides,
   }
 }
@@ -214,7 +215,7 @@ describe('ExpertRecordService: answers', () => {
       recordedAt: '2026-11-20T16:30:00.123Z',
       supersededBy: null,
     }
-    expect(result).toEqual({ status: 'SAVED', saved })
+    expect(result).toEqual({ status: 'SAVED', saved, superseded: null })
     expect(service.listAnswers('expert-1')).toEqual([saved])
   })
 
@@ -256,6 +257,46 @@ describe('ExpertRecordService: answers', () => {
 
   it('throws for an expert that is not saved', () => {
     expect(() => service.saveAnswer(answerInput({ expertId: 'gone' }))).toThrow(/Expert gone is not saved/)
+  })
+
+  it('saves nothing and returns the existing answer when the question already has one', () => {
+    const first = service.saveAnswer(answerInput({ questionNumber: 4, answerText: 'The first answer.' }))
+
+    const second = service.saveAnswer(answerInput({ questionNumber: 4, answerText: 'A second answer.' }))
+
+    expect(second).toEqual({ status: 'ANSWER_EXISTS', existing: first.status === 'SAVED' ? first.saved : null })
+    expect(repository.listExpertResponses('expert-1', { includeSuperseded: true })).toMatchObject([{ answerText: 'The first answer.' }])
+  })
+
+  it('replaces on request: the new answer is active and the old one is kept as superseded', () => {
+    service.saveAnswer(answerInput({ questionNumber: 4, answerText: 'The first answer.' }))
+    service.saveAnswer(answerInput({ questionNumber: 5 }))
+
+    const result = service.saveAnswer(answerInput({ questionNumber: 4, answerText: '\nA second answer.\n', replace: true }))
+
+    expect(result).toMatchObject({
+      status: 'SAVED',
+      // The revised answer keeps the Test # of the one it replaces.
+      saved: { responseId: 3, testNumber: 1, questionNumber: 4, answerText: 'A second answer.', supersededBy: null },
+      superseded: { responseId: 1, testNumber: null, answerText: 'The first answer.', supersededBy: 3 },
+    })
+    expect(service.listAnswers('expert-1').map((answer) => answer.answerText)).toEqual(['A second answer.', answerInput().answerText])
+    expect(repository.listExpertResponses('expert-1', { includeSuperseded: true })).toHaveLength(3)
+  })
+
+  it('saves normally when replace is set and there is nothing to replace', () => {
+    const result = service.saveAnswer(answerInput({ replace: true }))
+
+    expect(result).toMatchObject({ status: 'SAVED', saved: { questionNumber: 1 }, superseded: null })
+  })
+
+  it('checks the new text before replacing: an empty replacement changes nothing', () => {
+    service.saveAnswer(answerInput())
+
+    const result = service.saveAnswer(answerInput({ answerText: ' \n ', replace: true }))
+
+    expect(result).toMatchObject({ status: 'INVALID', field: 'answerText' })
+    expect(repository.listExpertResponses('expert-1', { includeSuperseded: true })).toHaveLength(1)
   })
 
   it('stores the turnaround once, on the expert, and never on an answer', () => {
