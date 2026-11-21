@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ExpertAnswerField, ExpertAnswerInput } from '../../../shared/expert-entry'
 import type { Expert, ExpertResponse } from '../../../shared/experts'
 import type { Question } from '../../../shared/questions'
@@ -21,11 +21,18 @@ import {
 /** A problem with an answer: under the answer box when it is the text, otherwise in a banner. */
 type AnswerProblem = { field: ExpertAnswerField | null; message: string }
 
+/** The question's existing answer, and the new one waiting for the Researcher's decision. */
+interface ReplacePrompt {
+  existing: ExpertResponse
+  input: ExpertAnswerInput
+}
+
 /**
- * The answers card of the Expert Responses page (story #41): which of the
- * standard questions the expert has answered, and one question at a time,
- * its text and the answer box. Picking an answered question shows its saved
- * answer. A question that already has an answer is not saved over.
+ * The answers card of the Expert Responses page (stories #41 and #43): which
+ * of the standard questions the expert has answered, and one question at a
+ * time, its text and the answer box. Picking an answered question shows its
+ * saved answer. Saving over one shows the existing answer and asks first;
+ * the old answer is then kept as superseded, never overwritten.
  *
  * The page gives each expert its own card (by `key`), so drafts and the
  * picked question never carry from one expert to another.
@@ -38,7 +45,15 @@ export function ExpertAnswersCard({ expert, questions, refreshKey }: { expert: E
   const [drafts, setDrafts] = useState<Readonly<Record<number, string>>>({})
   const [problem, setProblem] = useState<AnswerProblem | null>(null)
   const [savedNote, setSavedNote] = useState<string | null>(null)
+  const [prompt, setPrompt] = useState<ReplacePrompt | null>(null)
   const [saving, setSaving] = useState(false)
+  const promptBox = useRef<HTMLDivElement>(null)
+
+  // The question is asked below the answer box, which may be below the window's edge: bring it into view.
+  const asking = prompt !== null
+  useEffect(() => {
+    if (asking) promptBox.current?.scrollIntoView({ block: 'nearest' })
+  }, [asking])
 
   useEffect(() => {
     let cancelled = false
@@ -62,8 +77,8 @@ export function ExpertAnswersCard({ expert, questions, refreshKey }: { expert: E
   const saved = answerTo(answerList, questionNumber)
   const draft = drafts[questionNumber] ?? saved?.answerText ?? ''
   const state = draftState(draft, saved)
-  // Nothing can be entered until the questions and the saved answers are both on screen.
-  const locked = answers.status !== 'ready' || questions.length === 0 || saving
+  // Nothing can be entered until the questions and the saved answers are both on screen, or while a decision is pending.
+  const locked = answers.status !== 'ready' || questions.length === 0 || saving || prompt !== null
 
   const pickQuestion = (number: number) => {
     setPickedQuestion(number)
@@ -80,14 +95,16 @@ export function ExpertAnswersCard({ expert, questions, refreshKey }: { expert: E
       .then((result) => {
         switch (result.status) {
           case 'INVALID':
+            setPrompt(null)
             setProblem(result)
             return
           case 'ANSWER_EXISTS':
-            // Show what the database holds; it is not replaced.
+            // Show what the database holds, which is what would be replaced.
             setAnswers({ status: 'ready', value: withSavedAnswer(answerList, result.existing) })
-            setProblem({ field: 'answerText', message: `Question ${input.questionNumber} already has an answer. It was not replaced.` })
+            setPrompt({ existing: result.existing, input })
             return
           case 'SAVED':
+            setPrompt(null)
             setAnswers({ status: 'ready', value: withSavedAnswer(answerList, result.saved) })
             // The box now shows the answer as it was stored.
             setDrafts((current) => Object.fromEntries(Object.entries(current).filter(([number]) => Number(number) !== input.questionNumber)))
@@ -100,7 +117,10 @@ export function ExpertAnswersCard({ expert, questions, refreshKey }: { expert: E
             return
         }
       })
-      .catch((error: unknown) => setProblem({ field: null, message: describeError(error) }))
+      .catch((error: unknown) => {
+        setPrompt(null)
+        setProblem({ field: null, message: describeError(error) })
+      })
       .finally(() => setSaving(false))
   }
 
@@ -186,21 +206,45 @@ export function ExpertAnswersCard({ expert, questions, refreshKey }: { expert: E
         </Banner>
       )}
       {savedNote && <Banner tone="success" title={savedNote} testId="expert-answer-saved" />}
-      <div className="actions actions-split">
-        <p className="caption" data-testid="expert-answer-note">
-          {saved ? `${draftNote(state)} Saved ${localDateTime(saved.recordedAt)}, Test # ${saved.testNumber ?? '—'}.` : draftNote(state)}
-        </p>
-        <button
-          type="button"
-          className="button"
-          onClick={() => save({ expertId: expert.expertId, questionNumber, answerText: draft, replace: false })}
-          // An empty box can still be tried, so the page says the answer is empty; the saved answer unchanged has nothing to save.
-          disabled={locked || state === 'saved'}
-          data-testid="expert-answer-save"
-        >
-          {saving ? 'Saving…' : 'Save Answer'}
-        </button>
-      </div>
+      {prompt ? (
+        <div ref={promptBox}>
+          <Banner tone="warning" title={`Question ${prompt.input.questionNumber} already has an answer`} testId="expert-replace-prompt">
+            <p>
+              Saved {localDateTime(prompt.existing.recordedAt)}. Replace it with the answer in the box above? The existing answer is kept as
+              superseded and is left out of exports.
+            </p>
+            <Panel label="Existing answer">
+              <p className="panel-text answer-text" data-testid="expert-existing-answer">
+                {prompt.existing.answerText}
+              </p>
+            </Panel>
+            <div className="actions">
+              <button type="button" className="button button-secondary" onClick={() => setPrompt(null)} disabled={saving} data-testid="expert-replace-cancel">
+                Cancel
+              </button>
+              <button type="button" className="button" onClick={() => save({ ...prompt.input, replace: true })} disabled={saving} data-testid="expert-replace-confirm">
+                {saving ? 'Replacing…' : 'Replace Answer'}
+              </button>
+            </div>
+          </Banner>
+        </div>
+      ) : (
+        <div className="actions actions-split">
+          <p className="caption" data-testid="expert-answer-note">
+            {saved ? `${draftNote(state)} Saved ${localDateTime(saved.recordedAt)}, Test # ${saved.testNumber ?? '—'}.` : draftNote(state)}
+          </p>
+          <button
+            type="button"
+            className="button"
+            onClick={() => save({ expertId: expert.expertId, questionNumber, answerText: draft, replace: false })}
+            // An empty box can still be tried, so the page says the answer is empty; the saved answer unchanged has nothing to save.
+            disabled={locked || state === 'saved'}
+            data-testid="expert-answer-save"
+          >
+            {saving ? 'Saving…' : 'Save Answer'}
+          </button>
+        </div>
+      )}
     </Card>
   )
 }

@@ -270,8 +270,8 @@ export function withSavedAnswer(answers: readonly ExpertResponse[], saved: Exper
  * Where the text in the answer box stands against what is saved:
  * `empty` (nothing typed, nothing saved), `new` (text for an open
  * question), `saved` (the saved answer, unchanged), or `changed` (differs
- * from the saved answer). Blank lines at the ends do not count as a
- * change, since they are not stored.
+ * from the saved answer, so saving asks before replacing). Blank lines at
+ * the ends do not count as a change, since they are not stored.
  */
 export type DraftState = 'empty' | 'new' | 'saved' | 'changed'
 
@@ -288,9 +288,9 @@ export function draftNote(state: DraftState): string {
     case 'new':
       return 'Not saved yet.'
     case 'saved':
-      return 'This is the saved answer.'
+      return 'This is the saved answer. Edit it to replace it.'
     case 'changed':
-      return 'Differs from the saved answer.'
+      return 'Differs from the saved answer. Saving asks before replacing it.'
   }
 }
 

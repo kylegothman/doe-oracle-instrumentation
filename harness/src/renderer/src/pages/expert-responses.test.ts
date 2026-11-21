@@ -364,6 +364,6 @@ describe('answers', () => {
     expect(draftNote('empty')).toMatch(/No answer saved/)
     expect(draftNote('new')).toMatch(/Not saved yet/)
     expect(draftNote('saved')).toMatch(/saved answer/)
-    expect(draftNote('changed')).toMatch(/Differs from the saved answer/)
+    expect(draftNote('changed')).toMatch(/asks before replacing/)
   })
 })
