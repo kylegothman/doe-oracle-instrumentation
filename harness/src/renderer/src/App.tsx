@@ -24,9 +24,12 @@ export function App() {
   const [active, setActiveState] = useState<PageId>('console')
   // How many times Export was opened: it re-reads its sessions and count on each visit.
   const [exportVisits, setExportVisits] = useState(0)
+  // The same for Expert Responses: it re-reads the experts and their answers, which a retried save may have added.
+  const [expertVisits, setExpertVisits] = useState(0)
 
   const setActive = (page: PageId) => {
     if (page === 'export' && active !== 'export') setExportVisits((visits) => visits + 1)
+    if (page === 'expert' && active !== 'expert') setExpertVisits((visits) => visits + 1)
     setActiveState(page)
   }
 
@@ -73,7 +76,7 @@ export function App() {
           <TestConsolePage />
         </section>
         <section id="page-expert" role="tabpanel" aria-labelledby="tab-expert" hidden={active !== 'expert'}>
-          <ExpertResponsesPage />
+          <ExpertResponsesPage refreshKey={expertVisits} />
         </section>
         <section id="page-export" role="tabpanel" aria-labelledby="tab-export" hidden={active !== 'export'}>
           <ExportPage refreshKey={exportVisits} />

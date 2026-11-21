@@ -845,3 +845,24 @@ fieldset.field > legend {
   text-align: right;
   white-space: nowrap;
 }
+
+/* Expert Responses: a field's error and the turnaround */
+
+.field-error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--danger-text);
+}
+
+.control[aria-invalid='true'] {
+  border-color: var(--danger-border);
+}
+
+.turnaround {
+  margin: 0;
+  padding: var(--space-6) 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
