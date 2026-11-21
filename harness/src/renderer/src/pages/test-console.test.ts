@@ -6,6 +6,7 @@ import {
   adjustedEndMs,
   answerFoundTime,
   answerPreview,
+  copyStep,
   noAnswerMessage,
   savedResultsText,
   searchTimes,
@@ -142,6 +143,32 @@ describe('questionLabel and questionLine', () => {
   it('falls back to the number when the text is not known', () => {
     expect(questionLine(5, questions)).toBe('Q5')
   })
+
+  it('cuts a long question at a word in the dropdown, and keeps it whole on the trial cards', () => {
+    const long = {
+      number: 9,
+      text: 'If a system has 4 parameters with 3 values each, how many tests does exhaustive testing need, compared to pairwise testing?',
+    }
+
+    expect(questionLabel(long)).toBe('Q9 · If a system has 4 parameters with 3 values each, how many tests does…')
+    expect(questionLine(9, [long])).toBe(`Q9 · ${long.text}`)
+  })
+
+  it('keeps a word that ends exactly at the limit, and drops punctuation left before the ellipsis', () => {
+    const seventy = `${'word '.repeat(13)}words`
+    expect(seventy).toHaveLength(70)
+    expect(questionLabel({ number: 2, text: `${seventy} and more` })).toBe(`Q2 · ${seventy}…`)
+    expect(questionLabel({ number: 3, text: `${'word '.repeat(13)}word, and then some more text` })).toBe(`Q3 · ${'word '.repeat(13)}word…`)
+  })
+
+  it('leaves a question of 70 characters or fewer as it is', () => {
+    const text = 'Why does combinatorial testing guarantee that all faults are found?'
+    expect(questionLabel({ number: 10, text })).toBe(`Q10 · ${text}`)
+  })
+
+  it('cuts a single word longer than the limit at the limit', () => {
+    expect(questionLabel({ number: 1, text: 'x'.repeat(80) })).toBe(`Q1 · ${'x'.repeat(70)}…`)
+  })
 })
 
 describe('trialSteps', () => {
@@ -194,6 +221,52 @@ describe('timerCaption', () => {
 
   it('draws no bar before the limits are known', () => {
     expect(timerCaption(undefined, false)).toEqual({ text: 'since the trial started', showProgress: false })
+  })
+})
+
+describe('the copy step, after an Answer Found whose highlight could not be read', () => {
+  const beginMs = 1_000_000
+  const copying = event(Subject.GOOGLE, 'awaiting_copied_text', 40_000, {
+    beginMs,
+    endMs: beginMs + 812,
+    answerFoundMs: beginMs + 38_400,
+    sourceUrl: 'https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=50944',
+  })
+
+  it('shows the page load, the time to answer of the Answer Found click, and the page the text comes from', () => {
+    expect(copyStep(copying)).toEqual({
+      pageLoadMs: 812,
+      timeToAnswerMs: 38_400,
+      sourceUrl: 'https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=50944',
+    })
+  })
+
+  it('is not shown for any other status, and stops the searching time', () => {
+    expect(copyStep(event(Subject.GOOGLE, 'awaiting_confirmation', 1, { beginMs, endMs: beginMs + 812 }))).toBeNull()
+    expect(copyStep(undefined)).toBeNull()
+    expect(searchTimes(copying, googleLimit, beginMs + 90_000)).toBeNull()
+  })
+
+  it('shows dashes for times the event does not carry', () => {
+    expect(copyStep(event(Subject.GOOGLE, 'awaiting_copied_text', 1))).toEqual({ pageLoadMs: null, timeToAnswerMs: null, sourceUrl: null })
+  })
+
+  it('tells the Tester to copy the text and that nothing is timed', () => {
+    const banner = waitingBanner(copying, googleLimit)
+    expect(banner?.title).toBe('The highlighted text could not be read')
+    expect(banner?.message).toMatch(/copy the highlighted text \(Ctrl\+C, or Cmd\+C on a Mac\), then click Use Copied Text/)
+    expect(banner?.message).toMatch(/no time limit on this step/)
+  })
+
+  it("keeps Google's four steps checked off", () => {
+    const events = [
+      event(Subject.GOOGLE, 'started', 0),
+      event(Subject.GOOGLE, 'awaiting_submit', 900),
+      event(Subject.GOOGLE, 'first_response', 1_200),
+      event(Subject.GOOGLE, 'awaiting_confirmation', 1_900, { beginMs, endMs: beginMs + 812 }),
+      copying,
+    ]
+    expect(trialSteps(Subject.GOOGLE, events).map((step) => step.state)).toEqual(['done', 'done', 'done', 'done'])
   })
 })
 

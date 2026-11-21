@@ -9,7 +9,8 @@ import type { TrialEvent } from '../../shared/trials'
  * - idle: no trial has run in this window yet;
  * - running: a trial is under way, from `started` until it ends;
  * - searching: Google's results have loaded and the Tester is looking for
- *   the answer (design screen 03); the time counts from their Enter;
+ *   the answer (design screen 03); the time counts from their Enter, and
+ *   stops at Answer Found if they then have to copy the text;
  * - ready: the last trial ended (saved, failed, cancelled, or aborted) and
  *   the harness can run the next one.
  */
@@ -52,6 +53,12 @@ export function nextBarState(event: TrialEvent, receivedAt: number): BarState {
       // is the measured response, not the time since the trial started.
       const measured = event.beginMs !== undefined && event.endMs !== undefined ? event.endMs - event.beginMs : event.elapsedMs
       return { phase: 'running', ...trial, elapsedMs: measured, anchorAt: null }
+    }
+    case 'awaiting_copied_text': {
+      // Answer Found was clicked and the Tester is copying the text the
+      // harness could not read: the time to answer is fixed at that click.
+      const toAnswer = event.beginMs !== undefined && event.answerFoundMs !== undefined ? event.answerFoundMs - event.beginMs : event.elapsedMs
+      return { phase: 'searching', ...trial, elapsedMs: Math.max(0, toAnswer), anchorAt: null }
     }
     case 'completed':
     case 'failed':

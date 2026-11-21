@@ -35,6 +35,14 @@ export interface CapturedAnswer {
    * source is saved with the trial.
    */
   sourceUrl?: string
+  /**
+   * Google only: the Tester was on a page they opened from a result, and no
+   * highlight could be read from it or from any other tab of the trial
+   * (Chromium's PDF viewer has no selection the harness can read). `text`
+   * is empty and `sourceUrl` is that page. The controller does not save
+   * such an answer: it asks the Tester to copy the highlighted text instead.
+   */
+  unreadable?: true
 }
 
 /**
@@ -60,7 +68,8 @@ export interface CapturedAnswer {
  *   finishing loading.
  * - captureAnswer() reads the answer as shown. An empty text is allowed;
  *   the controller records it as EMPTY_ANSWER. For Google it is called once
- *   the Tester has clicked Answer Found (#37).
+ *   the Tester has clicked Answer Found (#37), and an answer marked
+ *   `unreadable` is not saved: the Tester copies the text instead.
  * - onFailure(handler) registers the one handler the adapter calls as soon
  *   as it observes a failure: an error status, a request or page load that
  *   failed, an empty answer. The controller registers it before each

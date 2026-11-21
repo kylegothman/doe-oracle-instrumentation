@@ -67,6 +67,7 @@ export interface IpcContracts {
   'trial:confirm': { args: [trialId: string, endMs?: number]; result: void }
   'trial:cancel': { args: [trialId: string]; result: void }
   'trial:no-answer': { args: [trialId: string]; result: void }
+  'trial:read-copied-text': { args: [trialId: string]; result: string }
   'trials:list': { args: [sessionId?: string]; result: Trial[] }
   'copilot:open-sign-in': { args: []; result: CopilotSignInStatus }
   'errors:list': { args: []; result: FailedWriteSummary[] }
@@ -91,6 +92,7 @@ export const IpcChannels = {
   confirmCompletion: 'trial:confirm',
   cancelTrial: 'trial:cancel',
   reportNoAnswer: 'trial:no-answer',
+  readCopiedText: 'trial:read-copied-text',
   listTrials: 'trials:list',
   openCopilotSignIn: 'copilot:open-sign-in',
   listFailedWrites: 'errors:list',
@@ -141,6 +143,9 @@ export interface HarnessApi {
    * detected end or replacing it with endMs (epoch milliseconds). The trial
    * is then captured and saved; startTrial's promise delivers the record.
    * For Google this is Answer Found: call it without endMs, which is refused.
+   * When the highlight cannot be read the trial goes on to awaiting copied
+   * text instead of being saved, and the same call then confirms the text
+   * readCopiedText returned.
    */
   confirmCompletion(trialId: string, endMs?: number): Promise<void>
   /** Ends the running trial without saving it. startTrial's promise then rejects. */
@@ -151,6 +156,14 @@ export interface HarnessApi {
    * result and not a failure; startTrial's promise delivers the record.
    */
   reportNoAnswer(trialId: string): Promise<void>
+  /**
+   * Use Copied Text, for a Google trial that is awaiting copied text: the
+   * main process reads the system clipboard and resolves with its text for
+   * the Tester to check; an empty string means it held none. Nothing is
+   * saved until confirmCompletion, which saves exactly the text returned
+   * here.
+   */
+  readCopiedText(trialId: string): Promise<string>
   /** Lists saved trials, newest first, for one session or for all sessions. */
   listTrials(sessionId?: string): Promise<Trial[]>
   /**

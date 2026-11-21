@@ -79,6 +79,8 @@ The question never travels as an HTTP request: it goes over a SignalR WebSocket 
 
 Most reliable begin: the input clearing, confirmed within about 2 seconds by the Stop button or the request frame. An input that clears with neither following is the Tester deleting the text, not a submit.
 
+Changed after the practice run of 2026-11-20 (issue #76), where sends the Tester made normally were aborted as "removed from the input without being sent": the window is now 10 seconds (`copilot.submitConfirmMs`), the new Copilot message or its reply also confirms a send, a clear is discarded when the typed question is back in the editor before any send signal, and the editor element being out of the page is no longer read as a clear. Begin is still the input clearing.
+
 ### Streaming and the end of the stream
 
 - About 0.3 s after submit: an "EarlyProgress" frame ("Putting it together…") and the loading state in the new article.

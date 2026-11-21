@@ -75,6 +75,10 @@ type WatchMode = 'submit' | 'confirm' | 'first' | 'completion'
 type WatchResult =
   | { at: number; empty?: true }
   | { edited: string }
+  /** The clear being confirmed was discarded: the typed question is back in the editor and nothing was sent. */
+  | { restored: true }
+  /** A send signal showed, but the editor was never seen to clear, so there is no begin to record. */
+  | { untimed: true }
   | { error: string; at: number }
   | { offline: number }
   | { cancelled: true }
@@ -108,6 +112,8 @@ interface ActiveTrial {
   submitted: boolean
   /** True once the stream is over: socket events after that no longer concern the answer. */
   finished: boolean
+  /** How many discarded clears of this trial have been logged. */
+  discardsLogged: number
   before: WatchCounts
   socket: SocketWatch | null
   /** Rejects with AdapterDisposedError when dispose() runs, so pending waits settle at once. */
@@ -126,10 +132,14 @@ interface ActiveTrial {
  * the page's own clock:
  * - begin: the editor clearing, which Copilot does as it sends (14 ms before
  *   its own request stamp in the spike). It only counts once something
- *   confirms a send followed: the Stop button, the new message, or the
- *   request frame on the ChatHub socket (stamped in the main process). An
- *   editor that clears with none of those is the Tester deleting the text,
- *   and the trial is aborted;
+ *   confirms a send followed, within submitConfirmMs: the Stop button, a
+ *   new message, the new reply, or the request frame on the ChatHub socket
+ *   (stamped in the main process). An editor that clears with none of those
+ *   is the Tester deleting the text, and the trial is aborted. A clear is
+ *   discarded, and logged, when the typed question is back in the editor
+ *   before any of them: begin is the clear the send followed, never an
+ *   earlier one. The editor element being absent for a moment is not a
+ *   clear;
  * - first response: the first text in the new answer;
  * - end: the last change to that text. The stream is over when a finished
  *   marker shows (the Stop button reverting to Send, the actions toolbar)
@@ -371,47 +381,106 @@ export class CopilotAdapter implements SubjectAdapter {
 
   /**
    * Waits for the Tester's Enter: the editor clearing, then a confirming
-   * send signal within submitConfirmMs. Text changed before the send, or
-   * cleared with no send following, aborts the trial.
+   * send signal within submitConfirmMs. Resolves with the clear the send
+   * followed. Text changed before the send, or cleared with no send
+   * following, aborts the trial. A clear that was discarded, because the
+   * typed question came back with nothing sent, puts the wait back where it
+   * was, inside the same submit wait.
    */
   private async waitForTesterSubmit(trial: ActiveTrial, page: Page): Promise<number> {
-    let result: WatchResult
+    const deadline = Date.now() + this.submitWaitMs
     try {
-      result = await this.watch(page, 'submit', this.submitWaitMs)
-    } catch (error) {
-      if (error instanceof WatchTimeoutError) {
-        throw new CopilotSubmitTimeoutError(
-          `The question was not sent within ${seconds(this.submitWaitMs)}: no Enter in the Copilot window. The trial was aborted; run it again when ready.`,
-        )
+      for (;;) {
+        let result: WatchResult
+        try {
+          result = await this.watch(page, 'submit', Math.max(1, deadline - Date.now()))
+        } catch (error) {
+          if (error instanceof WatchTimeoutError) {
+            throw new CopilotSubmitTimeoutError(
+              `The question was not sent within ${seconds(this.submitWaitMs)}: no Enter in the Copilot window. The trial was aborted; run it again when ready.`,
+            )
+          }
+          throw error
+        }
+        this.rejectUnsent(result)
+        const clearedAt = this.timestampOf(result, 'before the question was sent')
+        const begin = await this.confirmSubmit(trial, page, clearedAt)
+        if (begin === 'restored') {
+          await this.logDiscardedClears(trial, page)
+          continue
+        }
+        if (begin === null) {
+          throw new CopilotAnswerError(
+            'The question was removed from the Copilot input without being sent. The trial was aborted; run it again. ' +
+              `(Nothing showed a send within ${seconds(this.submitConfirmMs)} of the input clearing: no Stop button, no new message, no reply, and no request on Copilot's connection.)`,
+          )
+        }
+        return begin
       }
-      throw error
+    } finally {
+      await this.logDiscardedClears(trial, page)
     }
+  }
+
+  /**
+   * What follows the editor clearing, within submitConfirmMs:
+   * - a send signal: resolves with the clear it followed, which is begin;
+   * - the typed question back in the editor with nothing sent: 'restored';
+   * - nothing: null, the Tester deleted the text.
+   */
+  private async confirmSubmit(trial: ActiveTrial, page: Page, clearedAt: number): Promise<number | 'restored' | null> {
+    if (trial.socket?.requestSentAt !== null && trial.socket?.requestSentAt !== undefined) return clearedAt
+    const fromPage = this.watch(page, 'confirm', this.submitConfirmMs).then(
+      (result): number | 'restored' => {
+        if ('restored' in result) return 'restored'
+        this.rejectUnsent(result)
+        // An error or the offline screen in place of a send signal: the send was tried, and the next step reports it.
+        return 'at' in result && !('error' in result) ? result.at : clearedAt
+      },
+      (error: unknown) => {
+        if (error instanceof WatchTimeoutError) return null
+        throw error
+      },
+    )
+    // Whichever loses the race keeps running until it settles; its rejection is not an error.
+    fromPage.catch(() => {})
+    const fromSocket = trial.socket ? trial.socket.requestSent.then(() => clearedAt) : new Promise<number>(() => {})
+    return Promise.race([fromPage, fromSocket])
+  }
+
+  /** Aborts the trial for what cannot be timed as a send: the text was changed, or a send showed with no clear seen. */
+  private rejectUnsent(result: WatchResult): void {
     if ('edited' in result) {
       throw new CopilotAnswerError(
         `The question in the Copilot input was changed before it was sent (it now reads "${result.edited}"). The trial was aborted; run it again.`,
       )
     }
-    const clearedAt = this.timestampOf(result, 'before the question was sent')
-    if (!(await this.confirmSubmit(trial, page))) {
+    if ('untimed' in result) {
       throw new CopilotAnswerError(
-        'The question was removed from the Copilot input without being sent. The trial was aborted; run it again.',
+        'Copilot started on an answer, but the harness never saw the input clear, so the send could not be timed. The trial was aborted and nothing was saved; run it again.',
       )
     }
-    return clearedAt
   }
 
-  /** True when a send signal follows the editor clearing within submitConfirmMs. */
-  private async confirmSubmit(trial: ActiveTrial, page: Page): Promise<boolean> {
-    if (trial.socket?.requestSentAt !== null && trial.socket?.requestSentAt !== undefined) return true
-    const fromPage = this.watch(page, 'confirm', this.submitConfirmMs).then(
-      () => true,
-      (error: unknown) => {
-        if (error instanceof WatchTimeoutError) return false
-        throw error
-      },
-    )
-    const fromSocket = trial.socket ? trial.socket.requestSent.then(() => true) : new Promise<boolean>(() => {})
-    return Promise.race([fromPage, fromSocket])
+  /**
+   * Writes one log line for each clear the page's watch discarded since the
+   * last call, so how often that happens can be counted from the log. Never
+   * throws, and gives up after a moment if the page does not respond.
+   */
+  private async logDiscardedClears(trial: ActiveTrial, page: Page): Promise<void> {
+    if (page.isClosed()) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const gaveUp = new Promise<number>((resolve) => {
+      timer = setTimeout(() => resolve(0), CANCEL_WATCH_TIMEOUT_MS)
+    })
+    const read = page.evaluate(() => window.__copilotWatch?.discardedClears ?? 0).catch(() => 0)
+    const discarded = await Promise.race([read, gaveUp]).finally(() => clearTimeout(timer))
+    for (let nth = trial.discardsLogged + 1; nth <= discarded; nth += 1) {
+      console.warn(
+        `[copilot] Discarded a clear of the Copilot input: the typed question was back before anything showed a send (${nth} in this trial).`,
+      )
+    }
+    trial.discardsLogged = Math.max(trial.discardsLogged, discarded)
   }
 
   /** A timestamp result, or the error/offline outcome turned into a failure of the trial. */
@@ -587,6 +656,7 @@ function newActiveTrial(): ActiveTrial {
     page: null,
     submitted: false,
     finished: false,
+    discardsLogged: 0,
     before: { messagesBefore: 0, repliesBefore: 0, botMessagesBefore: 0, alertTextsBefore: [] },
     socket: null,
     disposed,
@@ -610,12 +680,25 @@ function countBefore(selectors: WatchSelectors): WatchCounts {
 }
 
 /**
- * Reads the new answer as shown. Runs inside the page. The reply is cloned
- * into the document, so innerText keeps its line breaks, with the inline
- * citation buttons removed; the citation titles come from the buttons'
- * labels, "Citation: <provider> — <title>", with any " plus N more" dropped.
+ * Reads the new answer as shown. Runs inside the page, so it must not use
+ * anything from this module. The reply is cloned into the document, so
+ * innerText keeps its line breaks, with the inline citation buttons
+ * removed; the citation titles come from the buttons' labels,
+ * "Citation: <provider> — <title>", with any " plus N more" dropped.
+ *
+ * Math is rendered by KaTeX as two copies of the expression: MathML, clipped
+ * out of sight but still text, and a visible copy that stacks its parts in
+ * boxes. Read as it stands, innerText gives one symbol per line and the
+ * expression twice ("3\n4\n=\n81\n3\n4\n=81" for 3^4 = 81, test #49 of the
+ * practice run). So each rendered expression in the clone is replaced with
+ * one line of text before it is read: its TeX source, which KaTeX keeps in
+ * an annotation, or the MathML copy's text when there is none. Inline math
+ * stays in its sentence; display math keeps a line of its own. A reply with
+ * no math is not touched.
+ *
+ * Exported for its tests only.
  */
-function readAnswer(args: {
+export function readAnswer(args: {
   reply: string
   botMessage: string
   citation: string
@@ -627,6 +710,31 @@ function readAnswer(args: {
   if (reply instanceof HTMLElement) {
     const clone = reply.cloneNode(true) as HTMLElement
     clone.querySelectorAll(args.citation).forEach((button) => button.remove())
+    const onOneLine = (math: Element): string => {
+      const tex = math.querySelector('annotation[encoding="application/x-tex"]')?.textContent ?? ''
+      if (tex.trim() !== '') return tex.replace(/\s+/g, ' ').trim()
+      // No TeX source: one copy of the expression, the MathML one where there is one, without any other annotation.
+      const copy = (math.matches('math') ? math : (math.querySelector('math') ?? math)).cloneNode(true) as Element
+      copy.querySelectorAll('annotation, annotation-xml').forEach((annotation) => annotation.remove())
+      return (copy.textContent ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim()
+    }
+    // Outermost first, so the copies inside an expression are gone before the selectors that would match them run.
+    clone.querySelectorAll('.katex-display').forEach((display) => {
+      const line = document.createElement('div')
+      line.textContent = onOneLine(display)
+      display.replaceWith(line)
+    })
+    clone.querySelectorAll('.katex, math').forEach((math) => {
+      // Already replaced along with an expression that contained it.
+      if (!clone.contains(math)) return
+      if (math.matches('math[display="block"]')) {
+        const line = document.createElement('div')
+        line.textContent = onOneLine(math)
+        math.replaceWith(line)
+      } else {
+        math.replaceWith(document.createTextNode(onOneLine(math)))
+      }
+    })
     clone.style.position = 'absolute'
     clone.style.left = '-99999px'
     clone.style.width = `${Math.max(reply.clientWidth, 320)}px`
@@ -661,11 +769,13 @@ function installWatch(args: WatchArgs): void {
   const state: CopilotWatchState = {
     typedText: args.typedText,
     clearedAt: null,
+    discardedClears: 0,
     editedAt: null,
     editedText: null,
     stopSeenAt: null,
     stopGoneAt: null,
     newMessageAt: null,
+    replySeenAt: null,
     firstTextAt: null,
     lastChangeAt: null,
     lastText: '',
@@ -681,15 +791,6 @@ function installWatch(args: WatchArgs): void {
   const check = (): void => {
     if (state.cancelled) return
     const now = Date.now()
-    const editor = document.querySelector(args.input)
-    const text = editor instanceof HTMLElement ? strip(editor.innerText) : ''
-    if (state.clearedAt === null) {
-      if (text === '') state.clearedAt = now
-      else if (text !== state.typedText && state.editedAt === null) {
-        state.editedAt = now
-        state.editedText = text
-      }
-    }
     const stop = document.querySelector(args.stopButton)
     if (stop && state.stopSeenAt === null) state.stopSeenAt = now
     if (!stop && state.stopSeenAt !== null && state.stopGoneAt === null) state.stopGoneAt = now
@@ -697,6 +798,32 @@ function installWatch(args: WatchArgs): void {
       state.newMessageAt = now
     }
     const reply = document.querySelectorAll(args.reply)[args.repliesBefore]
+    if (state.replySeenAt === null && (reply || document.querySelectorAll(args.botMessage).length > args.botMessagesBefore)) {
+      state.replySeenAt = now
+    }
+    // The editor is read after the send signals, so a clear and its signal seen in one pass belong together.
+    const sent = state.stopSeenAt !== null || state.newMessageAt !== null || state.replySeenAt !== null
+    const editor = document.querySelector(args.input)
+    // An editor that is not in the page right now says nothing: only one that is there and empty has cleared.
+    if (editor instanceof HTMLElement) {
+      const text = strip(editor.innerText)
+      if (state.clearedAt === null) {
+        if (text === '') state.clearedAt = now
+        else if (text !== state.typedText && state.editedAt === null) {
+          state.editedAt = now
+          state.editedText = text
+        }
+      } else if (!sent && text !== '') {
+        if (text === state.typedText) {
+          // The question is back and nothing was sent: that clear was not the send.
+          state.clearedAt = null
+          state.discardedClears += 1
+        } else if (state.editedAt === null) {
+          state.editedAt = now
+          state.editedText = text
+        }
+      }
+    }
     const replyText = reply instanceof HTMLElement ? reply.innerText : ''
     if (replyText !== state.lastText) {
       if (state.firstTextAt === null && strip(replyText) !== '') state.firstTextAt = now
@@ -746,14 +873,19 @@ function readWatch(args: { mode: WatchMode; quietPeriodMs: number; finishedSettl
   if (state.cancelled) return { cancelled: true }
   if (state.offlineAt !== null) return { offline: state.offlineAt }
   if (state.errorAt !== null && state.errorText !== null) return { error: state.errorText, at: state.errorAt }
+  // Anything that only a send produces: the Stop button, a new message, the new reply.
+  const sent = state.stopSeenAt !== null || state.newMessageAt !== null || state.replySeenAt !== null
   switch (args.mode) {
     case 'submit':
       if (state.editedAt !== null) return { edited: state.editedText ?? '' }
       if (state.clearedAt !== null) return { at: state.clearedAt }
+      if (sent) return { untimed: true }
       return false
     case 'confirm':
-      if (state.stopSeenAt !== null) return { at: state.stopSeenAt }
-      if (state.newMessageAt !== null) return { at: state.newMessageAt }
+      // The result is the clear the send followed, not the moment of the signal: that clear is begin.
+      if (sent) return state.clearedAt !== null ? { at: state.clearedAt } : { untimed: true }
+      if (state.editedAt !== null) return { edited: state.editedText ?? '' }
+      if (state.clearedAt === null) return { restored: true }
       return false
     case 'first': {
       if (state.firstTextAt !== null) return { at: state.firstTextAt }
@@ -831,8 +963,14 @@ type WatchArgs = WatchSelectors & WatchCounts & { typedText: string }
 /** The trial's in-page observations, all stamped with the page's clock; null until seen. */
 interface CopilotWatchState {
   typedText: string
-  /** The editor became empty: Copilot clearing it as it sends, or the Tester deleting the text. */
+  /**
+   * The editor became empty: Copilot clearing it as it sends, or the Tester
+   * deleting the text. Back to null when the typed question reappears
+   * before any send signal, so that clear is never taken for the send.
+   */
   clearedAt: number | null
+  /** How many clears were discarded that way. */
+  discardedClears: number
   /** The editor's text stopped matching the question before it was sent. */
   editedAt: number | null
   editedText: string | null
@@ -840,6 +978,8 @@ interface CopilotWatchState {
   stopGoneAt: number | null
   /** A message was added to the conversation. */
   newMessageAt: number | null
+  /** The new Copilot message, or its reply body, appeared. */
+  replySeenAt: number | null
   /** The new answer first had text. */
   firstTextAt: number | null
   /** The new answer's text last changed. */

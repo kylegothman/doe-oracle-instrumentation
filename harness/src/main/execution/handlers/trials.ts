@@ -63,6 +63,16 @@ export function createReportNoAnswerHandler(
   }
 }
 
+/** Builds the handler for `trial:read-copied-text`: reads the clipboard for a trial on the copy step. */
+export function createReadCopiedTextHandler(
+  controller: () => Promise<Pick<TrialController, 'readCopiedText'>>,
+): (trialId: string) => Promise<string> {
+  return async (trialId) => {
+    requireTrialId(trialId)
+    return (await controller()).readCopiedText(trialId)
+  }
+}
+
 function requireTrialId(trialId: unknown): void {
   if (typeof trialId !== 'string' || trialId.trim() === '') {
     throw new Error(`Trial id must be a non-empty string, got ${String(trialId)}`)

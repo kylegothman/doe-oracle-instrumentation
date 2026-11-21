@@ -10,7 +10,7 @@ import { MetricsRepository } from '../data/metrics-repository'
 import { QuestionBank } from './question-bank'
 import { SessionManager } from './session-manager'
 import { TimingService } from './timing-service'
-import { answerFoundPrompt, CONFIRM_PROMPT, TrialCancelledError, TrialController } from './trial-controller'
+import { answerFoundPrompt, CONFIRM_PROMPT, COPY_PROMPT, TrialCancelledError, TrialController } from './trial-controller'
 
 const QUESTIONS = new QuestionBank([
   { number: 1, text: 'What is combinatorial testing?' },
@@ -134,7 +134,11 @@ describe('TrialController', () => {
 
   function controllerWith(
     adapters: FakeAdapter[],
-    options: { timeouts?: Record<Subject, TrialPolicy>; repository?: Pick<MetricsRepository, 'saveTrial'> } = {},
+    options: {
+      timeouts?: Record<Subject, TrialPolicy>
+      repository?: Pick<MetricsRepository, 'saveTrial'>
+      clipboard?: { readText(): string | Promise<string> }
+    } = {},
   ) {
     return new TrialController({
       adapters: new Map(adapters.map((adapter) => [adapter.subject, adapter])),
@@ -144,6 +148,7 @@ describe('TrialController', () => {
       session: startedSession(),
       policies: options.timeouts ?? policies(),
       events: { sendTrialEvent: (event) => events.push(event) },
+      ...(options.clipboard ? { clipboard: options.clipboard } : {}),
     })
   }
 
@@ -655,6 +660,213 @@ describe('TrialController', () => {
       expect(repository.listTrials()).toEqual([])
       expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'dispose'])
       expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'cancelled'])
+    })
+
+    describe('a highlight the harness cannot read, as inside a PDF', () => {
+      const limited = () => policies({ [Subject.GOOGLE]: { timeoutMs: 10_000, answerFound: true, answerLimitMs: 120_000 } })
+      const PDF_URL = 'https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=50944'
+      /** Answer Found on a PDF: no text can be read, and the adapter says so. */
+      const onPdf = () => google({ delays: { completion: 1_900 }, answer: { text: '', citations: [], sourceUrl: PDF_URL, unreadable: true } })
+      /** A clipboard holding whatever the test last "copied". */
+      const clipboardWith = (text: string) => {
+        const board = { text, reads: 0, readText: async () => ((board.reads += 1), board.text) }
+        return board
+      }
+
+      /** Runs a trial to the copy step: results at 1.9 s, Answer Found 21.9 s in, 20.9 s after the Tester's Enter. */
+      async function onCopyStep(clipboard = clipboardWith('IPOG builds a covering array one parameter at a time.')) {
+        const adapter = onPdf()
+        const controller = controllerWith([adapter], { timeouts: limited(), clipboard })
+        const pending = controller.startTrial(Subject.GOOGLE, 1)
+        const outcome = pending.catch((error: unknown) => error)
+        await vi.advanceTimersByTimeAsync(21_900)
+        const trialId = controller.runningTrialId!
+        await controller.confirmCompletion(trialId)
+        return { adapter, controller, pending, outcome, trialId, clipboard }
+      }
+
+      it('does not save on Answer Found: it sends the copy step with the click, the page, and no failure', async () => {
+        const { adapter, controller, trialId, clipboard } = await onCopyStep()
+
+        expect(repository.listTrials()).toEqual([])
+        expect(controller.isReady()).toBe(false)
+        expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'capture'])
+        expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'awaiting_copied_text'])
+        expect(events.at(-1)).toEqual({
+          trialId,
+          subject: Subject.GOOGLE,
+          questionNumber: 1,
+          status: 'awaiting_copied_text',
+          elapsedMs: 21_900,
+          message: COPY_PROMPT,
+          beginMs: T0 + 1_000,
+          endMs: T0 + 1_900,
+          answerFoundMs: T0 + 21_900,
+          sourceUrl: PDF_URL,
+        })
+        // The clipboard is not touched until the Tester clicks Use Copied Text.
+        expect(clipboard.reads).toBe(0)
+        await controller.cancelTrial(trialId)
+      })
+
+      it('saves the confirmed text as a success, with the time to answer of the Answer Found click and the PDF as the source', async () => {
+        const { adapter, controller, pending, trialId } = await onCopyStep(clipboardWith('  IPOG builds a covering array\r\none parameter at a time.\r\n'))
+
+        // The Tester takes two more minutes to copy the text and check it.
+        await vi.advanceTimersByTimeAsync(60_000)
+        await expect(controller.readCopiedText(trialId)).resolves.toBe('IPOG builds a covering array\none parameter at a time.')
+        expect(repository.listTrials()).toEqual([])
+        await vi.advanceTimersByTimeAsync(60_000)
+        await controller.confirmCompletion(trialId)
+        const saved = await pending
+
+        expect(saved).toMatchObject({
+          subject: Subject.GOOGLE,
+          status: TrialStatus.SUCCESS,
+          beginTs: '2026-11-12T15:00:01.000Z',
+          endTs: '2026-11-12T15:00:01.900Z',
+          pageLoadMs: 900,
+          timeToAnswerMs: 20_900,
+          sourceUrl: PDF_URL,
+          answerText: 'IPOG builds a covering array\none parameter at a time.',
+          citations: [],
+        })
+        expect(saved.failure).toBeUndefined()
+        expect(repository.listTrials()).toEqual([saved])
+        expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'capture', 'dispose'])
+        expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'awaiting_copied_text', 'completed'])
+        expect(controller.isReady()).toBe(true)
+      })
+
+      it('lets neither the trial limit nor the answer limit fire while the Tester is on the copy step', async () => {
+        const { controller, pending, trialId } = await onCopyStep()
+
+        // Far past the 10 s trial limit and the 120 s answer limit, which would have run out at 121.9 s.
+        await vi.advanceTimersByTimeAsync(600_000)
+        expect(repository.listTrials()).toEqual([])
+        expect(statuses().at(-1)).toBe('awaiting_copied_text')
+        expect(controller.isReady()).toBe(false)
+
+        await controller.readCopiedText(trialId)
+        await controller.confirmCompletion(trialId)
+        await expect(pending).resolves.toMatchObject({ status: TrialStatus.SUCCESS, timeToAnswerMs: 20_900 })
+      })
+
+      it('keeps the Tester on the step when the clipboard has no text, and saves what they copy next', async () => {
+        const clipboard = clipboardWith('  \n\t ')
+        const { controller, pending, trialId } = await onCopyStep(clipboard)
+
+        await expect(controller.readCopiedText(trialId)).resolves.toBe('')
+        await expect(controller.confirmCompletion(trialId)).rejects.toThrow(/No copied text has been read yet/)
+        expect(repository.listTrials()).toEqual([])
+        expect(statuses().at(-1)).toBe('awaiting_copied_text')
+
+        clipboard.text = 'The passage, copied this time.'
+        await expect(controller.readCopiedText(trialId)).resolves.toBe('The passage, copied this time.')
+        // An empty read afterwards does not wipe the text the Tester was shown.
+        clipboard.text = ''
+        await expect(controller.readCopiedText(trialId)).resolves.toBe('')
+        await controller.confirmCompletion(trialId)
+        await expect(pending).resolves.toMatchObject({ status: TrialStatus.SUCCESS, answerText: 'The passage, copied this time.' })
+      })
+
+      it('saves the text read last when the Tester copies again before confirming', async () => {
+        const clipboard = clipboardWith('The wrong paragraph.')
+        const { controller, pending, trialId } = await onCopyStep(clipboard)
+
+        await controller.readCopiedText(trialId)
+        clipboard.text = 'The right paragraph.'
+        await controller.readCopiedText(trialId)
+        // What is on the clipboard at the confirm is not read again: only what the Tester was shown is saved.
+        clipboard.text = 'Something copied afterwards.'
+        await controller.confirmCompletion(trialId)
+
+        await expect(pending).resolves.toMatchObject({ answerText: 'The right paragraph.' })
+        expect(clipboard.reads).toBe(2)
+      })
+
+      it('saves NO_ANSWER_FOUND from the copy step, like any other: no answer, no time to answer, no source', async () => {
+        const { adapter, controller, pending, trialId } = await onCopyStep()
+
+        await controller.readCopiedText(trialId)
+        await controller.reportNoAnswer(trialId)
+        const saved = await pending
+
+        expect(saved).toMatchObject({
+          status: TrialStatus.NO_ANSWER_FOUND,
+          pageLoadMs: 900,
+          timeToAnswerMs: null,
+          sourceUrl: null,
+          answerText: null,
+          sizeBytes: 0,
+        })
+        expect(saved.failure).toBeUndefined()
+        expect(repository.listTrials()).toEqual([saved])
+        expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'capture', 'dispose'])
+        expect(events.at(-1)).toMatchObject({
+          status: 'completed',
+          message: 'Saved as no answer found: the Tester reported that the answer is not on the page.',
+        })
+      })
+
+      it('saves nothing when the Tester cancels on the copy step', async () => {
+        const { adapter, controller, outcome, trialId } = await onCopyStep()
+
+        await controller.readCopiedText(trialId)
+        await controller.cancelTrial(trialId)
+
+        expect(await outcome).toBeInstanceOf(TrialCancelledError)
+        expect(repository.listTrials()).toEqual([])
+        expect(adapter.calls).toEqual(['start:1', 'first', 'completion', 'capture', 'dispose'])
+        expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'awaiting_copied_text', 'cancelled'])
+        expect(controller.isReady()).toBe(true)
+      })
+
+      it('refuses to read the clipboard for a trial that is not on the copy step', async () => {
+        const clipboard = clipboardWith('Not for this trial.')
+        const controller = controllerWith([google()], { timeouts: limited(), clipboard })
+        const pending = controller.startTrial(Subject.GOOGLE, 1)
+        await vi.advanceTimersByTimeAsync(3_000)
+        const trialId = controller.runningTrialId!
+
+        await expect(controller.readCopiedText('nope')).rejects.toThrow(/Trial nope is not running/)
+        await expect(controller.readCopiedText(trialId)).rejects.toThrow(/not waiting for copied text/)
+        expect(clipboard.reads).toBe(0)
+        await controller.confirmCompletion(trialId)
+        await pending
+      })
+
+      it('refuses an adjusted end on the copy step: the time to answer is the Answer Found click', async () => {
+        const { controller, trialId } = await onCopyStep()
+
+        await controller.readCopiedText(trialId)
+        await expect(controller.confirmCompletion(trialId, T0 + 5_000)).rejects.toThrow(/cannot be adjusted/)
+        expect(repository.listTrials()).toEqual([])
+        await controller.cancelTrial(trialId)
+      })
+
+      it('saves an answer the page did give exactly as before, without a copy step', async () => {
+        const clipboard = clipboardWith('Never read.')
+        const controller = controllerWith([google({ delays: { completion: 1_900 } })], { timeouts: limited(), clipboard })
+
+        const pending = controller.startTrial(Subject.GOOGLE, 1)
+        await vi.advanceTimersByTimeAsync(21_900)
+        await controller.confirmCompletion(controller.runningTrialId!)
+        const saved = await pending
+
+        expect(saved).toMatchObject({ status: TrialStatus.SUCCESS, answerText: 'The passage.', sourceUrl: RESULT_URL, timeToAnswerMs: 20_900 })
+        expect(statuses()).toEqual(['started', 'first_response', 'awaiting_confirmation', 'completed'])
+        expect(clipboard.reads).toBe(0)
+      })
+
+      it('ignores the unreadable mark from a subject whose answer the Tester does not report', async () => {
+        const adapter = new FakeAdapter(Subject.DOE_ORACLE, { answer: { text: '', citations: [], unreadable: true } })
+        const controller = controllerWith([adapter])
+
+        const saved = await controller.startTrial(Subject.DOE_ORACLE, 1)
+
+        expect(saved).toMatchObject({ status: TrialStatus.FAILED, failure: { type: FailureType.EMPTY_ANSWER } })
+      })
     })
 
     describe('no answer', () => {

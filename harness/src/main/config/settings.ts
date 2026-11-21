@@ -119,8 +119,10 @@ export interface CopilotSettings extends CopilotProductSettings {
   submitWaitMs: number
   /**
    * After the input clears, how long to wait for a confirming signal (the
-   * Stop button, a new message, or the request frame) before treating the
-   * clearing as the Tester deleting the text rather than submitting it.
+   * Stop button, a new message, the new reply, or the request frame) before
+   * treating the clearing as the Tester deleting the text rather than
+   * submitting it. 10 seconds: at 2 seconds, sends that the Tester made
+   * normally were aborted on the practice run of 2026-11-20.
    */
   submitConfirmMs: number
 }

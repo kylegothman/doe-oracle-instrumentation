@@ -22,6 +22,11 @@ export interface TrialControllerDeps {
   policies: Record<Subject, TrialPolicy>
   /** Where status events go: the IpcRouter. */
   events: { sendTrialEvent(event: TrialEvent): void }
+  /**
+   * The system clipboard, read only when the Tester clicks Use Copied Text
+   * on the copy step. Electron's `clipboard` in the app; tests pass a fake.
+   */
+  clipboard?: { readText(): string | Promise<string> }
   /** Classifies failure signals; defaults to the standard rules. */
   detector?: FailureDetector
   /** Clock for elapsed times; defaults to Date.now. Tests use fake timers. */
@@ -54,17 +59,33 @@ export function answerFoundPrompt(answerLimitMs?: number): string {
     : `${prompt} After ${seconds(answerLimitMs)} without either, the trial is saved as no answer found.`
 }
 
-/** What a trial can wait for the Tester to do once the subject has completed. */
-type TesterStep = 'end' | 'answer'
+/**
+ * What the Tester is told when Answer Found could not read a highlight from
+ * the page they were on.
+ */
+export const COPY_PROMPT =
+  'The highlighted text could not be read from the page you opened (a PDF, for example). In the browser window, copy the highlighted text (Ctrl+C, or Cmd+C on a Mac), then click Use Copied Text. If the answer is not there after all, click No Answer Found.'
+
+/** What Use Copied Text says when the clipboard holds no text. */
+export const EMPTY_CLIPBOARD_MESSAGE =
+  'The clipboard has no text. Copy the highlighted text in the browser window, then click Use Copied Text again.'
+
+/**
+ * What a trial can wait for the Tester to do once the subject has
+ * completed: confirm the end, report the answer, or copy the highlighted
+ * text the harness could not read.
+ */
+type TesterStep = 'end' | 'answer' | 'copy'
 
 /** Why a trial was saved as NO_ANSWER_FOUND: the Tester said so, or the answer limit ran out. */
 type NoAnswerReason = 'tester' | 'limit'
 
 /**
  * What ends a wait for the Tester. `confirmed` carries the corrected end
- * for an 'end' wait and the moment of Answer Found for an 'answer' wait.
+ * for an 'end' wait, the moment of Answer Found for an 'answer' wait, and
+ * the text the Tester copied and checked for a 'copy' wait.
  */
-type TesterReport = { kind: 'confirmed'; atMs?: number } | { kind: 'no_answer'; reason: NoAnswerReason }
+type TesterReport = { kind: 'confirmed'; atMs?: number; text?: string } | { kind: 'no_answer'; reason: NoAnswerReason }
 
 /** What ended a trial early. */
 type Interruption = { kind: 'failure'; failure: TrialFailure } | { kind: 'cancel' }
@@ -87,6 +108,8 @@ class RunningTrial {
   answerFoundAtMs: number | null = null
   /** Set when the trial ends as NO_ANSWER_FOUND, with why. */
   noAnswer: NoAnswerReason | null = null
+  /** On the copy step: the clipboard text last read and shown to the Tester, which is what a confirm saves. */
+  copiedText: string | null = null
   /** True once the controller has released the trial; nothing more happens to it after that. */
   released = false
   /** The timed adapter step in flight, so its stamp can still be recorded if the trial is interrupted as it settles. */
@@ -94,6 +117,7 @@ class RunningTrial {
   private timer: ReturnType<typeof setTimeout> | null = null
   /** Set while the trial waits for the Tester: to confirm the end, or to report the answer. */
   private confirmation: { waitingFor: TesterStep; resolve: (report: TesterReport) => void } | null = null
+  private waitStarted: (() => void) | null = null
   private readonly interrupted: Promise<never>
   private rejectInterrupted: (error: TrialInterruptedError) => void = () => {}
   private resolveClosed: () => void = () => {}
@@ -140,6 +164,16 @@ class RunningTrial {
   awaitConfirmation(waitingFor: TesterStep): Promise<TesterReport> {
     return new Promise((resolve) => {
       this.confirmation = { waitingFor, resolve }
+      const started = this.waitStarted
+      this.waitStarted = null
+      started?.()
+    })
+  }
+
+  /** Resolves the next time the trial starts waiting for the Tester. */
+  nextWait(): Promise<void> {
+    return new Promise((resolve) => {
+      this.waitStarted = resolve
     })
   }
 
@@ -191,7 +225,14 @@ class RunningTrial {
  *    Answer Found), and source URL. reportNoAnswer, or the policy's
  *    answerLimitMs running out with neither call, saves the trial as
  *    NO_ANSWER_FOUND instead: a result, not a failure, with its page-load
- *    time and no answer. Each step is raced against the trial being
+ *    time and no answer. When the captured answer is marked unreadable
+ *    (the Tester highlighted inside a PDF, which the harness cannot read),
+ *    nothing is saved yet: the controller sends `awaiting_copied_text` and
+ *    waits, with no timer running. readCopiedText reads the clipboard for
+ *    the Tester to check, and confirmCompletion then saves that text as
+ *    the answer, with the time to answer of the Answer Found click and the
+ *    page they were on as the source. reportNoAnswer and cancelTrial work
+ *    there as before. Each step is raced against the trial being
  *    interrupted by the timer, by a failure signal from the adapter, or by
  *    cancelTrial.
  * 3. On a failure (SD-4): the FailureDetector classifies the signal, the
@@ -289,6 +330,28 @@ export class TrialController {
         trial.answerFoundAtMs = report.atMs ?? null
       }
       trial.answer = await trial.step(adapter.captureAnswer())
+      if (policy.answerFound && trial.answer.unreadable) {
+        // The Tester was on a page whose highlight cannot be read (a PDF). Nothing is saved yet: they copy
+        // the text and confirm it. No timer runs here; the time to answer stays the Answer Found click.
+        const unread = trial.answer
+        trial.answer = null
+        const marks = this.deps.timing.getMarks(trial.trialId)
+        this.send(trial, 'awaiting_copied_text', {
+          message: COPY_PROMPT,
+          beginMs: marks.begin,
+          endMs: marks.end,
+          ...(trial.answerFoundAtMs === null ? {} : { answerFoundMs: trial.answerFoundAtMs }),
+          ...(unread.sourceUrl === undefined ? {} : { sourceUrl: unread.sourceUrl }),
+        })
+        const report = await trial.step(trial.awaitConfirmation('copy'))
+        if (report.kind === 'no_answer') {
+          // The same result as No Answer Found on the results: no answer, no time to answer, no source.
+          trial.answerFoundAtMs = null
+          trial.noAnswer = report.reason
+          return await this.closeTrial(trial)
+        }
+        trial.answer = { text: report.text ?? '', citations: [], ...(unread.sourceUrl === undefined ? {} : { sourceUrl: unread.sourceUrl }) }
+      }
       // The subject-independent check: an answer with no text is a failure, whatever the adapter said.
       this.onFailureSignal(trial, { answerText: trial.answer.text, timedOut: false })
       return await this.closeTrial(trial, trial.interruption?.kind === 'failure' ? trial.interruption.failure : undefined)
@@ -319,10 +382,11 @@ export class TrialController {
    *
    * For a subject whose answer the Tester reports (Google), this is Answer
    * Found: the moment the call arrives is the time to answer, read from the
-   * main process's clock, so endMs is refused.
+   * main process's clock, so endMs is refused. On the copy step it confirms
+   * the text readCopiedText last returned, and that text is saved.
    *
    * The trial is then captured and saved; resolves once that is done and
-   * the controller is ready again.
+   * the controller is ready again, or once the trial waits on the copy step.
    */
   async confirmCompletion(trialId: string, endMs?: number): Promise<void> {
     const trial = this.current
@@ -332,13 +396,23 @@ export class TrialController {
     if (trial.waitingFor === null) {
       throw new Error('The trial is not waiting for confirmation: its answer has not finished yet')
     }
-    if (trial.waitingFor === 'answer') {
+    if (trial.waitingFor === 'answer' || trial.waitingFor === 'copy') {
       if (endMs !== undefined) {
         throw new Error(
           `The time to answer for ${SUBJECT_LABELS[trial.subject]} is the moment Answer Found is clicked. It cannot be adjusted.`,
         )
       }
-      trial.confirm({ kind: 'confirmed', atMs: this.now() })
+      if (trial.waitingFor === 'answer') {
+        const copyStep = trial.nextWait()
+        trial.confirm({ kind: 'confirmed', atMs: this.now() })
+        // Done once the trial is saved, or once it waits for the Tester to copy the text it could not read.
+        await Promise.race([trial.closed, copyStep])
+        return
+      }
+      if (trial.copiedText === null) {
+        throw new Error('No copied text has been read yet. Copy the highlighted text, then click Use Copied Text.')
+      }
+      trial.confirm({ kind: 'confirmed', text: trial.copiedText })
       await trial.closed
       return
     }
@@ -372,11 +446,35 @@ export class TrialController {
         `A ${SUBJECT_LABELS[trial.subject]} trial has no "no answer" result. Confirm the end of the answer, or cancel the trial.`,
       )
     }
-    if (trial.waitingFor !== 'answer') {
+    if (trial.waitingFor !== 'answer' && trial.waitingFor !== 'copy') {
       throw new Error('The trial is not waiting for the Tester to report the answer: the results have not loaded yet')
     }
     trial.confirm({ kind: 'no_answer', reason: 'tester' })
     await trial.closed
+  }
+
+  /**
+   * Use Copied Text, on the copy step: reads the system clipboard and
+   * resolves with its text, trimmed, for the Tester to check. Nothing is
+   * saved; confirmCompletion then saves exactly this text. An empty string
+   * means the clipboard held no text, and the step goes on waiting. The
+   * clipboard is read only here, on the Tester's click.
+   */
+  async readCopiedText(trialId: string): Promise<string> {
+    const trial = this.current
+    if (!trial || trial.trialId !== trialId) {
+      throw new Error(`Trial ${trialId} is not running`)
+    }
+    if (trial.waitingFor !== 'copy') {
+      throw new Error('The trial is not waiting for copied text')
+    }
+    const { clipboard } = this.deps
+    if (!clipboard) {
+      throw new Error('The clipboard is not available to the harness')
+    }
+    const text = (await clipboard.readText()).replace(/\r\n?/g, '\n').trim()
+    if (text !== '') trial.copiedText = text
+    return text
   }
 
   /** Ends the running trial without saving it. Resolves once the controller is ready again. */
@@ -548,7 +646,7 @@ export class TrialController {
   private send(
     trial: RunningTrial,
     status: TrialEventStatus,
-    extra: { message?: string; failureType?: FailureType; beginMs?: number; endMs?: number } = {},
+    extra: { message?: string; failureType?: FailureType; beginMs?: number; endMs?: number; answerFoundMs?: number; sourceUrl?: string } = {},
   ): void {
     try {
       this.deps.events.sendTrialEvent({

@@ -5,6 +5,7 @@ import {
   createCancelTrialHandler,
   createConfirmCompletionHandler,
   createListTrialsHandler,
+  createReadCopiedTextHandler,
   createReportNoAnswerHandler,
   createStartTrialHandler,
 } from './trials'
@@ -80,6 +81,18 @@ describe('trial:no-answer handler', () => {
     }))
 
     await expect(handler('t')).rejects.toThrow(/not waiting for the Tester/)
+  })
+})
+
+describe('trial:read-copied-text handler', () => {
+  it('returns the clipboard text the controller read and rejects a missing id first', async () => {
+    const readCopiedText = vi.fn(async () => 'A passage from the PDF.')
+    const handler = createReadCopiedTextHandler(async () => ({ readCopiedText }))
+
+    await expect(handler('t')).resolves.toBe('A passage from the PDF.')
+    expect(readCopiedText).toHaveBeenCalledWith('t')
+    await expect(handler('')).rejects.toThrow(/Trial id must be a non-empty string/)
+    expect(readCopiedText).toHaveBeenCalledTimes(1)
   })
 })
 

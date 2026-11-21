@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type Page } from 'playwright'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FailureType, type FailureSignal } from '../../shared/failures'
 import type { Question } from '../../shared/questions'
 import { Subject } from '../../shared/subjects'
@@ -249,6 +249,184 @@ describe('CopilotAdapter against the chat fixture', () => {
     },
     BROWSER_TEST_TIMEOUT_MS,
   )
+
+  it(
+    'says what it looked for when it aborts on a cleared editor',
+    async () => {
+      const adapter = adapterWith({ deleteOnly: 1 })
+
+      const pending = adapter.start(QUESTION)
+      await typed()
+      await pressEnter()
+
+      await expect(pending).rejects.toThrow(
+        /Nothing showed a send within 0\.5 s of the input clearing: no Stop button, no new message, no reply, and no request on Copilot's connection/,
+      )
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'confirms a send whose signals show late, as long as they show inside the confirm window, and keeps begin at the clear',
+    async () => {
+      // Nothing but the cleared editor for 1.2 s, then the messages and the Stop button.
+      const adapter = adapterWith({ signalMs: 1200, firstMs: 100 }, { submitConfirmMs: 5_000 })
+
+      const pending = adapter.start(QUESTION)
+      await typed()
+      const enterAt = await pressEnter()
+      const beginMs = await pending
+      const confirmedAt = Date.now()
+
+      // begin is the clear, at the Enter, not the moment the signal confirmed it 1.2 s later.
+      expect(beginMs).toBeGreaterThanOrEqual(enterAt)
+      expect(beginMs).toBeLessThan(enterAt + 600)
+      expect(confirmedAt - beginMs).toBeGreaterThanOrEqual(1_100)
+      expect(await adapter.waitForFirstResponse()).toBeGreaterThan(beginMs)
+      expect(signals).toEqual([])
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    'takes the new reply as proof of a send when no Stop button and no new article show',
+    async () => {
+      const adapter = adapterWith({ quietSend: 1, firstMs: 100 })
+
+      const pending = adapter.start(QUESTION)
+      await typed()
+      const enterAt = await pressEnter()
+      const beginMs = await pending
+
+      expect(await page.locator('button[aria-label="Stop generating"]').count()).toBe(0)
+      expect(await page.locator(BASE_SETTINGS.selectors.message).count()).toBe(0)
+      expect(beginMs).toBeGreaterThanOrEqual(enterAt)
+      expect(await adapter.waitForFirstResponse()).toBeGreaterThan(beginMs)
+      await adapter.waitForCompletion()
+      expect((await adapter.captureAnswer()).text).toBe(ANSWER)
+    },
+    BROWSER_TEST_TIMEOUT_MS,
+  )
+
+  describe('a clear that was not the send', () => {
+    /** Empties the editor the way a re-render would, and returns what it held. */
+    function emptyEditor(): Promise<string> {
+      return page.evaluate((selector) => {
+        const editor = document.querySelector(selector)!
+        const held = editor.innerHTML
+        editor.innerHTML = '<p><br /></p>'
+        return held
+      }, BASE_SETTINGS.selectors.input)
+    }
+
+    function fillEditor(html: string): Promise<void> {
+      return page.evaluate(
+        ({ selector, held }) => {
+          document.querySelector(selector)!.innerHTML = held
+        },
+        { selector: BASE_SETTINGS.selectors.input, held: html },
+      )
+    }
+
+    it(
+      'discards a clear when the typed question is back before any send signal, logs it, and stamps begin at the real send',
+      async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        try {
+          const adapter = adapterWith({ firstMs: 100 })
+          let settled = false
+          const pending = adapter.start(QUESTION)
+          pending.then(() => (settled = true)).catch(() => (settled = true))
+          await typed()
+
+          const held = await emptyEditor()
+          await page.waitForTimeout(200)
+          await fillEditor(held)
+          // Well past the confirm window of the discarded clear: the wait is back where it was, not aborted.
+          await page.waitForTimeout(800)
+          expect(settled).toBe(false)
+
+          const enterAt = await pressEnter()
+          const beginMs = await pending
+
+          expect(beginMs).toBeGreaterThanOrEqual(enterAt)
+          expect(await adapter.waitForFirstResponse()).toBeGreaterThan(beginMs)
+          const lines = warn.mock.calls.map((call) => String(call[0])).filter((line) => line.startsWith('[copilot] Discarded a clear'))
+          expect(lines).toEqual([
+            '[copilot] Discarded a clear of the Copilot input: the typed question was back before anything showed a send (1 in this trial).',
+          ])
+          expect(signals).toEqual([])
+        } finally {
+          warn.mockRestore()
+        }
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'does not take the editor being out of the page for a moment as a clear',
+      async () => {
+        const adapter = adapterWith({ firstMs: 100 })
+        let settled = false
+        const pending = adapter.start(QUESTION)
+        pending.then(() => (settled = true)).catch(() => (settled = true))
+        await typed()
+
+        // The editor element is replaced, as a re-render does: gone for longer than the confirm window, then back with its text.
+        await page.evaluate((selector) => {
+          const editor = document.querySelector(selector)!
+          const parent = editor.parentElement!
+          const next = editor.nextSibling
+          editor.remove()
+          setTimeout(() => parent.insertBefore(editor, next), 700)
+        }, BASE_SETTINGS.selectors.input)
+        await page.waitForTimeout(1_000)
+        expect(settled).toBe(false)
+
+        const enterAt = await pressEnter()
+        expect(await pending).toBeGreaterThanOrEqual(enterAt)
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'aborts when the editor is cleared and then filled with something else',
+      async () => {
+        const adapter = adapterWith()
+        const pending = adapter.start(QUESTION)
+        await typed()
+
+        await emptyEditor()
+        await page.waitForTimeout(100)
+        await fillEditor('<p>What is pairwise testing?</p>')
+
+        await expect(pending).rejects.toThrow(/changed before it was sent \(it now reads "What is pairwise testing\?"\)/)
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'aborts, without a begin, when an answer starts and the editor was never seen to clear',
+      async () => {
+        const adapter = adapterWith({ firstMs: 100 })
+        const pending = adapter.start(QUESTION)
+        await typed()
+
+        // The editor leaves the page and the send shows without it: there is no clear to stamp.
+        await page.evaluate((selector) => {
+          document.querySelector(selector)!.remove()
+          const feed = document.querySelector('[role="feed"]')!
+          const article = document.createElement('article')
+          article.setAttribute('role', 'article')
+          feed.append(article)
+        }, BASE_SETTINGS.selectors.input)
+
+        await expect(pending).rejects.toThrow(/never saw the input clear, so the send could not be timed/)
+        expect(signals).toEqual([])
+      },
+      BROWSER_TEST_TIMEOUT_MS,
+    )
+  })
 
   it(
     'gives up with a clear error when the Tester never presses Enter within the submit wait',

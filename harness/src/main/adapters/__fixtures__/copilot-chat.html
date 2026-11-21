@@ -17,7 +17,10 @@
 
       Query parameters: firstMs, chunkMs, chunks, finishMs, text, cite=1,
       error=<text>, empty=1, stall=1, noFinish=1, noClear=1, deleteOnly=1,
-      rerenderMs, hub=<ws url>.
+      rerenderMs, hub=<ws url>, signalMs (how long after the editor clears
+      anything else shows: the messages, the Stop button, the socket),
+      quietSend=1 (a send that shows only the new Copilot message and its
+      reply: no article role on the messages and no Stop button).
     -->
   </head>
   <body>
@@ -53,6 +56,8 @@
         noFinish: params.get('noFinish') === '1',
         noClear: params.get('noClear') === '1',
         deleteOnly: params.get('deleteOnly') === '1',
+        signalMs: num('signalMs', 0),
+        quietSend: params.get('quietSend') === '1',
         hub: params.get('hub'),
       }
       const editor = document.getElementById('m365-chat-editor-target-element')
@@ -143,18 +148,26 @@
         }
         clearEditor()
         streaming = true
-        const user = el('article', { role: 'article', 'aria-label': 'You said:' })
+        if (cfg.signalMs > 0) setTimeout(() => answer(question), cfg.signalMs)
+        else answer(question)
+      }
+
+      function answer(question) {
+        const message = (label) => (cfg.quietSend ? el('div', { 'aria-label': label }) : el('article', { role: 'article', 'aria-label': label }))
+        const user = message('You said:')
         user.append(el('h3', {}, 'You said:'), el('div', { 'data-testid': 'chatQuestion' }, question))
         feed.append(user)
-        const bot = el('article', { role: 'article', 'aria-label': 'Copilot said:' })
+        const bot = message('Copilot said:')
         const last = el('div', { 'data-testid': 'lastChatMessage' })
         const body = el('div', { 'data-testid': 'chat-response-message' })
         body.append(el('div', { 'data-testid': 'loading-message' }, 'Putting it together…'))
         last.append(body)
         bot.append(el('h3', {}, 'Copilot said:'), last)
         feed.append(bot)
-        send.setAttribute('aria-label', 'Stop generating')
-        send.textContent = 'Stop'
+        if (!cfg.quietSend) {
+          send.setAttribute('aria-label', 'Stop generating')
+          send.textContent = 'Stop'
+        }
         if (cfg.hub) openHub(question)
 
         setTimeout(() => {

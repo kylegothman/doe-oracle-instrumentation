@@ -44,6 +44,13 @@ describe('nextBarState', () => {
     expect(badgeFor(state)).toEqual({ label: 'Searching', tone: 'accent' })
   })
 
+  it('stops at the time to answer while the Tester copies text the harness could not read', () => {
+    const copying = { ...event('awaiting_copied_text', 30_000), subject: Subject.GOOGLE, beginMs: 10_000, endMs: 10_812, answerFoundMs: 38_400 }
+    const state = nextBarState(copying, 60_000)
+    expect(state).toMatchObject({ phase: 'searching', subject: Subject.GOOGLE, elapsedMs: 28_400, anchorAt: null })
+    expect(elapsedAt(state, 90_000)).toBe(28_400)
+  })
+
   it('falls back to the time since the start if the event has no begin and end', () => {
     expect(nextBarState(event('awaiting_confirmation', 14_000), 20_000)).toMatchObject({ elapsedMs: 14_000, anchorAt: null })
   })

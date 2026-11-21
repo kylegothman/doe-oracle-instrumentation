@@ -65,7 +65,7 @@ describe('loadSettings: Copilot', () => {
     expect(copilot.selectors.reply).toBe('[data-testid="markdown-reply"]')
     expect(copilot.quietPeriodMs).toBe(2_000)
     expect(copilot.submitWaitMs).toBe(300_000)
-    expect(copilot.submitConfirmMs).toBe(2_000)
+    expect(copilot.submitConfirmMs).toBe(10_000)
   })
 
   it('switches to consumer Copilot from HARNESS_COPILOT_PRODUCT without any code change', () => {

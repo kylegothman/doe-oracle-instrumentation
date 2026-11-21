@@ -153,6 +153,11 @@ export function runningTrialWarning(latest: TrialEvent | undefined): { title: st
         title: `A ${subject} trial is waiting for you to confirm it`,
         message: `Q${latest.questionNumber} is not saved until you click Confirm Completion on the Test Console, so it is not in this export yet.`,
       }
+    case 'awaiting_copied_text':
+      return {
+        title: `A ${subject} trial is waiting for the text you copied`,
+        message: `Q${latest.questionNumber} is not saved until you confirm the copied text, or click No Answer Found, on the Test Console, so it is not in this export yet.`,
+      }
     case 'completed':
     case 'failed':
     case 'cancelled':

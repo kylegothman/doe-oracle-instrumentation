@@ -112,6 +112,17 @@ describe('BrowserManager', () => {
     expect(fake.pages).toHaveLength(1)
   })
 
+  it('sets no fixed viewport, so a page follows its window when the Tester resizes it', async () => {
+    const { launcher, fake } = createFakeLauncher()
+    const manager = new BrowserManager({ launcher, profiles: { [Subject.COPILOT]: '/userData/browser-profiles/copilot' } })
+
+    await manager.getPage(Subject.GOOGLE)
+    await manager.getPage(Subject.COPILOT)
+
+    expect(fake.newContext).toHaveBeenCalledWith({ viewport: null })
+    expect(launcher.launchPersistentContext).toHaveBeenCalledWith('/userData/browser-profiles/copilot', { headless: false, viewport: null })
+  })
+
   it('opens a fresh page when the previous one was closed', async () => {
     const { launcher, fake } = createFakeLauncher()
     const manager = new BrowserManager({ launcher })
@@ -186,6 +197,7 @@ describe('BrowserManager', () => {
       expect(launcher.launchPersistentContext).toHaveBeenCalledWith('/userData/browser-profiles/copilot', {
         headless: false,
         executablePath: bundled.executablePath,
+        viewport: null,
       })
     })
 
@@ -256,7 +268,7 @@ describe('BrowserManager', () => {
 
       const page = await manager.getPage(Subject.COPILOT)
 
-      expect(launcher.launchPersistentContext).toHaveBeenCalledWith('/userData/browser-profiles/copilot', { headless: false })
+      expect(launcher.launchPersistentContext).toHaveBeenCalledWith('/userData/browser-profiles/copilot', { headless: false, viewport: null })
       expect(launcher.launch).not.toHaveBeenCalled()
       expect(manager.isRunning).toBe(false)
       expect(manager.profileDir(Subject.COPILOT)).toBe('/userData/browser-profiles/copilot')

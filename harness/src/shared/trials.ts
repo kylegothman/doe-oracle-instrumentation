@@ -78,6 +78,12 @@ export interface Trial {
  *   saved yet. For Google, awaiting_confirmation means the results page
  *   has loaded (endMs) and the Tester is looking for the answer: the same
  *   confirm call is their Answer Found, and the end cannot be corrected;
+ * - awaiting_copied_text (Google only) follows an Answer Found whose
+ *   highlight could not be read, inside a PDF for example: nothing is saved
+ *   yet and no time limit runs. The Tester copies the highlighted text, the
+ *   harness reads the clipboard and shows it, and a confirm saves it.
+ *   answerFoundMs is the Answer Found click, which stays the time to
+ *   answer, and sourceUrl is the page the Tester was on;
  * - completed means the trial was saved as SUCCESS, or as NO_ANSWER_FOUND
  *   with a message saying why; the saved trial carries the status;
  * - failed means the trial was saved as FAILED, and failureType says why;
@@ -89,6 +95,7 @@ export type TrialEventStatus =
   | 'awaiting_submit'
   | 'first_response'
   | 'awaiting_confirmation'
+  | 'awaiting_copied_text'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -101,11 +108,15 @@ export interface TrialEvent {
   status: TrialEventStatus
   /** Milliseconds since the trial started, by the controller's clock. */
   elapsedMs: number
-  /** What went wrong, for failed and aborted; what the Tester must do, for awaiting_submit and awaiting_confirmation. */
+  /** What went wrong, for failed and aborted; what the Tester must do, for awaiting_submit, awaiting_confirmation, and awaiting_copied_text. */
   message?: string
   /** Set with status failed. */
   failureType?: FailureType
-  /** The detected begin and end, epoch milliseconds, with awaiting_confirmation. */
+  /** The detected begin and end, epoch milliseconds, with awaiting_confirmation and awaiting_copied_text. */
   beginMs?: number
   endMs?: number
+  /** With awaiting_copied_text: when Answer Found was clicked, epoch milliseconds. */
+  answerFoundMs?: number
+  /** With awaiting_copied_text: the page the Tester was on, which becomes the saved source. */
+  sourceUrl?: string
 }

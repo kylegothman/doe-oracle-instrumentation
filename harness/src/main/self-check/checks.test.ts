@@ -125,7 +125,7 @@ describe('browserCheck', () => {
     // The same options as a trial's launch, plus the self-check's launch limit.
     const expected = { headless: false, executablePath: bundled.executablePath, timeout: SELF_CHECK_LAUNCH_TIMEOUT_MS }
     expect(fake.launcher.launch).toHaveBeenCalledWith(expected)
-    expect(fake.launcher.launchPersistentContext).toHaveBeenCalledWith(profileDir, expected)
+    expect(fake.launcher.launchPersistentContext).toHaveBeenCalledWith(profileDir, { ...expected, viewport: null })
     expect(fake.urls).toEqual(['about:blank', 'about:blank'])
     expect(detail).toMatch(
       /^Chromium 158\.0\.8127\.18 from .*chrome\.exe opened a page, in the shared browser and on a scratch profile \(launches: shared \d+ ms, profile \d+ ms\)$/,

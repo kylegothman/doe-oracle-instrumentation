@@ -192,6 +192,15 @@ describe('runningTrialWarning and endsTrial', () => {
     })
   })
 
+  it('says a Google trial on the copy step is not saved until the copied text is confirmed', () => {
+    expect(runningTrialWarning({ ...event('awaiting_copied_text'), subject: Subject.GOOGLE })).toEqual({
+      title: 'A Google Search trial is waiting for the text you copied',
+      message:
+        'Q2 is not saved until you confirm the copied text, or click No Answer Found, on the Test Console, so it is not in this export yet.',
+    })
+    expect(endsTrial(event('awaiting_copied_text'))).toBe(false)
+  })
+
   it('warns of nothing once the trial has ended, or before any trial', () => {
     for (const status of ['completed', 'failed', 'cancelled', 'aborted'] as const) {
       expect(runningTrialWarning(event(status))).toBeNull()
