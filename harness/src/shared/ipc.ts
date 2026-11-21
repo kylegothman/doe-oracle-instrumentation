@@ -1,5 +1,7 @@
 import type { CopilotSignInStatus } from './copilot'
 import type { FailedWriteSummary } from './errors'
+import type { ExpertAnswerInput, ExpertInput, SaveExpertAnswerResult, SaveExpertResult } from './expert-entry'
+import type { Expert, ExpertResponse } from './experts'
 import type { ExportPreview, ExportRequest, ExportResult, RecordFilter } from './export'
 import type { Question } from './questions'
 import type { Session } from './session'
@@ -74,6 +76,10 @@ export interface IpcContracts {
   'errors:retry': { args: []; result: number }
   'export:run': { args: [request: ExportRequest]; result: ExportResult }
   'export:preview': { args: [filter: RecordFilter]; result: ExportPreview }
+  'experts:list': { args: []; result: Expert[] }
+  'expert:save': { args: [input: ExpertInput]; result: SaveExpertResult }
+  'expert-answers:list': { args: [expertId: string]; result: ExpertResponse[] }
+  'expert-answer:save': { args: [input: ExpertAnswerInput]; result: SaveExpertAnswerResult }
 }
 
 export type IpcChannel = keyof IpcContracts
@@ -99,6 +105,10 @@ export const IpcChannels = {
   retryFailedWrites: 'errors:retry',
   exportLog: 'export:run',
   previewExport: 'export:preview',
+  listExperts: 'experts:list',
+  saveExpert: 'expert:save',
+  listExpertAnswers: 'expert-answers:list',
+  saveExpertAnswer: 'expert-answer:save',
 } as const satisfies Record<string, IpcChannel>
 
 /**
@@ -188,6 +198,24 @@ export interface HarnessApi {
    * include. Reads only; writes no file and asks for no location.
    */
   previewExport(filter: RecordFilter): Promise<ExportPreview>
+  /** Lists every saved expert, by name, for the Expert Responses page. */
+  listExperts(): Promise<Expert[]>
+  /**
+   * Saves a new expert (expertId null) or updates a saved one. The main
+   * process computes the turnaround from the two times. The result says
+   * whether it was saved or which field is wrong; nothing is saved then.
+   */
+  saveExpert(input: ExpertInput): Promise<SaveExpertResult>
+  /** Lists an expert's current answers by question number. Replaced answers are left out. */
+  listExpertAnswers(expertId: string): Promise<ExpertResponse[]>
+  /**
+   * Saves an expert's answer to one question. When the question already
+   * has an answer and replace is false, nothing is saved and the result
+   * carries the existing answer to show before asking; with replace true
+   * the new answer becomes the active one and the old one is kept as
+   * superseded.
+   */
+  saveExpertAnswer(input: ExpertAnswerInput): Promise<SaveExpertAnswerResult>
   /** Receives the running trial's status events. Returns the function that unsubscribes. */
   onTrialEvent(callback: (event: TrialEvent) => void): Unsubscribe
 }
