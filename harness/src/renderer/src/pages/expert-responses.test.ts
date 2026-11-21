@@ -1,17 +1,28 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { ResponseSource, type Expert } from '../../../shared/experts'
+import { ResponseSource, type Expert, type ExpertResponse } from '../../../shared/experts'
+import type { Question } from '../../../shared/questions'
 import {
+  answerQuestionLabel,
+  answerTo,
   buildExpertInput,
   defaultExpertId,
+  draftNote,
+  draftState,
   expertChoices,
+  firstOpenQuestion,
   formFor,
   formatTurnaround,
   formTurnaroundMs,
   fromLocalInputValue,
+  localDateTime,
   NEW_EXPERT,
   NEW_EXPERT_FORM,
+  progressLabel,
+  progressSummary,
+  questionProgress,
   toLocalInputValue,
   turnaroundDetail,
+  withSavedAnswer,
   withSavedExpert,
   type ExpertForm,
 } from './expert-responses'
@@ -31,9 +42,27 @@ function expert(overrides: Partial<Expert> = {}): Expert {
   }
 }
 
+function answer(questionNumber: number, overrides: Partial<ExpertResponse> = {}): ExpertResponse {
+  return {
+    responseId: questionNumber,
+    testNumber: questionNumber,
+    expertId: 'expert-1',
+    sessionId: 'session-a',
+    questionNumber,
+    answerText: `Answer ${questionNumber}.`,
+    sizeBytes: 9,
+    keywords: null,
+    recordedAt: '2026-11-20T16:30:00.000Z',
+    supersededBy: null,
+    ...overrides,
+  }
+}
+
 function form(overrides: Partial<ExpertForm> = {}): ExpertForm {
   return { ...NEW_EXPERT_FORM, name: 'Dr. Wong', outreachLocal: '2026-10-06T09:00', firstAnswerLocal: '2026-10-20T12:00', ...overrides }
 }
+
+const QUESTIONS: Question[] = Array.from({ length: 12 }, (_, index) => ({ number: index + 1, text: `Question ${index + 1}?` }))
 
 describe('the Expert dropdown', () => {
   it('offers a new expert first, then the saved experts', () => {
@@ -116,6 +145,10 @@ describe('local times', () => {
   it('shows nothing for a missing or unreadable stored time', () => {
     expect(toLocalInputValue(null)).toBe('')
     expect(toLocalInputValue('not a time')).toBe('')
+  })
+
+  it('shows a stored time as local date and time to the minute', () => {
+    expect(localDateTime(new Date(2026, 10, 20, 14, 5, 33).toISOString())).toBe('2026-11-20 14:05')
   })
 })
 
@@ -254,5 +287,83 @@ describe('the turnaround', () => {
     expect(formTurnaroundMs(form({ firstAnswerLocal: '' }))).toBeNull()
     expect(formTurnaroundMs(form({ outreachLocal: '' }))).toBeNull()
     expect(formTurnaroundMs(form({ firstAnswerIncomplete: true }))).toBeNull()
+  })
+})
+
+describe('progress', () => {
+  const progress = questionProgress(QUESTIONS, [answer(1), answer(2), answer(7)])
+
+  it('marks each of the 12 questions answered or open', () => {
+    expect(progress).toHaveLength(12)
+    expect(progress.filter((question) => question.answered).map((question) => question.number)).toEqual([1, 2, 7])
+    expect(progress.filter((question) => !question.answered).map((question) => question.number)).toEqual([3, 4, 5, 6, 8, 9, 10, 11, 12])
+  })
+
+  it('counts only the standard questions', () => {
+    expect(progressLabel(questionProgress(QUESTIONS, [answer(1), answer(13)]))).toBe('1 of 12 answered')
+  })
+
+  it('says how many are answered and which are open', () => {
+    expect(progressLabel(progress)).toBe('3 of 12 answered')
+    expect(progressSummary(progress)).toBe('3 answered, 9 open. Open: Q3, Q4, Q5, Q6, Q8, Q9, Q10, Q11, Q12.')
+    expect(progressSummary(questionProgress(QUESTIONS, QUESTIONS.map((question) => answer(question.number))))).toBe(
+      '12 answered, 0 open. Every question has an answer.',
+    )
+    expect(progressSummary(questionProgress(QUESTIONS, []))).toMatch(/^0 answered, 12 open\. Open: Q1, .*Q12\.$/)
+    expect(progressSummary([])).toBe('No questions are loaded.')
+  })
+
+  it('opens on the first open question, or the first question when all are answered', () => {
+    expect(firstOpenQuestion(progress)).toBe(3)
+    expect(firstOpenQuestion(questionProgress(QUESTIONS, QUESTIONS.map((question) => answer(question.number))))).toBe(1)
+    expect(firstOpenQuestion([])).toBe(1)
+  })
+
+  it('lists a question as on the Test Console, marked when it is answered', () => {
+    const question = { number: 2, text: 'What is a covering array?' }
+
+    expect(answerQuestionLabel(question, false)).toBe('Q2 · What is a covering array?')
+    expect(answerQuestionLabel(question, true)).toBe('Q2 · What is a covering array? (answered)')
+  })
+})
+
+describe('answers', () => {
+  it('finds the active answer to a question', () => {
+    const answers = [answer(1), answer(2, { supersededBy: 9 }), answer(2, { responseId: 9, answerText: 'Revised.' })]
+
+    expect(answerTo(answers, 2)?.answerText).toBe('Revised.')
+    expect(answerTo(answers, 3)).toBeUndefined()
+  })
+
+  it('puts a saved answer in place of the one it replaces, in question order', () => {
+    const revised = answer(2, { responseId: 9, answerText: 'Revised.' })
+
+    expect(withSavedAnswer([answer(1), answer(2), answer(5)], revised)).toEqual([answer(1), revised, answer(5)])
+    expect(withSavedAnswer([answer(5)], answer(3))).toEqual([answer(3), answer(5)])
+  })
+
+  it('tells an empty box, a new answer, the saved answer, and a changed one apart', () => {
+    const saved = answer(1, { answerText: 'The saved answer.' })
+
+    expect(draftState('', undefined)).toBe('empty')
+    expect(draftState(' \n ', undefined)).toBe('empty')
+    expect(draftState('A first answer.', undefined)).toBe('new')
+    expect(draftState('The saved answer.', saved)).toBe('saved')
+    expect(draftState('The saved answer, revised.', saved)).toBe('changed')
+    expect(draftState('', saved)).toBe('changed')
+  })
+
+  it('does not count blank lines at the ends as a change, since they are not stored', () => {
+    const saved = answer(1, { answerText: 'The saved answer.' })
+
+    expect(draftState('\n\nThe saved answer.\n \n', saved)).toBe('saved')
+    expect(draftState(' The saved answer.', saved)).toBe('changed')
+  })
+
+  it('has a note for every state', () => {
+    expect(draftNote('empty')).toMatch(/No answer saved/)
+    expect(draftNote('new')).toMatch(/Not saved yet/)
+    expect(draftNote('saved')).toMatch(/saved answer/)
+    expect(draftNote('changed')).toMatch(/Differs from the saved answer/)
   })
 })

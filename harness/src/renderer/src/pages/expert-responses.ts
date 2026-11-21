@@ -1,11 +1,13 @@
-import { turnaroundMs, type ExpertField, type ExpertInput } from '../../../shared/expert-entry'
-import { ResponseSource, type Expert } from '../../../shared/experts'
+import { trimBlankLines, turnaroundMs, type ExpertField, type ExpertInput } from '../../../shared/expert-entry'
+import { ResponseSource, type Expert, type ExpertResponse } from '../../../shared/experts'
+import type { Question } from '../../../shared/questions'
+import { questionLabel } from './test-console'
 
 /**
  * What the Expert Responses page (stories #41 to #43, UC-5) works out
  * without the bridge: the form it shows for an expert, the local times it
- * turns into stored timestamps and back, and the turnaround as the
- * Researcher reads it. The rules for what may be
+ * turns into stored timestamps and back, the turnaround as the Researcher
+ * reads it, and which questions are answered. The rules for what may be
  * saved live in the main process's ExpertRecordService; this file only
  * prepares what is sent and describes what comes back. Kept apart from the
  * page so it can be tested without a window.
@@ -214,4 +216,85 @@ function count(value: number, noun: string): string {
 /** The turnaround as it is stored, beside the days and hours: "1,220,400,000 ms". Empty when there is none. */
 export function turnaroundDetail(ms: number | null): string {
   return ms === null || ms < 0 ? '' : `${ms.toLocaleString('en-US')} ms`
+}
+
+/** One of the standard questions on the answers card: whether the expert has an active answer to it. */
+export interface QuestionProgress {
+  number: number
+  answered: boolean
+}
+
+/** Every standard question, in order, marked answered or open. Answers to anything else are not counted. */
+export function questionProgress(questions: readonly Question[], answers: readonly ExpertResponse[]): QuestionProgress[] {
+  const answered = new Set(answers.map((answer) => answer.questionNumber))
+  return questions.map((question) => ({ number: question.number, answered: answered.has(question.number) }))
+}
+
+/** The badge on the answers card: "3 of 12 answered". */
+export function progressLabel(progress: readonly QuestionProgress[]): string {
+  return `${progress.filter((question) => question.answered).length} of ${progress.length} answered`
+}
+
+/** The line under the question markers: "3 answered, 9 open. Open: Q4, Q5, Q6." */
+export function progressSummary(progress: readonly QuestionProgress[]): string {
+  const open = progress.filter((question) => !question.answered)
+  const counts = `${progress.length - open.length} answered, ${open.length} open.`
+  if (progress.length === 0) return 'No questions are loaded.'
+  if (open.length === 0) return `${counts} Every question has an answer.`
+  return `${counts} Open: ${open.map((question) => `Q${question.number}`).join(', ')}.`
+}
+
+/** The question the answers card opens on: the first open one, so entry resumes where it stopped; else the first. */
+export function firstOpenQuestion(progress: readonly QuestionProgress[]): number {
+  return (progress.find((question) => !question.answered) ?? progress[0])?.number ?? 1
+}
+
+/** How a question is listed in the answers card's dropdown: the Test Console's label, marked when it is answered. */
+export function answerQuestionLabel(question: Question, answered: boolean): string {
+  return answered ? `${questionLabel(question)} (answered)` : questionLabel(question)
+}
+
+/** The expert's active answer to a question, if it has one. */
+export function answerTo(answers: readonly ExpertResponse[], questionNumber: number): ExpertResponse | undefined {
+  return answers.find((answer) => answer.questionNumber === questionNumber && answer.supersededBy === null)
+}
+
+/** The answers with one saved: it takes the place of the active answer to its question. */
+export function withSavedAnswer(answers: readonly ExpertResponse[], saved: ExpertResponse): ExpertResponse[] {
+  return [...answers.filter((answer) => answer.questionNumber !== saved.questionNumber), saved].sort(
+    (a, b) => a.questionNumber - b.questionNumber,
+  )
+}
+
+/**
+ * Where the text in the answer box stands against what is saved:
+ * `empty` (nothing typed, nothing saved), `new` (text for an open
+ * question), `saved` (the saved answer, unchanged), or `changed` (differs
+ * from the saved answer). Blank lines at the ends do not count as a
+ * change, since they are not stored.
+ */
+export type DraftState = 'empty' | 'new' | 'saved' | 'changed'
+
+export function draftState(draft: string, saved: ExpertResponse | undefined): DraftState {
+  if (!saved) return draft.trim() === '' ? 'empty' : 'new'
+  return trimBlankLines(draft) === saved.answerText ? 'saved' : 'changed'
+}
+
+/** The note beside Save Answer, per draft state. */
+export function draftNote(state: DraftState): string {
+  switch (state) {
+    case 'empty':
+      return 'No answer saved for this question yet.'
+    case 'new':
+      return 'Not saved yet.'
+    case 'saved':
+      return 'This is the saved answer.'
+    case 'changed':
+      return 'Differs from the saved answer.'
+  }
+}
+
+/** A stored timestamp as local date and time to the minute, for "saved on": "2026-11-20 14:05". */
+export function localDateTime(iso: string): string {
+  return toLocalInputValue(iso).slice(0, 16).replace('T', ' ')
 }

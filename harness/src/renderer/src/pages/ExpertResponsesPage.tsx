@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { ExpertField } from '../../../shared/expert-entry'
 import type { Expert } from '../../../shared/experts'
-import { describeError, type Loadable } from '../bridge'
+import { describeError, useBridgeCall, type Loadable } from '../bridge'
 import { Banner, Card, Field, Segmented, SelectField } from '../components/ui'
+import { ExpertAnswersCard } from './ExpertAnswersCard'
 import {
   buildExpertInput,
   defaultExpertId,
@@ -31,6 +32,7 @@ import {
  * shows saves that were retried from the Export tab since the last visit.
  */
 export function ExpertResponsesPage({ refreshKey }: { refreshKey: number }) {
+  const questions = useBridgeCall(() => window.harness.listQuestions())
   const [experts, setExperts] = useState<Loadable<Expert[]>>({ status: 'loading' })
   // Undefined until the Researcher picks: the page then opens on the only saved expert, if there is one.
   const [pickedId, setPickedId] = useState<string | null | undefined>(undefined)
@@ -68,6 +70,11 @@ export function ExpertResponsesPage({ refreshKey }: { refreshKey: number }) {
           <p>{experts.message}</p>
         </Banner>
       )}
+      {questions.status === 'error' && (
+        <Banner tone="danger" title="The questions could not be loaded" testId="expert-questions-error">
+          <p>{questions.message}</p>
+        </Banner>
+      )}
       <ExpertCard
         // A new card per expert, so one expert's unsaved edits never show under another.
         key={`expert-${selected?.expertId ?? NEW_EXPERT}`}
@@ -82,11 +89,21 @@ export function ExpertResponsesPage({ refreshKey }: { refreshKey: number }) {
         onEdited={() => setSavedNote(null)}
         onSaved={onSaved}
       />
-      <Card title="Answers" subtitle="The expert's answer to each of the 12 standard questions.">
-        <p className="caption" data-testid="expert-answers-waiting">
-          Save the expert first, or pick a saved expert. The answers are entered here, one question at a time.
-        </p>
-      </Card>
+      {selected ? (
+        <ExpertAnswersCard
+          // Its own key, apart from the expert card's: the two are siblings.
+          key={`answers-${selected.expertId}`}
+          expert={selected}
+          questions={questions.status === 'ready' ? questions.value : []}
+          refreshKey={refreshKey}
+        />
+      ) : (
+        <Card title="Answers" subtitle="The expert's answer to each of the 12 standard questions.">
+          <p className="caption" data-testid="expert-answers-waiting">
+            Save the expert first, or pick a saved expert. The answers are entered here, one question at a time.
+          </p>
+        </Card>
+      )}
     </>
   )
 }
