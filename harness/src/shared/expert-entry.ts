@@ -1,4 +1,4 @@
-import type { Expert, ResponseSource } from './experts'
+import type { Expert, ExpertResponse, ResponseSource } from './experts'
 
 /**
  * What crosses the IPC bridge when the Researcher enters an expert's record
@@ -28,6 +28,23 @@ export type ExpertField = 'name' | 'source' | 'outreachTs' | 'firstAnswerTs'
 export type SaveExpertResult =
   | { status: 'SAVED'; expert: Expert }
   | { status: 'INVALID'; field: ExpertField; message: string }
+
+/** One answer as the Researcher entered it. */
+export interface ExpertAnswerInput {
+  expertId: string
+  /** One of the standard questions, 1 to 12. */
+  questionNumber: number
+  /** The answer as pasted. Blank lines at the very start and end are dropped on save; nothing else changes. */
+  answerText: string
+}
+
+/** The fields of an answer a save can refuse. */
+export type ExpertAnswerField = 'questionNumber' | 'answerText'
+
+/** What saving an answer did: saved it, or saved nothing and says which field is wrong. */
+export type SaveExpertAnswerResult =
+  | { status: 'SAVED'; saved: ExpertResponse }
+  | { status: 'INVALID'; field: ExpertAnswerField; message: string }
 
 const ISO_UTC_MILLIS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 
@@ -70,5 +87,29 @@ export function validateExpertInput(value: unknown): string | null {
   if (typeof source !== 'string') return 'The response source must be text'
   if (outreachTs !== null && typeof outreachTs !== 'string') return 'The outreach time must be a timestamp or null'
   if (firstAnswerTs !== null && typeof firstAnswerTs !== 'string') return 'The first answer time must be a timestamp or null'
+  return null
+}
+
+/**
+ * An answer as it is stored: exactly as pasted, apart from blank lines
+ * (empty, or only spaces and tabs) at the very start and the very end.
+ * The first line's indentation, blank lines between paragraphs, and the
+ * line endings inside the text are kept.
+ */
+export function trimBlankLines(text: string): string {
+  return text.replace(/^(?:[^\S\r\n]*\r?\n)+/, '').replace(/(?:\r?\n[^\S\r\n]*)+$/, '')
+}
+
+/**
+ * Checks the shape of an ExpertAnswerInput that crossed the IPC bridge.
+ * Returns what is wrong, or null. Whether the question exists and the
+ * answer has any text is ExpertRecordService's to judge.
+ */
+export function validateExpertAnswerInput(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return 'The expert answer is missing'
+  const { expertId, questionNumber, answerText } = value as Partial<ExpertAnswerInput>
+  if (typeof expertId !== 'string' || expertId.trim() === '') return 'The expert id must be a non-empty string'
+  if (typeof questionNumber !== 'number') return 'The question number must be a number'
+  if (typeof answerText !== 'string') return 'The answer must be text'
   return null
 }

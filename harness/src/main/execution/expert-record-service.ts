@@ -1,21 +1,38 @@
 import { randomUUID } from 'node:crypto'
-import { parseUtcTimestamp, turnaroundMs, type ExpertField, type ExpertInput, type SaveExpertResult } from '../../shared/expert-entry'
-import { isResponseSource, type Expert } from '../../shared/experts'
+import {
+  parseUtcTimestamp,
+  trimBlankLines,
+  turnaroundMs,
+  type ExpertAnswerInput,
+  type ExpertInput,
+  type SaveExpertAnswerResult,
+  type SaveExpertResult,
+} from '../../shared/expert-entry'
+import { isResponseSource, type Expert, type ExpertResponse } from '../../shared/experts'
 import type { MetricsRepository } from '../data/metrics-repository'
+import type { QuestionBank } from './question-bank'
+import type { SessionManager } from './session-manager'
 
 export interface ExpertRecordServiceOptions {
-  /** Where experts are kept. Its saves go through the failed-writes log, as a trial's do. */
-  repository: Pick<MetricsRepository, 'saveExpert' | 'listExperts'>
+  /** Where experts and their answers are kept. Its saves go through the failed-writes log, as a trial's do. */
+  repository: Pick<MetricsRepository, 'saveExpert' | 'getExpert' | 'listExperts' | 'saveExpertResponse' | 'listExpertResponses'>
+  /** This launch's session: every answer records the session it was entered in. */
+  session: Pick<SessionManager, 'getCurrentSession'>
+  /** The standard questions: an answer must be to one of them. */
+  questions: Pick<QuestionBank, 'size'>
+  /** Clock for an answer's recordedAt; defaults to Date.now. */
+  now?: () => number
   /** Generates a new expert's id; defaults to a random UUID. Tests fix it. */
   expertId?: () => string
 }
 
 /**
  * Records the human expert's baseline (UC-5, stories #41 to #43): the expert
- * with the turnaround, stored once per expert. It applies every rule to
- * what the Researcher entered and saves through MetricsRepository, so a
- * save that fails in the database is kept in the failed-writes log and can
- * be retried.
+ * with the turnaround, stored once per expert and never per answer, and the
+ * expert's answer to each standard question. It applies every rule to what
+ * the Researcher entered and saves through MetricsRepository, so a save
+ * that fails in the database is kept in the failed-writes log and can be
+ * retried.
  *
  * An entry that breaks a rule saves nothing and answers INVALID with the
  * field that is wrong. Only a failure the Researcher cannot fix in the form
@@ -70,9 +87,40 @@ export class ExpertRecordService {
     this.options.repository.saveExpert(expert)
     return { status: 'SAVED', expert }
   }
+
+  /** The expert's current answers, by question number. Replaced answers are left out. */
+  listAnswers(expertId: string): ExpertResponse[] {
+    return this.options.repository.listExpertResponses(expertId)
+  }
+
+  /**
+   * Saves the expert's answer to one question, in the current session. The
+   * text is stored as pasted apart from blank lines at its very start and
+   * end; keywords stay empty.
+   */
+  saveAnswer(input: ExpertAnswerInput): SaveExpertAnswerResult {
+    if (!this.options.repository.getExpert(input.expertId)) {
+      throw new Error(`Expert ${input.expertId} is not saved, so it cannot be given an answer`)
+    }
+    const questionCount = this.options.questions.size
+    if (!Number.isInteger(input.questionNumber) || input.questionNumber < 1 || input.questionNumber > questionCount) {
+      return invalid('questionNumber', `Question must be a whole number from 1 to ${questionCount}.`)
+    }
+    const answerText = trimBlankLines(input.answerText)
+    if (answerText.trim() === '') return invalid('answerText', 'Answer is empty. Paste or type the expert\'s answer.')
+
+    const { saved } = this.options.repository.saveExpertResponse({
+      expertId: input.expertId,
+      sessionId: this.options.session.getCurrentSession().sessionId,
+      questionNumber: input.questionNumber,
+      answerText,
+      recordedAt: new Date((this.options.now ?? Date.now)()).toISOString(),
+    })
+    return { status: 'SAVED', saved }
+  }
 }
 
-function invalid(field: ExpertField, message: string): { status: 'INVALID'; field: ExpertField; message: string } {
+function invalid<F extends string>(field: F, message: string): { status: 'INVALID'; field: F; message: string } {
   return { status: 'INVALID', field, message }
 }
 

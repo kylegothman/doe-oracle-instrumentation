@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ExpertInput } from '../../shared/expert-entry'
+import type { ExpertAnswerInput, ExpertInput } from '../../shared/expert-entry'
 import { ResponseSource } from '../../shared/experts'
 import { ErrorLog } from '../data/error-log'
 import { MetricsRepository, WriteQueuedError } from '../data/metrics-repository'
@@ -25,15 +25,38 @@ function expertInput(overrides: Partial<ExpertInput> = {}): ExpertInput {
   }
 }
 
+const SESSION = { sessionId: 'session-a', startedAt: '2026-11-20T15:00:00.000Z', appVersion: '0.2.0' }
+const NOW = Date.UTC(2026, 10, 20, 16, 30, 0, 123)
+
+/** A service on this repository, with the session, the 12 questions, the clock, and the ids fixed. */
+function serviceOn(repository: MetricsRepository, overrides: Partial<ConstructorParameters<typeof ExpertRecordService>[0]> = {}) {
+  let nextId = 0
+  return new ExpertRecordService({
+    repository,
+    session: { getCurrentSession: () => SESSION },
+    questions: { size: 12 },
+    now: () => NOW,
+    expertId: () => `expert-${++nextId}`,
+    ...overrides,
+  })
+}
+
+function answerInput(overrides: Partial<ExpertAnswerInput> = {}): ExpertAnswerInput {
+  return {
+    expertId: 'expert-1',
+    questionNumber: 1,
+    answerText: 'Combinatorial testing covers interactions among factors.',
+    ...overrides,
+  }
+}
+
 describe('ExpertRecordService: the expert record', () => {
   let repository: MetricsRepository
   let service: ExpertRecordService
-  let nextId: number
 
   beforeEach(async () => {
     repository = await MetricsRepository.open(':memory:')
-    nextId = 0
-    service = new ExpertRecordService({ repository, expertId: () => `expert-${++nextId}` })
+    service = serviceOn(repository)
   })
 
   afterEach(() => {
@@ -57,7 +80,7 @@ describe('ExpertRecordService: the expert record', () => {
   })
 
   it('generates a UUID for a new expert when no generator is given', () => {
-    const result = new ExpertRecordService({ repository }).saveExpert(expertInput())
+    const result = serviceOn(repository, { expertId: undefined }).saveExpert(expertInput())
 
     expect(result.status === 'SAVED' && result.expert.expertId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
   })
@@ -162,6 +185,97 @@ describe('ExpertRecordService: the expert record', () => {
   })
 })
 
+describe('ExpertRecordService: answers', () => {
+  let repository: MetricsRepository
+  let service: ExpertRecordService
+
+  beforeEach(async () => {
+    repository = await MetricsRepository.open(':memory:')
+    service = serviceOn(repository)
+    service.saveExpert(expertInput())
+  })
+
+  afterEach(() => {
+    repository.close()
+  })
+
+  it('saves an answer in the current session with no keywords, and lists it', () => {
+    const result = service.saveAnswer(answerInput())
+
+    const saved = {
+      responseId: 1,
+      testNumber: 1,
+      expertId: 'expert-1',
+      sessionId: 'session-a',
+      questionNumber: 1,
+      answerText: 'Combinatorial testing covers interactions among factors.',
+      sizeBytes: 56,
+      keywords: null,
+      recordedAt: '2026-11-20T16:30:00.123Z',
+      supersededBy: null,
+    }
+    expect(result).toEqual({ status: 'SAVED', saved })
+    expect(service.listAnswers('expert-1')).toEqual([saved])
+  })
+
+  it('drops blank lines at the very start and end and keeps everything else as pasted', () => {
+    const pasted = '\n  \t\n  First line, indented.\n\nSecond paragraph, with trailing spaces.  \n \n\n'
+
+    const result = service.saveAnswer(answerInput({ answerText: pasted }))
+
+    const stored = '  First line, indented.\n\nSecond paragraph, with trailing spaces.  '
+    expect(result).toMatchObject({ status: 'SAVED', saved: { answerText: stored } })
+    expect(service.listAnswers('expert-1')[0]?.answerText).toBe(stored)
+  })
+
+  it.each([
+    ['empty', ''],
+    ['only spaces', '   '],
+    ['only blank lines', '\n \t\n\r\n'],
+  ])('refuses an answer that is %s, names the field, and saves nothing', (_what, answerText) => {
+    const result = service.saveAnswer(answerInput({ answerText }))
+
+    expect(result).toEqual({ status: 'INVALID', field: 'answerText', message: expect.stringMatching(/^Answer is empty/) })
+    expect(service.listAnswers('expert-1')).toEqual([])
+  })
+
+  it.each([0, 13, -1, 1.5, Number.NaN])('refuses question %s: only 1 to 12 exist', (questionNumber) => {
+    const result = service.saveAnswer(answerInput({ questionNumber }))
+
+    expect(result).toEqual({ status: 'INVALID', field: 'questionNumber', message: 'Question must be a whole number from 1 to 12.' })
+    expect(service.listAnswers('expert-1')).toEqual([])
+  })
+
+  it('accepts every question from 1 to 12 and lists the answers by question number', () => {
+    for (const questionNumber of [12, 1, 7]) {
+      expect(service.saveAnswer(answerInput({ questionNumber }))).toMatchObject({ status: 'SAVED' })
+    }
+
+    expect(service.listAnswers('expert-1').map((answer) => answer.questionNumber)).toEqual([1, 7, 12])
+  })
+
+  it('throws for an expert that is not saved', () => {
+    expect(() => service.saveAnswer(answerInput({ expertId: 'gone' }))).toThrow(/Expert gone is not saved/)
+  })
+
+  it('stores the turnaround once, on the expert, and never on an answer', () => {
+    const result = service.saveAnswer(answerInput())
+
+    expect(result.status === 'SAVED' && Object.keys(result.saved)).not.toContain('turnaroundMs')
+    expect(repository.getExpert('expert-1')?.turnaroundMs).toBe(FOURTEEN_DAYS_THREE_HOURS_MS)
+  })
+
+  it('keeps the state for the next launch: the same database gives the same experts and answers', () => {
+    service.saveAnswer(answerInput({ questionNumber: 3 }))
+
+    // A new launch: a new service and session over the same database.
+    const relaunched = serviceOn(repository, { session: { getCurrentSession: () => ({ ...SESSION, sessionId: 'session-b' }) } })
+
+    expect(relaunched.listExperts()).toMatchObject([{ expertId: 'expert-1', name: 'Dr. Wong' }])
+    expect(relaunched.listAnswers('expert-1')).toMatchObject([{ questionNumber: 3, sessionId: 'session-a' }])
+  })
+})
+
 describe('ExpertRecordService with a failing database', () => {
   let dir: string
   let log: ErrorLog
@@ -175,7 +289,7 @@ describe('ExpertRecordService with a failing database', () => {
     log = new ErrorLog(join(dir, 'pending-writes.jsonl'))
     repository = await MetricsRepository.open(dbPath, { errorLog: log })
     raw = new Database(dbPath)
-    service = new ExpertRecordService({ repository, expertId: () => 'expert-1' })
+    service = serviceOn(repository)
     vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
@@ -206,5 +320,21 @@ describe('ExpertRecordService with a failing database', () => {
     expect(log.retryAll(repository)).toBe(1)
     expect(service.listExperts()).toMatchObject([{ expertId: 'expert-1', name: 'Dr. Wong', turnaroundMs: FOURTEEN_DAYS_THREE_HOURS_MS }])
     expect(log.listPending()).toEqual([])
+  })
+
+  it('keeps an answer whose save fails in the failed-writes log, and a retry saves it', () => {
+    service.saveExpert(expertInput())
+    breakInserts('expert_responses')
+
+    expect(() => service.saveAnswer(answerInput({ answerText: '\nKept for retry.\n' }))).toThrow(WriteQueuedError)
+    expect(log.listPending()).toMatchObject([
+      { operation: 'saveExpertResponse', payload: { response: { expertId: 'expert-1', questionNumber: 1, answerText: 'Kept for retry.' }, replace: false } },
+    ])
+
+    restoreInserts('expert_responses')
+    // Reading also makes the repository's connection notice the trigger is gone.
+    expect(service.listAnswers('expert-1')).toEqual([])
+    expect(log.retryAll(repository)).toBe(1)
+    expect(service.listAnswers('expert-1')).toMatchObject([{ questionNumber: 1, answerText: 'Kept for retry.', sessionId: 'session-a' }])
   })
 })
