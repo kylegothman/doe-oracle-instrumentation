@@ -20,6 +20,12 @@ import { logSqliteStatus, probeSqlite } from './data/sqlite'
 import { createGetAppInfoHandler } from './execution/handlers/app-info'
 import { createOpenCopilotSignInHandler } from './execution/handlers/copilot'
 import { createListFailedWritesHandler, createRetryFailedWritesHandler } from './execution/handlers/errors'
+import {
+  createListExpertAnswersHandler,
+  createListExpertsHandler,
+  createSaveExpertAnswerHandler,
+  createSaveExpertHandler,
+} from './execution/handlers/experts'
 import { createExportHandler, createExportPreviewHandler } from './execution/handlers/export'
 import { createGetTrialLimitsHandler, createListQuestionsHandler } from './execution/handlers/questions'
 import { createGetSessionHandler, createListSessionsHandler } from './execution/handlers/session'
@@ -32,6 +38,7 @@ import {
   createReportNoAnswerHandler,
   createStartTrialHandler,
 } from './execution/handlers/trials'
+import { ExpertRecordService } from './execution/expert-record-service'
 import { IpcRouter } from './execution/ipc-router'
 import { QuestionBank } from './execution/question-bank'
 import { SessionManager } from './execution/session-manager'
@@ -163,6 +170,16 @@ function registerIpcHandlers(repositoryReady: Promise<MetricsRepository>, browse
   router.register(IpcChannels.listSessions, createListSessionsHandler(() => repositoryReady))
   router.register(IpcChannels.listQuestions, createListQuestionsHandler(() => questionsReady))
   router.register(IpcChannels.getTrialLimits, createGetTrialLimitsHandler(settings.trialPolicies))
+  // The expert's record and answers (UC-5). An answer carries this launch's
+  // session and must be to one of the standard questions, so the service
+  // waits for all three, as the controller does.
+  const expertsReady = Promise.all([repositoryReady, sessionReady, questionsReady]).then(
+    ([repository, session, questions]) => new ExpertRecordService({ repository, session, questions }),
+  )
+  router.register(IpcChannels.listExperts, createListExpertsHandler(() => expertsReady))
+  router.register(IpcChannels.saveExpert, createSaveExpertHandler(() => expertsReady))
+  router.register(IpcChannels.listExpertAnswers, createListExpertAnswersHandler(() => expertsReady))
+  router.register(IpcChannels.saveExpertAnswer, createSaveExpertAnswerHandler(() => expertsReady))
   return router
 }
 

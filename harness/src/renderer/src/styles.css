@@ -845,3 +845,70 @@ fieldset.field > legend {
   text-align: right;
   white-space: nowrap;
 }
+
+/* Expert Responses: a field's error, the answer box, and the question markers */
+
+.field-error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--danger-text);
+}
+
+.control[aria-invalid='true'] {
+  border-color: var(--danger-border);
+}
+
+.answer-input {
+  display: block;
+  min-height: 168px;
+  resize: vertical;
+}
+
+.turnaround {
+  margin: 0;
+  padding: var(--space-6) 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.question-markers {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-6);
+}
+
+.question-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.question-marker[data-answered='true'] {
+  background: var(--success-subtle);
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+
+.question-marker[aria-pressed='true'] {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 1px var(--border-focus);
+  color: var(--text-primary);
+}
+
+.question-marker:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}

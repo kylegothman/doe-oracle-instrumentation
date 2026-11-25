@@ -14,7 +14,7 @@ No C++ build tools are needed. Native modules used by the harness ship prebuilt 
 
 The harness drives the systems under test through Playwright's Chromium, which is downloaded separately from npm (see Setup). This is for development only: the installed app carries its own copy (see "Packaging the Windows installer").
 
-To test the installer on Windows 11, follow `docs/install-test.md`. To set up the Oracle on the reference machine, follow `docs/run-the-oracle.md`. The reference machine itself is described in `docs/reference-machine.md`.
+To test the installer on Windows 11, follow `docs/install-test.md`. To set up the Oracle on the reference machine, follow `docs/run-the-oracle.md`. The reference machine itself is described in `docs/reference-machine.md`. To enter the expert's answers, follow `docs/expert-answers.md`.
 
 ### Windows 11
 
@@ -74,7 +74,7 @@ harness/
   electron-builder.yml      installer packaging (MSI); ships config/ and the bundled Chromium as extra resources
   config/questions.json     the 12 standard questions, read at startup by QuestionBank
   scripts/                  bundle-browser.mjs (Chromium for the installer), msi-smoke-test.ps1 (install, self-check, uninstall), reference-machine-spec.ps1
-  docs/                     install-test.md, reference-machine.md, run-the-oracle.md, copilot-spike.md, google-spike.md
+  docs/                     install-test.md, reference-machine.md, run-the-oracle.md, expert-answers.md, copilot-spike.md, google-spike.md
   eslint.config.mjs         lint rules (the renderer may not import Electron or Node)
   vitest.config.ts          unit test settings
   tsconfig.node.json        TypeScript for main, preload, shared
@@ -82,7 +82,7 @@ harness/
   src/
     main/                   Electron main process (Node)
       index.ts              app lifecycle and window creation
-      execution/            TrialController, FailureDetector, TimingService, SessionManager, QuestionBank, IpcRouter, IPC handlers
+      execution/            TrialController, FailureDetector, TimingService, SessionManager, QuestionBank, ExpertRecordService, IpcRouter, IPC handlers
       adapters/             SubjectAdapter interface and one adapter per system under test (OracleAdapter, CopilotAdapter, GoogleAdapter), with their saved test pages under __fixtures__
       browser/              BrowserManager: launches and owns the Playwright Chromium window; browser-location picks the bundled copy or the cache
       self-check/           the --self-check mode: start-up checks that write a report and exit
@@ -95,7 +95,7 @@ harness/
       src/components/       the design's building blocks in ui.tsx (Card, Field, Segmented, RadioOption, Banner, Badge) and the StatusBar
       src/status-bar.ts     what the status bar shows, worked out from the trial events
       src/styles.css        the design's colors, spacing, and text styles as CSS variables
-    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; RecordFilter, ExportFormat, ExportRequest, ExportResult, ExportPreview; FailedWriteSummary)
+    shared/                 types and enums shared by main, preload, and renderer (Subject, FailureType, Trial, TrialEvent; Expert, ExpertResponse, ResponseSource; ExpertInput, ExpertAnswerInput and their save results; RecordFilter, ExportFormat, ExportRequest, ExportResult, ExportPreview; FailedWriteSummary)
   .browser-bundle/          Chromium fetched for the installer (ignored by git)
   out/                      build output (ignored by git)
   release/                  packaged installers (ignored by git)
@@ -105,7 +105,7 @@ harness/
 
 The window follows the team's Figma mockups (E6): a dark theme, a header with three tabs (Test Console, Expert Responses, Export), and one page per tab. Every color, space, radius, and text style in the design is a CSS variable at the top of `src/renderer/src/styles.css`, named after the design's variable (`color/bg/surface` is `--bg-surface`). The fonts, Inter and JetBrains Mono, ship inside the app (`@fontsource`, OFL license), so the window looks the same with no network.
 
-All three pages stay mounted and only the active one is shown, so switching tabs during a trial does not interrupt it. Expert Responses is a placeholder until E7 builds it.
+All three pages stay mounted and only the active one is shown, so switching tabs during a trial does not interrupt it.
 
 The Test Console (story #38) follows the design's screens 01, 02, and 04:
 
@@ -118,6 +118,14 @@ The Test Console (story #38) follows the design's screens 01, 02, and 04:
 - **Google** (design screen 03). The steps run to "Results page loaded". Then the card shows the page-load time and a "Searching for" time counting from the Enter, with a banner asking for the passage. Answer Found reads a highlight in any tab of the Google window (see "What Answer Found saves"), and when nothing was highlighted the result says the results page's text was saved, under "Results page text" rather than "Selected passage". When the Tester is on a page they opened from a result and no highlight can be read from it, inside a PDF for example, nothing is saved yet: the card shows the copy step (see "When the highlight cannot be read"), with **Use Copied Text**, **No Answer Found**, and **Cancel Trial**. **Answer Found** is the `trial:confirm` call, and the moment it reaches the harness is the time to answer; **No Answer Found** is `trial:no-answer`. There is no Adjust for Google. The result shows the page load, the time to answer, when Answer Found was clicked, the selected passage, and its source URL; a **No answer found** result (also saved when the answer limit, 120 s from the results loading, runs out) shows its page-load time, and New Trial moves on to the next question as after a success.
 
 The session status bar (story #39) runs along the bottom of every page. It shows the first 8 characters of this launch's session ID (hover for the full ID and start time), the running trial's subject and question, the time since the trial started, and a badge: **Idle** before the first trial, **Running** during one, **Searching** while the Tester looks for Google's answer, **Ready** once it has ended, however it ended. The time counts while the answer streams. Once the answer is complete it shows the measured response, begin to end, and holds still while the harness waits for the Tester to confirm. For Google it keeps counting from the Enter until Answer Found or No Answer Found. The bar follows the `trial:event` stream itself, so it is right whichever tab is open. If the session could not be started, it says so in red, since trials cannot be saved without one.
+
+The Expert Responses page (stories #41 to #43, UC-5) is where the Researcher records the expert's baseline. `docs/expert-answers.md` is the how-to; in short:
+
+- **Expert.** Pick a saved expert or a new one, and enter the name, the source (Email or Interview), when the questions were sent, and when the first answer arrived. The times are entered in local time and stored as ISO 8601 UTC. The turnaround is shown in days and hours with the stored milliseconds beside it, and is empty until the first answer is entered. The name is the only personal detail (NFR-7).
+- **Answers.** Markers for Q1 to Q12 show which questions are answered and which are open. One question at a time: its text from `questions:list`, and the answer box. Picking an answered question shows its saved text.
+- **Replacing.** Saving over an answer shows the existing one and asks. **Replace Answer** keeps the old answer as superseded; **Cancel** changes nothing.
+
+An entry that breaks a rule is refused under the field it belongs to, and nothing is saved. The page reads the experts and answers again each time the tab is opened. Its logic is in `src/renderer/src/pages/expert-responses.ts`; the rules themselves are in the main process (see "Expert records").
 
 ## Security baseline
 
@@ -401,6 +409,24 @@ Each line is a `PendingWrite`: an `id`, the `operation` (`saveTrial`, `saveExper
 The renderer reaches the log through two channels: `errors:list` (`window.harness.listFailedWrites()`) returns a short summary of each waiting save (id, operation, a description such as "DOE Oracle trial, question 3", the error, and when it failed), and `errors:retry` (`window.harness.retryFailedWrites()`) retries them all and resolves with how many succeeded. The Export Page (E6) uses them for its Retry button.
 
 Failures the data itself causes are not kept, because a retry would fail the same way: constraint violations such as a duplicate id, a FAILED trial without its failure, or an answer to a question that already has one (`ActiveAnswerExistsError`).
+
+### Expert records
+
+`ExpertRecordService` (`src/main/execution/expert-record-service.ts`) is the one place the rules for the expert's baseline live. It checks what the Researcher entered, creates a new expert's id, computes `turnaroundMs` as the first answer minus the outreach, attaches this launch's session ID to each answer, and saves through `MetricsRepository`, so a save that fails in the database is kept for retry like a trial's (see "Failed saves").
+
+Four channels serve the Expert Responses page. The handlers (`src/main/execution/handlers/experts.ts`) check the shape of what crossed the bridge; the service then answers a save with a result, not a thrown error, because an error keeps only its message across the bridge:
+
+| Channel | `window.harness` | Result |
+| --- | --- | --- |
+| `experts:list` | `listExperts()` | every saved expert, by name |
+| `expert:save` | `saveExpert(input)` | `SAVED` with the expert, or `INVALID` with the `field` and a message |
+| `expert-answers:list` | `listExpertAnswers(expertId)` | the expert's active answers, by question number |
+| `expert-answer:save` | `saveExpertAnswer(input)` | `SAVED` with the answer and the one it superseded, `ANSWER_EXISTS` with the existing answer, or `INVALID` |
+
+The types are in `src/shared/expert-entry.ts`. What the service refuses, each naming its field:
+
+- `expert:save`: an empty name; a source other than `EMAIL` or `INTERVIEW`; no outreach time; a time that is not ISO 8601 UTC with milliseconds; a first answer earlier than the outreach (equal times are a turnaround of 0); a name another saved expert already has, ignoring case and spacing. With `expertId` null a new expert is created; with an id that expert is updated, and an id that is not saved is an error.
+- `expert-answer:save`: a question outside 1 to the question bank's size; an answer that is empty or only whitespace. The text is stored as pasted apart from blank lines at its very start and end (`trimBlankLines`), and keywords stay null. When the question already has an answer, `replace: false` saves nothing and returns it, and `replace: true` saves the new answer as the active one and keeps the old one as superseded.
 
 ### Startup check
 

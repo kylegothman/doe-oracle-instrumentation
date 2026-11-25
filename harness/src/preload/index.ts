@@ -41,6 +41,10 @@ const harnessApi: HarnessApi = {
   retryFailedWrites: () => invoke(IpcChannels.retryFailedWrites),
   exportLog: (request) => invoke(IpcChannels.exportLog, request),
   previewExport: (filter) => invoke(IpcChannels.previewExport, filter),
+  listExperts: () => invoke(IpcChannels.listExperts),
+  saveExpert: (input) => invoke(IpcChannels.saveExpert, input),
+  listExpertAnswers: (expertId) => invoke(IpcChannels.listExpertAnswers, expertId),
+  saveExpertAnswer: (input) => invoke(IpcChannels.saveExpertAnswer, input),
   onTrialEvent: (callback) => {
     // Only the payload reaches the page; the Electron event object stays in the preload.
     const listener = (_event: IpcRendererEvent, event: TrialEvent): void => callback(event)

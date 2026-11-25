@@ -40,15 +40,35 @@ export function Card({
   )
 }
 
-/** A labeled control. `children` renders the control with the id it is given. */
-export function Field({ label, children }: { label: string; children: (id: string) => ReactNode }) {
+/**
+ * A labeled control. `children` renders the control with the id it is
+ * given. With an `error`, the message is shown under the control and
+ * announced, and `children` gets its id as a second argument, to point the
+ * control's `aria-describedby` at.
+ */
+export function Field({
+  label,
+  error,
+  children,
+}: {
+  label: string
+  /** What is wrong with this field's value, shown under the control. */
+  error?: string | null
+  children: (id: string, errorId: string | undefined) => ReactNode
+}) {
   const id = useId()
+  const errorId = `${id}-error`
   return (
     <div className="field">
       <label className="label" htmlFor={id}>
         {label}
       </label>
-      {children(id)}
+      {children(id, error ? errorId : undefined)}
+      {error && (
+        <p id={errorId} className="field-error" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   )
 }
