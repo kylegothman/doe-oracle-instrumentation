@@ -353,7 +353,7 @@ Two more channels serve the Export Page before it exports:
 
 The Export tab (story #40) follows the design's "06 Export Page":
 
-- **Records to export.** Filter by **Session** (the running session is chosen until the Tester picks another) or by **Date range** (whole local days, both included), and optionally one subject or only the expert's answers. The line below gives the count from `export:preview`. Export is disabled when nothing matches or the range is backwards.
+- **Records to export.** Filter by **Session** (the running session is chosen until the Tester picks another) or by **Date range** (whole local days, both included), and optionally one subject or only the expert's answers. **Expert answers only** ignores the session and exports the answers from every session, because each answer carries whichever session it was typed in; a date range still narrows them. The line below gives the count from `export:preview`. Export is disabled when nothing matches or the range is backwards.
 - **Format.** The TestLogV3 workbook or CSV. **Export…** opens the save dialog.
 - **Result.** "Exported N rows" with every file written (both files for CSV), or the reason nothing was written. Closing the save dialog shows nothing.
 - **Saves waiting for a retry.** When the error log holds failed saves, a warning above the filters lists them and offers Retry, because those records are not in any export until they reach the database.

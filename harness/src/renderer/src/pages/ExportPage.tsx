@@ -10,6 +10,8 @@ import {
   describePendingSaves,
   describeRetry,
   endsTrial,
+  EVERY_SESSION_NOTE,
+  exportsEverySession,
   FORMAT_CHOICES,
   runningTrialWarning,
   sessionLabel,
@@ -69,6 +71,7 @@ export function ExportPage({ refreshKey }: { refreshKey: number }) {
     pickedSessionId ??
     (sessionList.some((session) => session.sessionId === currentSessionId) ? currentSessionId : (sessionList[0]?.sessionId ?? null))
 
+  const everySession = exportsEverySession({ mode, subject })
   const filterOutcome = buildFilter({ mode, sessionId, fromDay, toDay, subject })
   // A string, so the count is only read again when the filter really changed.
   const filterKey = filterOutcome.ok ? JSON.stringify(filterOutcome.filter) : null
@@ -108,7 +111,13 @@ export function ExportPage({ refreshKey }: { refreshKey: number }) {
         <Segmented label="Filter by" value={mode} choices={FILTER_MODES} onChange={setMode} testId="export-filter-mode" />
         <div className="field-row">
           {mode === 'session' ? (
-            <SessionField sessions={sessions} value={sessionId} choices={sessionChoices} onChange={setPickedSessionId} />
+            <SessionField
+              sessions={sessions}
+              value={sessionId}
+              choices={sessionChoices}
+              onChange={setPickedSessionId}
+              everySession={everySession}
+            />
           ) : (
             <>
               <Field label="First day">
@@ -141,6 +150,11 @@ export function ExportPage({ refreshKey }: { refreshKey: number }) {
           )}
           <SelectField label="Subject" value={subject} choices={SUBJECT_CHOICES} onChange={setSubject} testId="export-subject" />
         </div>
+        {everySession && (
+          <p className="caption" data-testid="export-every-session">
+            {EVERY_SESSION_NOTE}
+          </p>
+        )}
         <MatchCount problem={filterOutcome.ok ? null : filterOutcome.problem} preview={preview} />
       </Card>
 
@@ -242,17 +256,25 @@ function SessionField({
   value,
   choices,
   onChange,
+  everySession,
 }: {
   sessions: Loadable<unknown>
   value: string | null
   choices: ReadonlyArray<{ value: string; label: string }>
   onChange: (sessionId: string) => void
+  /** True when the export ignores the session (only the expert's answers): the field is locked on "Every session". */
+  everySession: boolean
 }) {
-  if (sessions.status === 'ready' && value !== null) {
+  if (!everySession && sessions.status === 'ready' && value !== null) {
     return <SelectField label="Session" value={value} choices={choices} onChange={onChange} testId="export-session" />
   }
-  const text =
-    sessions.status === 'loading' ? 'Loading sessions…' : sessions.status === 'error' ? sessions.message : 'No session saved yet'
+  const text = everySession
+    ? 'Every session'
+    : sessions.status === 'loading'
+      ? 'Loading sessions…'
+      : sessions.status === 'error'
+        ? sessions.message
+        : 'No session saved yet'
   return (
     <Field label="Session">
       {(id) => (

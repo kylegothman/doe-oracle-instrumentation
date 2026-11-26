@@ -62,7 +62,7 @@ Close the harness whenever you like. After the next launch, the **Expert Respons
 
 On the **Export** tab, choose **Expert answers only** under Subject (see "Exporting" in the README).
 
-- An answer belongs to the session it was entered in. After a restart the Session filter is on the new session, which has no answers yet: pick the earlier session, or switch to **Date range**.
+- In **Session** mode, Expert answers only exports the answers from every session, so answers typed before a restart are included. To export only some of them, switch to **Date range**: an answer counts from when it was entered.
 - Each answer is one row. The turnaround, the outreach time, and the first answer time are filled only on the row of the expert's lowest question number; the other rows leave those cells empty.
 
 ## If a save fails

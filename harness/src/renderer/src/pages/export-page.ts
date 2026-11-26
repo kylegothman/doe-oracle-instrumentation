@@ -49,12 +49,28 @@ export interface FilterInput {
 export type FilterOutcome = { ok: true; filter: RecordFilter } | { ok: false; problem: string }
 
 /**
+ * True when the Session filter does not apply: "Expert answers only" in
+ * Session mode. An expert's answers are not part of a test session. Each one
+ * carries whichever session the Researcher typed it in, so after a restart
+ * the new session would hold none of them (TC-UC5-07). A date range still
+ * narrows them.
+ */
+export function exportsEverySession(input: Pick<FilterInput, 'mode' | 'subject'>): boolean {
+  return input.mode === 'session' && input.subject === 'EXPERT'
+}
+
+/** Shown under the filters while exportsEverySession holds. */
+export const EVERY_SESSION_NOTE = 'Expert answers are exported from every session. To narrow them, filter by Date range.'
+
+/**
  * Builds the export filter from the page. A range covers whole local days,
  * both ends included: from the start of the first day to the start of the
  * day after the last, which is how the repository's exclusive `to` works.
+ * "Expert answers only" ignores the session (see exportsEverySession).
  */
 export function buildFilter(input: FilterInput): FilterOutcome {
   const subject = input.subject === 'ALL' ? null : input.subject
+  if (exportsEverySession(input)) return { ok: true, filter: { sessionId: null, from: null, to: null, subject: 'EXPERT' } }
   if (input.mode === 'session') {
     if (input.sessionId === null) return { ok: false, problem: 'No session has been saved yet.' }
     return { ok: true, filter: { sessionId: input.sessionId, from: null, to: null, subject } }
