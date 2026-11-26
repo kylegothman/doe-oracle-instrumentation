@@ -1,0 +1,270 @@
+# Expert answer key for the DOE Oracle comparison.
+# Source: Dr. Wong's written answers to the twelve standard questions ("DOE Expert Response").
+# Every key point and the first wording of every key term is taken from his text, except where a question's notes say the team added it.
+# The "also_accept" wordings are equivalents added by the team, so that an answer is not marked down for a synonym.
+#
+# Rules for using this key:
+# 1. Review it and freeze it before anyone reads the subjects' answers. Commit it with the scoring configuration.
+# 2. Match terms without regard to case. A term group counts once, whichever of its wordings appears.
+# 3. Key points are judged for meaning by the LLM judge, not by term matching.
+# 4. Read each question's notes before scoring it.
+# 5. "judge_notes" are shown to the LLM judge with the contradiction check. "notes" are for the team only.
+
+version: 1
+status: frozen
+expert: "Dr. Wong"
+source_file: "DOE Expert Response.pdf"
+received: "2026-11-05"
+questions:
+  - number: 1
+    category: "Core concept"
+    question: "What is combinatorial testing?"
+    expert_answer: |-
+      Many software failures result from interactions among a small number of factors rather than from individual factors alone. Combinatorial Testing (CT) is a technique to address this problem.
+
+      Rather than testing every possible combination, CT uses a smaller set of test cases to cover interactions among factors. For example, pairwise (2-way) testing covers all possible combinations of values for every pair of factors, while 3-way testing covers all possible combinations involving any three factors. More generally, t-way testing covers all possible combinations of values for every group of t factors.
+    key_points:
+      - "Many software failures come from interactions among a small number of factors, not from single factors alone."
+      - "Combinatorial testing covers interactions among factors with a smaller set of test cases than testing every possible combination."
+      - "Pairwise (2-way) testing covers all combinations of values for every pair of factors."
+      - "t-way testing covers all combinations of values for every group of t factors."
+    key_terms:
+      - term: "interactions"
+        also_accept: ["interaction"]
+      - term: "factors"
+        also_accept: ["parameters", "inputs", "variables"]
+      - term: "pairwise"
+        also_accept: ["2-way", "two-way", "all-pairs", "all pairs"]
+      - term: "t-way"
+        also_accept: ["3-way", "three-way", "n-way", "k-way"]
+      - term: "smaller set of test cases"
+        also_accept: ["fewer test cases", "fewer tests", "smaller number of test cases", "reduce the number of test"]
+    notes: []
+  - number: 2
+    category: "Core concept"
+    question: "What makes combinatorial testing cost effective?"
+    expert_answer: |-
+      Combinatorial Testing (CT) is based on combinatorics, a branch of mathematics that studies different ways of selecting and combining things. In software testing, CT uses this mathematical approach to select a smaller number of test cases instead of testing every possible combination of input values. The selected test cases are designed to cover all possible interactions among a given number of input parameters, such as pairs or groups of three. In this way, CT can greatly reduce the number of test cases while still providing systematic coverage of interactions among input parameters.
+    key_points:
+      - "Combinatorial testing is based on combinatorics, the mathematics of selecting and combining things."
+      - "It selects a smaller number of test cases instead of testing every possible combination of input values."
+      - "The selected test cases cover all possible interactions among a given number of input parameters, such as pairs or groups of three."
+      - "It greatly reduces the number of test cases while still giving systematic coverage of interactions."
+    key_terms:
+      - term: "combinatorics"
+        also_accept: ["combinatorial mathematics"]
+      - term: "smaller number of test cases"
+        also_accept: ["fewer test cases", "fewer tests", "reduce the number of test", "reduces the number of test"]
+      - term: "every possible combination"
+        also_accept: ["all possible combinations", "exhaustive"]
+      - term: "interactions"
+        also_accept: ["interaction"]
+      - term: "input parameters"
+        also_accept: ["parameters", "factors", "inputs"]
+      - term: "systematic coverage"
+        also_accept: ["coverage"]
+    notes:
+      - "His answer explains why fewer tests are needed. It does not mention money or time directly, so an answer about cost savings in those words can cover the same points without matching the terms."
+  - number: 3
+    category: "Core concept"
+    question: "Explain what interaction failures means."
+    expert_answer: |-
+      Interaction failures occur when a particular combination of two or more input parameters or conditions causes a system to fail, even though each parameter or condition works correctly on its own.
+    key_points:
+      - "An interaction failure occurs when a particular combination of two or more input parameters or conditions causes the system to fail."
+      - "Each parameter or condition works correctly on its own."
+    key_terms:
+      - term: "combination"
+        also_accept: ["combinations"]
+      - term: "two or more"
+        also_accept: ["multiple", "more than one"]
+      - term: "input parameters"
+        also_accept: ["parameters", "factors", "inputs", "conditions"]
+      - term: "on its own"
+        also_accept: ["individually", "in isolation", "by itself", "alone"]
+    notes: []
+  - number: 4
+    category: "Core concept"
+    question: "What is the difference between exhaustive testing and combinatorial testing?"
+    expert_answer: |-
+      Exhaustive testing tests every possible combination of input values, while combinatorial testing uses fewer test cases by focusing on combinations of a small number of input parameters. For example, pairwise testing checks every possible combination of values for any two parameters, rather than testing all possible combinations of all parameters. In this way, combinatorial testing can greatly reduce the number of test cases while still detecting many failures caused by interactions among input parameters.
+    key_points:
+      - "Exhaustive testing tests every possible combination of input values."
+      - "Combinatorial testing uses fewer test cases by focusing on combinations of a small number of input parameters."
+      - "Pairwise testing, for example, checks every combination of values for any two parameters, not all combinations of all parameters."
+      - "Combinatorial testing greatly reduces the number of test cases while still detecting many failures caused by interactions among input parameters."
+    key_terms:
+      - term: "exhaustive"
+        also_accept: []
+      - term: "every possible combination"
+        also_accept: ["all possible combinations", "all combinations"]
+      - term: "fewer test cases"
+        also_accept: ["fewer tests", "smaller number of test", "reduce the number of test"]
+      - term: "pairwise"
+        also_accept: ["2-way", "two-way", "all-pairs", "all pairs"]
+      - term: "interactions"
+        also_accept: ["interaction"]
+    notes: []
+  - number: 5
+    category: "Core concept"
+    question: "Define the IPOG algorithm."
+    expert_answer: |-
+      It is an algorithm used in CT to generate a small set of test cases that covers all possible combinations of values among a specified number of input parameters.
+    key_points:
+      - "IPOG is an algorithm used in combinatorial testing."
+      - "It generates a small set of test cases."
+      - "That set covers all possible combinations of values among a specified number of input parameters."
+    key_terms:
+      - term: "algorithm"
+        also_accept: []
+      - term: "generate"
+        also_accept: ["generates", "construct", "constructs", "builds"]
+      - term: "small set of test cases"
+        also_accept: ["test suite", "test set", "covering array", "fewer test"]
+      - term: "all possible combinations"
+        also_accept: ["every combination", "all combinations"]
+      - term: "specified number of input parameters"
+        also_accept: ["t-way", "strength", "pairwise"]
+    notes:
+      - "His answer is one sentence. It does not spell out the acronym or describe how the algorithm builds the test set, so an answer that adds those details is neither confirmed nor contradicted by this key."
+  - number: 6
+    category: "Core concept"
+    question: "How does combinatorial testing find multi-factor faults?"
+    expert_answer: |-
+      CT helps find software failures caused by combinations of two or more input values, even when each input value works correctly on its own.
+    key_points:
+      - "Combinatorial testing helps find failures caused by combinations of two or more input values."
+      - "Those failures happen even when each input value works correctly on its own."
+    key_terms:
+      - term: "combinations"
+        also_accept: ["combination"]
+      - term: "two or more"
+        also_accept: ["multiple", "more than one"]
+      - term: "input values"
+        also_accept: ["values", "factors", "parameters"]
+      - term: "on its own"
+        also_accept: ["individually", "in isolation", "by itself", "alone"]
+    notes:
+      - "His answer is one sentence and does not describe the mechanism. Rely on the key points more than the terms."
+  - number: 7
+    category: "Core concept"
+    question: "How can combinatorial testing detect more faults than functional testing and random testing?"
+    expert_answer: |-
+      CT can sometimes find more software faults than functional testing or random testing because it checks combinations of input values that other testing methods may miss.
+    key_points:
+      - "Combinatorial testing can sometimes find more faults than functional testing or random testing."
+      - "The reason is that it checks combinations of input values that the other methods may miss."
+    key_terms:
+      - term: "combinations of input values"
+        also_accept: ["combinations", "interactions"]
+      - term: "miss"
+        also_accept: ["overlook", "not cover", "missed"]
+    notes:
+      - "He says \"sometimes\". An answer claiming combinatorial testing always finds more faults goes beyond his answer and should be marked as a contradiction."
+    judge_notes:
+      - "The expert says combinatorial testing can sometimes find more faults. An answer that says it always finds more faults contradicts him."
+  - number: 8
+    category: "Tied to one paper"
+    question: "How does combinatorial testing relate to MC/DC coverage?"
+    expert_answer: |-
+      CT and MC/DC both help test how different conditions affect a software system, but they work in different ways. CT tests combinations of input values to find failures that occur when certain values are used together. MC/DC checks whether changing one condition, while keeping the others the same, can change the result of a decision made by the software. Although CT can help create test cases for MC/DC, it does not guarantee that MC/DC requirements will be satisfied. Using both methods together can help find more software problems.
+    key_points:
+      - "Combinatorial testing and MC/DC both test how different conditions affect a system, but in different ways."
+      - "Combinatorial testing tests combinations of input values to find failures that occur when certain values are used together."
+      - "MC/DC checks whether changing one condition, while the others stay the same, can change the result of a decision."
+      - "Combinatorial testing can help create test cases for MC/DC."
+      - "Combinatorial testing does not guarantee that MC/DC requirements will be satisfied."
+      - "Using both methods together can find more problems."
+    key_terms:
+      - term: "MC/DC"
+        also_accept: ["modified condition/decision coverage", "modified condition decision coverage"]
+      - term: "conditions"
+        also_accept: ["condition"]
+      - term: "decision"
+        also_accept: ["decisions"]
+      - term: "combinations of input values"
+        also_accept: ["combinations"]
+      - term: "does not guarantee"
+        also_accept: ["no guarantee", "not guarantee", "cannot guarantee", "not guaranteed"]
+      - term: "together"
+        also_accept: ["both", "complement", "complementary"]
+    notes:
+      - "\"Does not guarantee\" is a negation. Count it only when the answer says the guarantee is absent."
+  - number: 9
+    category: "Reasoning with numbers"
+    question: "If a system has 4 parameters with 3 values each, how many tests does exhaustive testing need, compared to pairwise testing?"
+    expert_answer: |-
+      With 4 parameters and 3 values each, exhaustive testing requires 3 × 3 × 3 × 3 = 81 test cases.
+    key_points:
+      - "Exhaustive testing requires 3 x 3 x 3 x 3 = 81 test cases."
+      - "Pairwise testing needs 9 test cases."
+    key_terms:
+      - term: "81"
+        also_accept: ["eighty-one", "3^4", "3 x 3 x 3 x 3", "3*3*3*3"]
+    notes:
+      - "He answered only the first half of the question. He gives no number for pairwise testing."
+      - "The second key point, 9 test cases for pairwise testing, was added by the team on November 25, 2026. It is the standard result for four parameters with three values each. It is not in his answer and must not be presented as his."
+      - "A follow-up asks him to confirm the figure. If he confirms it, add his wording to expert_answer and remove this note and the one above."
+    judge_notes:
+      - "The expert gave no number for pairwise testing. The reference figure is 9 test cases. An answer that gives a different number of test cases for pairwise testing counts as a contradiction."
+  - number: 10
+    category: "False premise"
+    question: "Why does combinatorial testing guarantee that all faults are found?"
+    expert_answer: |-
+      CT does not guarantee that all faults will be detected.
+    key_points:
+      - "Combinatorial testing does not guarantee that all faults will be detected."
+    key_terms:
+      - term: "does not guarantee"
+        also_accept: ["no guarantee", "not guarantee", "cannot guarantee", "not guaranteed", "doesn't guarantee"]
+    notes:
+      - "The question contains a false premise and his whole answer is the correction. A subject that accepts the premise and explains why the guarantee holds contradicts him."
+      - "Term matching cannot score this question: the right and the wrong answer both contain \"guarantee\". Use the judge's contradiction check."
+      - "He gives no reason. An answer that explains why there is no guarantee adds detail this key cannot confirm."
+    judge_notes:
+      - "The question contains a false premise. An answer that accepts the premise and explains why the guarantee holds contradicts the expert."
+  - number: 11
+    category: "Outside the Oracle's papers"
+    question: "What is mutation testing?"
+    expert_answer: |-
+      Mutation testing is a technique used to check how well a set of test cases can detect software faults. It works by making small syntactic changes to a program to introduce artificial faults. These modified programs are called mutants. The test cases are then run to see whether they can detect the changes. If a test case detects a change, the corresponding mutant is considered "killed." In general, the more mutants a set of test cases can kill, the more effective it is considered to be.
+    key_points:
+      - "Mutation testing checks how well a set of test cases can detect software faults."
+      - "It makes small syntactic changes to a program to introduce artificial faults."
+      - "The modified programs are called mutants."
+      - "The test cases are run to see whether they detect the changes, and a detected mutant is \"killed\"."
+      - "The more mutants a set of test cases kills, the more effective it is considered to be."
+    key_terms:
+      - term: "mutants"
+        also_accept: ["mutant"]
+      - term: "small syntactic changes"
+        also_accept: ["small changes", "syntactic changes", "modifications to the program", "modifying the program"]
+      - term: "artificial faults"
+        also_accept: ["seeded faults", "injected faults", "deliberate faults", "artificial defects"]
+      - term: "killed"
+        also_accept: ["kill", "kills"]
+      - term: "effective"
+        also_accept: ["effectiveness", "mutation score", "quality of the test"]
+    notes:
+      - "This topic is outside the three papers the Oracle draws on. If the Oracle says so, that is the behaviour it was built for. Score it on the \"admits the topic is outside its sources\" check and report the key-point score separately."
+  - number: 12
+    category: "Off-topic control"
+    question: "What is the global broadband speed test?"
+    expert_answer: |-
+      The global broadband speed test measures and compares internet connection speeds in different countries and regions around the world. It shows how quickly people can download and upload data and how long it takes for data to travel over the internet.
+    key_points:
+      - "It measures and compares internet connection speeds in different countries and regions around the world."
+      - "It shows download speed, upload speed, and how long data takes to travel over the internet."
+    key_terms:
+      - term: "internet connection speeds"
+        also_accept: ["internet speed", "internet speeds", "broadband speed", "broadband speeds", "connection speed"]
+      - term: "countries"
+        also_accept: ["regions", "worldwide", "around the world", "global"]
+      - term: "download"
+        also_accept: []
+      - term: "upload"
+        also_accept: []
+      - term: "how long it takes for data to travel"
+        also_accept: ["latency", "ping"]
+    notes:
+      - "This is the off-topic control question. As with question 11, an Oracle that says the topic is outside its sources is behaving as intended. Score it on that check and report the key-point score separately."

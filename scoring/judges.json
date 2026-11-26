@@ -1,0 +1,5 @@
+[
+  { "name": "gpt", "provider": "openai:gpt-6-astra" },
+  { "name": "claude", "provider": "anthropic:messages:claude-fable-5-2" },
+  { "name": "gemini", "provider": "google:gemini-4-neon" }
+]
