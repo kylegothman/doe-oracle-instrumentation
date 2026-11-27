@@ -4,6 +4,7 @@ import { Subject } from '../../../shared/subjects'
 import type { TrialEvent } from '../../../shared/trials'
 import {
   buildFilter,
+  exportsEverySession,
   describeExport,
   describeMatches,
   describePendingSaves,
@@ -30,6 +31,30 @@ describe('buildFilter', () => {
   it('passes the subject through, and EXPERT for only the expert answers', () => {
     expect(buildFilter({ ...bySession, subject: Subject.COPILOT })).toMatchObject({ filter: { subject: Subject.COPILOT } })
     expect(buildFilter({ ...bySession, subject: 'EXPERT' })).toMatchObject({ filter: { subject: 'EXPERT' } })
+  })
+
+  it('exports the expert answers from every session in Session mode, so a restart does not hide them (TC-UC5-07)', () => {
+    const expertOnly = { sessionId: null, from: null, to: null, subject: 'EXPERT' }
+    expect(buildFilter({ ...bySession, subject: 'EXPERT' })).toEqual({ ok: true, filter: expertOnly })
+    // Even before any session is listed: the answers do not depend on one.
+    expect(buildFilter({ ...bySession, sessionId: null, subject: 'EXPERT' })).toEqual({ ok: true, filter: expertOnly })
+    // Every other subject choice still keeps to the chosen session.
+    expect(buildFilter({ ...bySession, subject: 'ALL' })).toMatchObject({ filter: { sessionId: 'session-a' } })
+    expect(buildFilter({ ...bySession, subject: Subject.DOE_ORACLE })).toMatchObject({ filter: { sessionId: 'session-a' } })
+  })
+
+  it('still narrows the expert answers by a date range', () => {
+    expect(buildFilter({ ...byRange, subject: 'EXPERT' })).toEqual({
+      ok: true,
+      filter: { sessionId: null, from: midnight(2026, 11, 10), to: midnight(2026, 11, 15), subject: 'EXPERT' },
+    })
+  })
+
+  it('says when the session is ignored: only for the expert answers in Session mode', () => {
+    expect(exportsEverySession({ mode: 'session', subject: 'EXPERT' })).toBe(true)
+    expect(exportsEverySession({ mode: 'range', subject: 'EXPERT' })).toBe(false)
+    expect(exportsEverySession({ mode: 'session', subject: 'ALL' })).toBe(false)
+    expect(exportsEverySession({ mode: 'session', subject: Subject.GOOGLE })).toBe(false)
   })
 
   it('asks for a session when none is saved', () => {
