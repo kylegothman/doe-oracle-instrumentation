@@ -14,7 +14,7 @@ No C++ build tools are needed. Native modules used by the harness ship prebuilt 
 
 The harness drives the systems under test through Playwright's Chromium, which is downloaded separately from npm (see Setup). This is for development only: the installed app carries its own copy (see "Packaging the Windows installer").
 
-To test the installer on Windows 11, follow `docs/install-test.md`. To set up the Oracle on the reference machine, follow `docs/run-the-oracle.md`. The reference machine itself is described in `docs/reference-machine.md`. To enter the expert's answers, follow `docs/expert-answers.md`.
+To test the installer on Windows 11, follow `docs/install-test.md`. To set up the Oracle on the reference machine, follow `docs/run-the-oracle.md`. The reference machine itself is described in `docs/reference-machine.md`. To enter the expert's answers, follow `docs/expert-answers.md`. To check the harness's timing overhead, CPU use, and failure handling (E9), follow `docs/measurement-validation.md`.
 
 ### Windows 11
 
@@ -73,8 +73,8 @@ harness/
   electron.vite.config.ts   bundling for main, preload, and renderer
   electron-builder.yml      installer packaging (MSI); ships config/ and the bundled Chromium as extra resources
   config/questions.json     the 12 standard questions, read at startup by QuestionBank
-  scripts/                  bundle-browser.mjs (Chromium for the installer), msi-smoke-test.ps1 (install, self-check, uninstall), reference-machine-spec.ps1
-  docs/                     install-test.md, reference-machine.md, run-the-oracle.md, expert-answers.md, copilot-spike.md, google-spike.md
+  scripts/                  bundle-browser.mjs (Chromium for the installer), msi-smoke-test.ps1 (install, self-check, uninstall), reference-machine-spec.ps1, log-cpu.ps1 and nfr2-report.mjs (the NFR-2 check)
+  docs/                     install-test.md, reference-machine.md, run-the-oracle.md, expert-answers.md, measurement-validation.md, copilot-spike.md, google-spike.md
   eslint.config.mjs         lint rules (the renderer may not import Electron or Node)
   vitest.config.ts          unit test settings
   tsconfig.node.json        TypeScript for main, preload, shared
