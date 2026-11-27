@@ -1,0 +1,8 @@
+# Judge checks: key points, contradictions, made-up facts, hedging, examples.
+# Run once per judge with --grader. The judge sees the answer and the criterion, never the subject.
+description: DOE Oracle comparison, judge checks
+prompts:
+  - '{{answer}}'
+providers:
+  - echo
+tests: file://out/tests.judge.json

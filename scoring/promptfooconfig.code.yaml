@@ -1,0 +1,8 @@
+# Code checks: key terms and similarity to the expert's answer. No judge model.
+# The echo provider hands each saved answer back as the output, so no subject is called.
+description: DOE Oracle comparison, code checks
+prompts:
+  - '{{answer}}'
+providers:
+  - echo
+tests: file://out/tests.code.json
